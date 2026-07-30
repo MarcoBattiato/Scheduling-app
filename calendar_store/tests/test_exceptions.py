@@ -4,7 +4,7 @@ import portion as P
 
 from calendar_store import AvailabilityStore, Kind
 
-TUE, WED, THU = 1, 2, 3
+THU = 3
 
 
 def dt(d: date, t: time) -> datetime:

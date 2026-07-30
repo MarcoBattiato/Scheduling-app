@@ -1,8 +1,8 @@
-# calendar_store — Design Notes (starting point, not a finished spec)
+# calendar_store — SPEC.md
 
-Captures the design discussion so far, before it exists only in a chat history.
-This is a reference for a fresh Claude Code interview to build on — it should still
-propose test cases and surface gaps, not treat this as finished.
+Captures every design decision made so far, and why, before it exists only in a
+chat history. Rules and exceptions (§ below) are implemented and tested; anything
+not yet built is called out explicitly rather than presented as settled.
 
 ## Problem
 
@@ -291,3 +291,46 @@ flat list was a deliberate choice — it's already a queryable object: `crop`/
 One-way dependency: `calendar_store` must never import from `scheduling_engine`.
 This package only knows about clients, rules, exceptions, and booked appointments —
 it has no concept of requests, offers, negotiation, or disruption cost.
+
+**Interface shape: flat segments, not the store object.** scheduling_engine
+consumes availability as a plain list of concrete time ranges — not the
+`AvailabilityStore` itself, and not `portion.Interval` either. Handing over the
+store would couple scheduling_engine to calendar_store's internal representation
+(rule schema, `portion` as a required dependency) and expose far more than it
+needs — it only ever wants "what's actually available in this window," never the
+rules/exceptions that produced it. This isn't a lossy simplification: since
+scheduling_engine already only operates over a bounded rolling window (its
+`SPEC.md` §3), a recurring rule and its concrete occurrences within that window
+carry identical information — there's no compression benefit left to preserve by
+handing over rule structure instead of the already-flattened result.
+
+`portion.Interval` stays the *internal* currency — it's what makes
+crop/intersect/negate/union composable (e.g. combining a client's and the
+provider's calendars before handing anything over). The boundary is a separate,
+minimal conversion:
+
+```python
+@dataclass(frozen=True)
+class TimeSegment:
+    start: datetime
+    end: datetime
+
+def to_segments(calendar: portion.Interval) -> list[TimeSegment]:
+    """Flatten a portion.Interval into a sorted list of concrete (start, end)
+    segments — the only availability representation scheduling_engine ever sees."""
+```
+
+`AvailabilityStore.get_availability_segments(client_id, window_start, window_end)
+-> list[TimeSegment]` (`src/calendar_store/store.py`) is the public entry point,
+wrapping `get_availability` + `to_segments` (`src/calendar_store/segments.py`).
+Everything outside this package should call this, not `get_availability`.
+
+`TimeSegment` is deliberately a separate type from scheduling_engine's own
+`TimeRange` (identical shape, distinct identity) rather than something
+scheduling_engine imports from here. `TimeRange` in scheduling_engine's spec covers
+things that have nothing to do with calendar_store — request windows,
+accepted-change windows, appointment ranges — so importing calendar_store's type
+for all of those would be coupling in the wrong direction for no benefit. Only
+availability segments actually flow from calendar_store to scheduling_engine, so
+only that one value shape crosses the boundary; scheduling_engine is free to adapt
+it into its own `TimeRange` at the point of use.

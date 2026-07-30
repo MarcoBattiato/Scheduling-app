@@ -4,7 +4,7 @@ import portion as P
 
 from calendar_store import AvailabilityStore, crop, intersect, negate, union
 
-MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
+TUE, WED = 1, 2
 
 
 def dt(d: date, t: time) -> datetime:
@@ -91,7 +91,7 @@ def test_remove_middle_slice_splits_into_two_rules():
 
 
 def test_remove_partial_date_range_splits_into_before_during_after():
-    """The worked example from DESIGN_NOTES.md."""
+    """The worked example from SPEC.md."""
     store = AvailabilityStore()
     store.add_recurring_availability(
         "alice", WED, time(15, 0), time(20, 0), effective_from=date(2025, 1, 1),

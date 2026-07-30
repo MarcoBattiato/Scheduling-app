@@ -1,6 +1,6 @@
-"""Availability rows. See DESIGN_NOTES.md for the rationale: rules always store
+"""Availability rows. See SPEC.md for the rationale: rules always store
 positive, normalized availability (add/remove are store operations, not row
-properties) — only exceptions still carry `kind`, pending the same treatment.
+properties); exceptions carry `kind` since they can't resolve away into rules.
 """
 from __future__ import annotations
 

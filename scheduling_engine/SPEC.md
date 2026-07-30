@@ -46,23 +46,12 @@ ChangeId = str
 class TimeRange:
     start: datetime
     end: datetime
-
-
-@dataclass(frozen=True)
-class RecurringRule:
-    weekday: int          # 0=Monday .. 6=Sunday
-    start_time: time
-    end_time: time
-
-
-@dataclass
-class AvailabilityCalendar:
-    """Generic, standing capability to be booked at all — independent of any
-    specific appointment. Applies to clients and to the provider."""
-    recurring: list[RecurringRule]
-    one_off_exceptions: list[TimeRange]   # blocks availability for a specific
-                                           # instance; also used to record a
-                                           # declined reschedule destination (§9)
+    # Deliberately not shared with calendar_store's TimeSegment, despite the
+    # identical shape: TimeRange here covers request windows, accepted-change
+    # windows, and appointment ranges — none of which are calendar_store's
+    # concern — so importing its type for all of those would be coupling in
+    # the wrong direction. Only availability segments actually flow from
+    # calendar_store; see §3.
 
 
 @dataclass
@@ -76,9 +65,10 @@ class RescheduleBounds:
 class Client:
     id: ClientId
     priority: float                        # higher = more costly to disturb
-    availability: AvailabilityCalendar
     reschedule_bounds: RescheduleBounds     # e.g. {2, 4} default; {0, 0} for
                                              # provider-self blocks (§4)
+    # No `availability` field here — recurring rules and exceptions are
+    # calendar_store's domain entirely now, not carried on this object. See §3.
 
 
 class ChangeStatus(Enum):
@@ -157,6 +147,12 @@ class SchedulingRepository(Protocol):
     def apply_move(self, change_id: ChangeId, new_range: TimeRange) -> None: ...
     def cancel_appointment(self, appointment_id: AppointmentId) -> None: ...
 ```
+
+**Availability comes from `calendar_store`, as flat segments.** `TimetableSnapshot`
+carries each relevant client's (and the provider's) availability as
+`list[calendar_store.TimeSegment]` for the requested window — this engine never
+sees a rule, an exception, or the store itself, only the already-resolved result.
+How that's produced is entirely `calendar_store`'s concern; see its `SPEC.md`.
 
 ---
 
@@ -311,8 +307,8 @@ PROPOSED ──(client responds)──▶ CONFIRMED ──▶ EXERCISED
 DECLINED                        DECLINED
    │
    ▼
-(§9: partial decline narrows acceptable_window and/or writes a
- one-off AvailabilityCalendar exception, entry may re-open)
+(§9: partial decline narrows acceptable_window and/or blocks that
+ specific date/time in calendar_store, entry may re-open)
 
 OPEN ──(solver selects it)──▶ CONFIRMED ──▶ EXERCISED   (same as above)
 ```
@@ -326,12 +322,12 @@ not via state.
 
 ## 9. Decline / shrink handling
 
-A decline, or the excluded portion of a shrink, is recorded as a **one-off**
-`AvailabilityCalendar` exception scoped to that specific date/time instance — not a
-recurring rule. This reuses the existing feasibility-check machinery and keeps the
-risk of over-blocking a genuinely unrelated future booking low, given typical
-weekly single-session booking cadence. **Business rule, confirm with your customer**
-— easy to change later without touching the surrounding design.
+A decline, or the excluded portion of a shrink, is recorded as a **single-date
+block** in calendar_store, scoped to that specific date/time instance — not a
+recurring rule change. This reuses the existing feasibility-check machinery and
+keeps the risk of over-blocking a genuinely unrelated future booking low, given
+typical weekly single-session booking cadence. **Business rule, confirm with your
+customer** — easy to change later without touching the surrounding design.
 
 ---
 

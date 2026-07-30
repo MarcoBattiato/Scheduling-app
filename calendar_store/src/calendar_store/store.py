@@ -16,6 +16,7 @@ import portion as P
 from dateutil.rrule import rrule, WEEKLY, MO, TU, WE, TH, FR, SA, SU
 
 from .models import AvailabilityException, ClientAvailabilityRule, Kind
+from .segments import TimeSegment, to_segments
 
 _WEEKDAY_CONST = [MO, TU, WE, TH, FR, SA, SU]
 
@@ -76,8 +77,8 @@ class AvailabilityStore:
         date_until: Optional[date],
         op: Kind,
     ) -> List[ClientAvailabilityRule]:
-        """Sweep-and-merge normalization. See DESIGN_NOTES.md ("Rule
-        normalization algorithm") for the worked-through rationale.
+        """Sweep-and-merge normalization. See SPEC.md
+        ("Rule normalization algorithm") for the worked-through rationale.
         """
         new_until = date_until or _UNBOUNDED
 
@@ -174,7 +175,7 @@ class AvailabilityStore:
         even where no rule is involved. Only the net deviation from the rule
         is ever stored: an exception fully redundant with (or fully outside)
         that truth naturally reduces to nothing and is discarded. See
-        DESIGN_NOTES.md ("Exception normalization").
+        SPEC.md ("Exception normalization algorithm").
         """
         rule_coverage = self._rule_coverage(client_id, on_date)
 
@@ -247,6 +248,15 @@ class AvailabilityStore:
             datetime.combine(window_end, time.min),
         )
         return calendar & window
+
+    def get_availability_segments(
+        self, client_id: str, window_start: date, window_end: date
+    ) -> List[TimeSegment]:
+        """The public boundary entry point — see SPEC.md ("Boundary with
+        scheduling_engine"). Everything outside this package should call this,
+        not `get_availability`.
+        """
+        return to_segments(self.get_availability(client_id, window_start, window_end))
 
     def _expand_rule(
         self, rule: ClientAvailabilityRule, window_start: date, window_end: date
