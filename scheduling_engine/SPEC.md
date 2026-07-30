@@ -90,15 +90,10 @@ class AcceptedChange:
     status: ChangeStatus
 
 
-@dataclass
-class Appointment:
-    id: AppointmentId
-    client_id: ClientId            # "provider-self" is a valid pseudo-client, §2.1
-    service_type_id: str
-    range: TimeRange
-    locked: bool                   # staff-pinned, immovable regardless of notice
-                                    # [DRAFT — carried forward unchanged from v1,
-                                    # not revisited in this design pass]
+# `Appointment` (id, client_id, service_type_id, range, locked, notes) is
+# calendar_store's canonical type now, not redefined here — see its
+# INTERFACE.md. `AppointmentId` above stays as a plain `str` alias for
+# referencing one in this engine's own protocol methods (§3, §11).
 
 
 class RequestKind(Enum):
