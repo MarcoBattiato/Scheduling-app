@@ -1,6 +1,6 @@
-"""In-memory repository for client availability rules and single-date
-exceptions, plus the materialization function that turns them into a
-concrete availability calendar for a queried window.
+"""In-memory repository for client availability rules, single-date exceptions,
+and booked appointments, plus the materialization function that turns rules
+and exceptions into a concrete availability calendar for a queried window.
 
 Assumptions (not asked about, kept simple since nothing in scope needs
 otherwise): all times are naive (single implicit timezone per client), and a
@@ -9,13 +9,14 @@ rule/exception never spans midnight.
 from __future__ import annotations
 
 import itertools
+from dataclasses import replace
 from datetime import date, datetime, time
 from typing import List, Optional, Tuple
 
 import portion as P
 from dateutil.rrule import rrule, WEEKLY, MO, TU, WE, TH, FR, SA, SU
 
-from .models import AvailabilityException, ClientAvailabilityRule, Kind
+from .models import Appointment, AvailabilityException, ClientAvailabilityRule, Kind
 from .segments import TimeSegment, to_segments
 
 _WEEKDAY_CONST = [MO, TU, WE, TH, FR, SA, SU]
@@ -30,6 +31,7 @@ class AvailabilityStore:
     def __init__(self) -> None:
         self._rules: List[ClientAvailabilityRule] = []
         self._exceptions: List[AvailabilityException] = []
+        self._appointments: List[Appointment] = []
         self._ids = itertools.count(1)
 
     # -- mutations: recurring rules ----------------------------------
@@ -211,6 +213,60 @@ class AvailabilityStore:
 
         self._exceptions = others + new_exceptions
         return new_exceptions
+
+    # -- mutations: booked appointments -------------------------------
+    #
+    # Not availability, not normalized — see SPEC.md ("Booked appointments
+    # are not availability"). No double-booking check on `book_appointment`;
+    # that's left to whoever queries this store.
+
+    def book_appointment(
+        self,
+        client_id: str,
+        service_type_id: str,
+        start: datetime,
+        end: datetime,
+        *,
+        locked: bool = False,
+        notes: Optional[str] = None,
+    ) -> Appointment:
+        appointment = Appointment(
+            id=next(self._ids),
+            client_id=client_id,
+            service_type_id=service_type_id,
+            range=TimeSegment(start, end),
+            locked=locked,
+            notes=notes,
+        )
+        self._appointments.append(appointment)
+        return appointment
+
+    def cancel_appointment(self, appointment_id: int) -> Appointment:
+        appointment = self._get_appointment(appointment_id)
+        self._appointments.remove(appointment)
+        return appointment
+
+    def reschedule_appointment(self, appointment_id: int, start: datetime, end: datetime) -> Appointment:
+        appointment = self._get_appointment(appointment_id)
+        rescheduled = replace(appointment, range=TimeSegment(start, end))
+        self._appointments[self._appointments.index(appointment)] = rescheduled
+        return rescheduled
+
+    def appointments_for(
+        self, client_id: str, window_start: datetime, window_end: datetime
+    ) -> List[Appointment]:
+        """Appointments for `client_id` overlapping the half-open window
+        [window_start, window_end)."""
+        return [
+            a for a in self._appointments
+            if a.client_id == client_id and a.range.start < window_end and window_start < a.range.end
+        ]
+
+    def _get_appointment(self, appointment_id: int) -> Appointment:
+        for a in self._appointments:
+            if a.id == appointment_id:
+                return a
+        raise KeyError(f"no appointment with id {appointment_id}")
 
     # -- query --------------------------------------------------------
 

@@ -152,7 +152,8 @@ class SchedulingRepository(Protocol):
 carries each relevant client's (and the provider's) availability as
 `list[calendar_store.TimeSegment]` for the requested window — this engine never
 sees a rule, an exception, or the store itself, only the already-resolved result.
-How that's produced is entirely `calendar_store`'s concern; see its `SPEC.md`.
+How that's produced is entirely `calendar_store`'s concern; see its
+`INTERFACE.md` for the contract (`SPEC.md` is calendar_store's own internals).
 
 ---
 

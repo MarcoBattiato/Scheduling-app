@@ -1,8 +1,12 @@
 # calendar_store — SPEC.md
 
-Captures every design decision made so far, and why, before it exists only in a
-chat history. Rules and exceptions (§ below) are implemented and tested; anything
-not yet built is called out explicitly rather than presented as settled.
+Why the implementation looks the way it does — algorithms, invariants, and the
+decisions behind them, captured before they exist only in a chat history. For
+the current public contract (types, method signatures, what a consumer can
+rely on), see `INTERFACE.md` instead; this file never redeclares a signature,
+only explains one that lives there. Rules, exceptions, and appointments are all
+implemented and tested; anything not yet built is called out explicitly rather
+than presented as settled.
 
 ## Problem
 
@@ -73,22 +77,6 @@ compactness this design exists for), so it can't resolve away into an edited rul
 row the way a recurring remove does. It gets the same order-dependence fix, just
 applied on the date axis instead — see "Exception normalization algorithm" below.
 
-## Schema (implemented)
-
-```
-ClientAvailabilityRule:
-  id, client_id, weekday, start_time, end_time,
-  effective_from, effective_until (nullable = indefinitely active — the present
-                                    date has no bearing on this row at all)
-
-AvailabilityException:
-  id, client_id, date, start_time, end_time, kind ("add"|"remove")
-
-Appointment:
-  id, client_id, service_type_id, range, locked, created_at
-  # not yet implemented — out of scope until scheduling_engine needs it
-```
-
 `kind` and `created_at` were dropped from `ClientAvailabilityRule`, and
 `created_at`/`revoked_at` from `AvailabilityException` too — same reason in both
 cases: this schema has no bitemporal/audit-trail concept anywhere in it. `kind` is
@@ -99,6 +87,33 @@ of time Y," which isn't a question this store needs to answer — only "what was
 available on date X" matters, and valid-time fields (`effective_from`/
 `effective_until` on rules, `date` on exceptions) already answer that fully.
 `as_of` is gone from `get_availability` as a result — not just unused for now.
+
+## Booked appointments are not availability
+
+Rules/exceptions answer "when could this client be booked at all" (standing
+capacity); `Appointment` answers "what's actually booked" (concrete occupied
+time). These are deliberately separate concerns, not layered into one
+calculation: `get_availability`/`get_availability_segments` reflect rules and
+exceptions only, never subtracting existing appointments. Checking for
+double-booking against `Appointment` records is left to whoever queries this
+store (scheduling_engine's `SPEC.md` §7.2 already lists "no double-booking" and
+"availability" as two separate hard constraints — this preserves that split
+rather than collapsing it). No double-booking check on `book_appointment`
+itself follows from the same split.
+
+Also unlike rules/exceptions, `Appointment` rows are never normalized or merged.
+Two back-to-back appointments stay two separate rows even though they're
+contiguous — they're distinct bookings, not a span of availability, so nothing
+here treats adjacency as something to collapse.
+
+`Appointment` has no `created_at`, unlike the original early sketch of this
+schema: unlike rules/exceptions this was never about reconstructing historical
+belief, and nothing built so far needs it. `notes` is free-text for end users,
+never read by any solver logic — added specifically so users can attach personal
+notes to a booking. `range` reuses `TimeSegment` rather than a new dataclass:
+scheduling_engine's own (soon to be superseded) `Appointment.range: TimeRange`
+already used that exact shape, so there's one canonical (start, end) type doing
+this job instead of two independently-defined ones drifting apart.
 
 ## Rule normalization algorithm (sweep-and-merge)
 
@@ -268,29 +283,23 @@ the end of a sequence — same final state either way, provably.
 Given `scheduling_engine/SPEC.md` §3 already bounds the solver to a rolling window
 (e.g. 30 days), there's no need to ever expand a recurring rule into concrete flat
 intervals beyond what's currently being queried. Rules stay compressed at the
-storage layer; a single function expands them into concrete intervals for whatever
-window is asked about:
+storage layer; `get_availability` (see `INTERFACE.md`) expands them into concrete
+intervals for whatever window is asked about: recurring rules are expanded
+per-weekday with `dateutil.rrule` (bounded to `window ∩ [effective_from,
+effective_until)`) and unioned directly — no add/remove distinction needed for
+rules at query time, since storage is already normalized to positive-only.
+Exceptions in the window are layered on top as `(rule_calendar -
+exception_removes) | exception_adds`, safe in that fixed order per the invariant
+described above.
 
-```
-get_availability(client_id, window_start, window_end) -> portion.Interval
-```
-
-Implemented in `AvailabilityStore.get_availability` (`src/calendar_store/store.py`):
-recurring rules are expanded per-weekday with `dateutil.rrule` (bounded to
-`window ∩ [effective_from, effective_until)`) and unioned directly — no add/remove
-distinction needed for rules at query time, since storage is already normalized to
-positive-only. Exceptions in the window are layered on top as
-`(rule_calendar - exception_removes) | exception_adds`, safe in that fixed order
-per the invariant described above. Returning a `portion.Interval` rather than a
-flat list was a deliberate choice — it's already a queryable object: `crop`/
-`intersect`/`negate`/`union` in `queries.py` are thin wrappers over `&`, `&`, bounded
-`-`, and `|` on that type, so no separate query engine was needed.
+Returning a `portion.Interval` rather than a flat list was a deliberate choice —
+it's already a queryable object: `crop`/`intersect`/`negate`/`union` in
+`queries.py` are thin wrappers over `&`, `&`, bounded `-`, and `|` on that type,
+so no separate query engine was needed. This is why `get_availability` still
+exists as a distinct, lower-level function from `get_availability_segments`
+rather than being folded into it — see "Boundary with scheduling_engine," below.
 
 ## Boundary with scheduling_engine
-
-One-way dependency: `calendar_store` must never import from `scheduling_engine`.
-This package only knows about clients, rules, exceptions, and booked appointments —
-it has no concept of requests, offers, negotiation, or disruption cost.
 
 **Interface shape: flat segments, not the store object.** scheduling_engine
 consumes availability as a plain list of concrete time ranges — not the
@@ -306,31 +315,18 @@ handing over rule structure instead of the already-flattened result.
 
 `portion.Interval` stays the *internal* currency — it's what makes
 crop/intersect/negate/union composable (e.g. combining a client's and the
-provider's calendars before handing anything over). The boundary is a separate,
-minimal conversion:
-
-```python
-@dataclass(frozen=True)
-class TimeSegment:
-    start: datetime
-    end: datetime
-
-def to_segments(calendar: portion.Interval) -> list[TimeSegment]:
-    """Flatten a portion.Interval into a sorted list of concrete (start, end)
-    segments — the only availability representation scheduling_engine ever sees."""
-```
-
-`AvailabilityStore.get_availability_segments(client_id, window_start, window_end)
--> list[TimeSegment]` (`src/calendar_store/store.py`) is the public entry point,
-wrapping `get_availability` + `to_segments` (`src/calendar_store/segments.py`).
-Everything outside this package should call this, not `get_availability`.
+provider's calendars before handing anything over). `TimeSegment`/`to_segments`/
+`get_availability_segments` (see `INTERFACE.md`) are the separate, minimal
+boundary conversion.
 
 `TimeSegment` is deliberately a separate type from scheduling_engine's own
 `TimeRange` (identical shape, distinct identity) rather than something
 scheduling_engine imports from here. `TimeRange` in scheduling_engine's spec covers
 things that have nothing to do with calendar_store — request windows,
-accepted-change windows, appointment ranges — so importing calendar_store's type
-for all of those would be coupling in the wrong direction for no benefit. Only
-availability segments actually flow from calendar_store to scheduling_engine, so
-only that one value shape crosses the boundary; scheduling_engine is free to adapt
-it into its own `TimeRange` at the point of use.
+accepted-change windows — so importing calendar_store's type for all of those
+would be coupling in the wrong direction for no benefit. Only availability
+segments actually flow from calendar_store to scheduling_engine, so only that one
+value shape crosses the boundary; scheduling_engine is free to adapt it into its
+own `TimeRange` at the point of use. (`Appointment.range` is the one exception —
+it reuses `TimeSegment` directly, since that field lives in calendar_store itself;
+see "Booked appointments are not availability," above.)
