@@ -1,0 +1,19 @@
+[project]
+name = "calendar_store"
+version = "0.1.0"
+description = "Client availability storage: effective-dated recurring rules, exceptions, and interval-algebra queries."
+requires-python = ">=3.9"
+dependencies = [
+    "python-dateutil>=2.8",
+    "portion>=2.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
