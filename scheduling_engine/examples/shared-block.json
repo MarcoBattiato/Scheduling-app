@@ -1,0 +1,16 @@
+{
+  "title": "Two requests in one block — why the queue is solved jointly",
+  "alpha": 0.5,
+  "window": {"from": "2026-05-04", "to": "2026-05-04"},
+
+  "provider": {
+    "availability": [{"date": "2026-05-04", "from": "09:00", "to": "12:00"}]
+  },
+
+  "requests": [
+    {"id": "short", "client": "alice", "duration": 60,
+     "windows": [{"date": "2026-05-04", "from": "09:00", "to": "12:00"}]},
+    {"id": "long", "client": "bob", "duration": 90,
+     "windows": [{"date": "2026-05-04", "from": "09:00", "to": "12:00"}]}
+  ]
+}

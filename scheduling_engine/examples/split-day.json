@@ -1,0 +1,22 @@
+{
+  "title": "An existing booking splits the day — fitting around what is already there",
+  "alpha": 0.5,
+  "window": {"from": "2026-05-04", "to": "2026-05-04"},
+
+  "provider": {
+    "availability": [{"date": "2026-05-04", "from": "09:00", "to": "17:00"}]
+  },
+
+  "booked": [
+    {"date": "2026-05-04", "from": "11:00", "to": "12:00", "client": "dana", "service": "review"}
+  ],
+
+  "requests": [
+    {"id": "r1", "client": "alice", "duration": 90,
+     "windows": [{"date": "2026-05-04", "from": "09:00", "to": "17:00"}]},
+    {"id": "r2", "client": "bob", "duration": 60,
+     "windows": [{"date": "2026-05-04", "from": "09:00", "to": "17:00"}]},
+    {"id": "r3", "client": "carol", "duration": 60,
+     "windows": [{"date": "2026-05-04", "from": "09:00", "to": "17:00"}]}
+  ]
+}

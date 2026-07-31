@@ -1,0 +1,14 @@
+{
+  "title": "One request, one open morning — the alpha trade-off at its simplest",
+  "alpha": 0.5,
+  "window": {"from": "2026-05-04", "to": "2026-05-04"},
+
+  "provider": {
+    "availability": [{"date": "2026-05-04", "from": "09:00", "to": "12:00"}]
+  },
+
+  "requests": [
+    {"id": "r1", "client": "alice", "duration": 60,
+     "windows": [{"date": "2026-05-04", "from": "09:30", "to": "12:00"}]}
+  ]
+}

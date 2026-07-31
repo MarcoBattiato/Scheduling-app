@@ -1,0 +1,50 @@
+{
+  "title": "Clinic week — three open days, two slots already taken",
+  "alpha": 0.5,
+  "grid_minutes": 30,
+  "service_durations": [60, 90],
+  "window": {"from": "2026-05-04", "to": "2026-05-06"},
+
+  "provider": {
+    "availability": [
+      {"date": "2026-05-04", "from": "09:00", "to": "17:00"},
+      {"date": "2026-05-05", "from": "09:00", "to": "17:00"},
+      {"date": "2026-05-06", "from": "09:00", "to": "13:00"}
+    ]
+  },
+
+  "booked": [
+    {"date": "2026-05-04", "from": "11:00", "to": "12:00", "client": "dana", "service": "review"},
+    {"date": "2026-05-05", "from": "14:00", "to": "15:30", "client": "erik", "service": "intake"}
+  ],
+
+  "clients": {
+    "alice": {"availability": [
+      {"date": "2026-05-04", "from": "09:00", "to": "13:00"},
+      {"date": "2026-05-05", "from": "09:00", "to": "13:00"}
+    ]},
+    "bob": {"availability": [
+      {"date": "2026-05-05", "from": "12:00", "to": "17:00"}
+    ]},
+    "carol": {"availability": [
+      {"date": "2026-05-06", "from": "09:00", "to": "13:00"}
+    ]}
+  },
+
+  "requests": [
+    {"id": "r1", "client": "alice", "duration": 60,
+     "windows": [{"from": "2026-05-04 09:00", "to": "2026-05-05 13:00"}]},
+
+    {"id": "r2", "client": "bob", "duration": 90,
+     "windows": [{"date": "2026-05-05", "from": "12:00", "to": "17:00"}]},
+
+    {"id": "r3", "client": "carol", "duration": 60,
+     "windows": [{"date": "2026-05-06", "from": "09:00", "to": "13:00"}]},
+
+    {"id": "r4", "client": "dana", "duration": 90,
+     "windows": [{"from": "2026-05-04 09:00", "to": "2026-05-06 13:00"}]},
+
+    {"id": "r5", "client": "erik", "duration": 60,
+     "windows": [{"date": "2026-05-04", "from": "09:00", "to": "11:00"}]}
+  ]
+}
