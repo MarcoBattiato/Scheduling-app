@@ -16,7 +16,14 @@ from typing import List, Optional, Tuple
 import portion as P
 from dateutil.rrule import rrule, WEEKLY, MO, TU, WE, TH, FR, SA, SU
 
-from .models import Appointment, AvailabilityException, ClientAvailabilityRule, Kind
+from .models import (
+    Appointment,
+    AppointmentStatus,
+    AvailabilityException,
+    ClientAvailabilityRule,
+    Kind,
+    Origin,
+)
 from .segments import TimeSegment, to_segments
 
 _WEEKDAY_CONST = [MO, TU, WE, TH, FR, SA, SU]
@@ -242,24 +249,80 @@ class AvailabilityStore:
         return appointment
 
     def cancel_appointment(self, appointment_id: int) -> Appointment:
-        appointment = self._get_appointment(appointment_id)
-        self._appointments.remove(appointment)
-        return appointment
+        """Mark an appointment cancelled. The row stays; it is history now.
 
-    def reschedule_appointment(self, appointment_id: int, start: datetime, end: datetime) -> Appointment:
+        Deleting it would destroy the only evidence that the client ever held
+        that slot, which is exactly what anything learning from past bookings
+        needs. Cancelled rows no longer occupy time — see `appointments_for`.
+        """
         appointment = self._get_appointment(appointment_id)
-        rescheduled = replace(appointment, range=TimeSegment(start, end))
-        self._appointments[self._appointments.index(appointment)] = rescheduled
-        return rescheduled
+        cancelled = replace(appointment, status=AppointmentStatus.CANCELLED)
+        self._appointments[self._appointments.index(appointment)] = cancelled
+        return cancelled
+
+    def reschedule_appointment(
+        self,
+        appointment_id: int,
+        start: datetime,
+        end: datetime,
+        *,
+        origin: Origin = Origin.CLIENT,
+    ) -> Appointment:
+        """Move an appointment by writing a *new* row and retiring the old one.
+
+        Overwriting the range in place would erase where the booking originally
+        sat, and that is the signal worth keeping: a client who books Tuesday
+        at 15:00 every week has a habit, but one repeatedly pushed to Friday to
+        make room for others does not — they have been disrupted. `origin`
+        records which of the two this move is, so the difference survives.
+
+        Returns the new row; the old one keeps its id with status SUPERSEDED.
+        """
+        appointment = self._get_appointment(appointment_id)
+        retired = replace(appointment, status=AppointmentStatus.SUPERSEDED)
+        self._appointments[self._appointments.index(appointment)] = retired
+
+        moved = replace(
+            appointment,
+            id=next(self._ids),
+            range=TimeSegment(start, end),
+            status=AppointmentStatus.BOOKED,
+            origin=origin,
+            supersedes=appointment.id,
+        )
+        self._appointments.append(moved)
+        return moved
 
     def appointments_for(
         self, client_id: str, window_start: datetime, window_end: datetime
     ) -> List[Appointment]:
-        """Appointments for `client_id` overlapping the half-open window
-        [window_start, window_end)."""
+        """Live appointments for `client_id` overlapping the half-open window
+        [window_start, window_end).
+
+        Cancelled and superseded rows are excluded: they no longer occupy
+        time, and a caller checking for double-booking must not see them. Use
+        `appointment_history` to read those.
+        """
         return [
             a for a in self._appointments
-            if a.client_id == client_id and a.range.start < window_end and window_start < a.range.end
+            if a.is_live and a.client_id == client_id
+            and a.range.start < window_end and window_start < a.range.end
+        ]
+
+    def appointment_history(
+        self, client_id: str, window_start: datetime, window_end: datetime
+    ) -> List[Appointment]:
+        """Every row for `client_id` overlapping the window, whatever its
+        status — what was booked, cancelled, and moved, and by whom.
+
+        This is the raw material for working out a client's habitual slot; it
+        is deliberately separate from `appointments_for` so that no caller
+        asking "what is booked" can accidentally see retired rows.
+        """
+        return [
+            a for a in self._appointments
+            if a.client_id == client_id
+            and a.range.start < window_end and window_start < a.range.end
         ]
 
     def _get_appointment(self, appointment_id: int) -> Appointment:

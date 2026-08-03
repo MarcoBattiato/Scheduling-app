@@ -6,6 +6,15 @@ exceptions, materialized on query into `portion.Interval` internally and
 holds `Appointment` (a booked slot — separate from availability, never
 normalized; book/cancel/reschedule/query via `AvailabilityStore`).
 
+**Appointment rows accumulate; they are never deleted.** Cancelling sets
+`status`, and rescheduling writes a new row linked to the old one through
+`supersedes`. Overwriting either would destroy the record of where a client's
+bookings actually sat, which is the raw material for working out their
+habitual slot — and `origin` distinguishes a slot the client chose from one
+the scheduler moved them to, so the scheduler cannot launder its own
+rescheduling into a client's apparent preferences. `appointments_for` returns
+live rows only; `appointment_history` returns everything.
+
 Docs are split by audience: **INTERFACE.md** is the public contract (types,
 signatures, guarantees) — read this if you're consuming calendar_store from
 elsewhere, and treat any change to it as a possible breaking change for

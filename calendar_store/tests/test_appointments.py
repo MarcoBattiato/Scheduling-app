@@ -2,7 +2,12 @@ from datetime import datetime
 
 import pytest
 
-from calendar_store import AvailabilityStore, TimeSegment
+from calendar_store import (
+    AppointmentStatus,
+    AvailabilityStore,
+    Origin,
+    TimeSegment,
+)
 
 
 def dt(*args) -> datetime:
@@ -63,14 +68,19 @@ def test_appointments_for_includes_appointments_that_only_partially_overlap_the_
     assert results == [spanning]
 
 
-def test_cancel_appointment_removes_it():
+def test_cancel_appointment_frees_the_time_but_keeps_the_record():
     store = AvailabilityStore()
     appointment = store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
 
     cancelled = store.cancel_appointment(appointment.id)
 
-    assert cancelled == appointment
+    assert cancelled.status is AppointmentStatus.CANCELLED
+    assert not cancelled.is_live
+    assert cancelled.id == appointment.id
+    # The slot is free again...
     assert store.appointments_for("alice", dt(2026, 5, 5), dt(2026, 5, 6)) == []
+    # ...but that the client once held it is not forgotten.
+    assert store.appointment_history("alice", dt(2026, 5, 5), dt(2026, 5, 6)) == [cancelled]
 
 
 def test_cancel_unknown_appointment_raises():
@@ -79,7 +89,7 @@ def test_cancel_unknown_appointment_raises():
         store.cancel_appointment(999)
 
 
-def test_reschedule_appointment_updates_range_and_preserves_the_rest():
+def test_reschedule_appointment_writes_a_new_row_and_retires_the_old_one():
     store = AvailabilityStore()
     appointment = store.book_appointment(
         "alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0), notes="prefers quiet chat",
@@ -87,11 +97,75 @@ def test_reschedule_appointment_updates_range_and_preserves_the_rest():
 
     rescheduled = store.reschedule_appointment(appointment.id, dt(2026, 5, 12, 9, 0), dt(2026, 5, 12, 10, 0))
 
-    assert rescheduled.id == appointment.id
+    assert rescheduled.id != appointment.id, "a move is a new row, not an edit"
+    assert rescheduled.supersedes == appointment.id
     assert rescheduled.range == TimeSegment(dt(2026, 5, 12, 9, 0), dt(2026, 5, 12, 10, 0))
     assert rescheduled.notes == "prefers quiet chat"
+
     assert store.appointments_for("alice", dt(2026, 5, 5), dt(2026, 5, 6)) == []
     assert store.appointments_for("alice", dt(2026, 5, 12), dt(2026, 5, 13)) == [rescheduled]
+
+    # Where it used to sit is still on record — that is the whole point.
+    (was,) = store.appointment_history("alice", dt(2026, 5, 5), dt(2026, 5, 6))
+    assert was.status is AppointmentStatus.SUPERSEDED
+    assert was.range == TimeSegment(dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
+
+
+def test_reschedule_records_who_wanted_the_move():
+    """A slot the client asked for is evidence of preference; one they were
+    moved to is evidence of disruption. Anything learning from history has to
+    be able to tell them apart.
+    """
+    store = AvailabilityStore()
+    first = store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
+    assert first.origin is Origin.CLIENT
+
+    chosen = store.reschedule_appointment(first.id, dt(2026, 5, 6, 15, 0), dt(2026, 5, 6, 16, 0))
+    assert chosen.origin is Origin.CLIENT
+
+    forced = store.reschedule_appointment(
+        chosen.id, dt(2026, 5, 7, 9, 0), dt(2026, 5, 7, 10, 0), origin=Origin.DISPLACED,
+    )
+    assert forced.origin is Origin.DISPLACED
+
+
+def test_a_chain_of_moves_stays_traceable():
+    store = AvailabilityStore()
+    first = store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
+    second = store.reschedule_appointment(first.id, dt(2026, 5, 6, 15, 0), dt(2026, 5, 6, 16, 0))
+    third = store.reschedule_appointment(second.id, dt(2026, 5, 7, 15, 0), dt(2026, 5, 7, 16, 0))
+
+    assert third.supersedes == second.id
+    assert second.supersedes == first.id
+
+    history = store.appointment_history("alice", dt(2026, 5, 1), dt(2026, 5, 30))
+    assert [a.status for a in sorted(history, key=lambda a: a.id)] == [
+        AppointmentStatus.SUPERSEDED,
+        AppointmentStatus.SUPERSEDED,
+        AppointmentStatus.BOOKED,
+    ]
+
+
+def test_cancelling_a_rescheduled_appointment_leaves_the_whole_trail():
+    store = AvailabilityStore()
+    first = store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
+    moved = store.reschedule_appointment(first.id, dt(2026, 5, 6, 15, 0), dt(2026, 5, 6, 16, 0))
+    store.cancel_appointment(moved.id)
+
+    assert store.appointments_for("alice", dt(2026, 5, 1), dt(2026, 5, 30)) == []
+    assert len(store.appointment_history("alice", dt(2026, 5, 1), dt(2026, 5, 30))) == 2
+
+
+def test_history_is_per_client_and_windowed_like_the_live_query():
+    store = AvailabilityStore()
+    store.cancel_appointment(
+        store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0)).id
+    )
+    store.book_appointment("bob", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
+
+    assert len(store.appointment_history("alice", dt(2026, 5, 5), dt(2026, 5, 6))) == 1
+    assert store.appointment_history("alice", dt(2026, 5, 6), dt(2026, 5, 7)) == []
+    assert len(store.appointment_history("bob", dt(2026, 5, 5), dt(2026, 5, 6))) == 1
 
 
 def test_reschedule_unknown_appointment_raises():

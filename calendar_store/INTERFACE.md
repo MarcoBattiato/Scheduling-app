@@ -25,6 +25,17 @@ class Kind(str, Enum):
     REMOVE = "remove"
 
 
+class AppointmentStatus(str, Enum):
+    BOOKED = "booked"           # the only status that occupies time
+    CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"   # rescheduled away; a newer row supersedes it
+
+
+class Origin(str, Enum):
+    CLIENT = "client"           # the client's own choice of slot
+    DISPLACED = "displaced"     # moved by the scheduler to make room for someone else
+
+
 @dataclass(frozen=True)
 class ClientAvailabilityRule:
     id: int
@@ -54,6 +65,12 @@ class Appointment:
     range: TimeSegment
     locked: bool
     notes: Optional[str] = None  # free-text for end users; never read by any solver logic
+    status: AppointmentStatus = AppointmentStatus.BOOKED
+    origin: Origin = Origin.CLIENT
+    supersedes: Optional[int] = None  # id of the appointment this one replaces
+
+    @property
+    def is_live(self) -> bool: ...   # status is BOOKED
 
 
 @dataclass(frozen=True)
@@ -123,15 +140,30 @@ def book_appointment(
 ) -> Appointment: ...
 
 def cancel_appointment(appointment_id: int) -> Appointment: ...          # raises KeyError if unknown
+    # sets status to CANCELLED and returns the updated row; nothing is deleted
 
-def reschedule_appointment(appointment_id: int, start: datetime, end: datetime) -> Appointment: ...
-    # raises KeyError if unknown; updates `range` only, all other fields unchanged
+def reschedule_appointment(
+    appointment_id: int, start: datetime, end: datetime, *, origin: Origin = Origin.CLIENT,
+) -> Appointment: ...
+    # raises KeyError if unknown. Writes a NEW row at the new time and marks the
+    # old one SUPERSEDED; returns the new row, whose id differs from the old.
+    # All other fields are carried over. `origin` records whether the client
+    # asked for the move or the scheduler imposed it.
 
 def appointments_for(client_id: str, window_start: datetime, window_end: datetime) -> list[Appointment]: ...
-    # matches on overlap with the window, not containment
+    # LIVE appointments only; matches on overlap with the window, not containment
+
+def appointment_history(client_id: str, window_start: datetime, window_end: datetime) -> list[Appointment]: ...
+    # every row regardless of status — booked, cancelled and superseded alike
 ```
 
 `book_appointment` performs no double-booking check — see "Guarantees," below.
+
+**Appointments are never deleted.** Cancelling and rescheduling both preserve
+the original row, because a client's past bookings are evidence about their
+habits and that evidence cannot be recovered once discarded. Use
+`appointments_for` to ask what occupies time, and `appointment_history` to ask
+what has happened. A caller checking for double-booking must use the former.
 
 ## Query helpers (`queries.py`)
 
@@ -156,5 +188,10 @@ def to_segments(calendar: portion.Interval) -> list[TimeSegment]: ...
   non-overlapping.
 - `Appointment` rows are never merged or normalized — two back-to-back
   bookings stay two separate rows.
+- `appointments_for` returns only rows with `status == BOOKED`. Cancelled and
+  superseded rows never occupy time.
+- An appointment id, once issued, always resolves — cancelling or rescheduling
+  changes a row's status but never removes it. A rescheduled booking therefore
+  has two ids: the retired one and the new one, linked by `supersedes`.
 - Unknown IDs (`cancel_appointment`, `reschedule_appointment`) raise
   `KeyError`, never return `None` or silently no-op.

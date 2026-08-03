@@ -18,6 +18,30 @@ class Kind(str, Enum):
     REMOVE = "remove"
 
 
+class AppointmentStatus(str, Enum):
+    """Appointments are never deleted, so that history survives.
+
+    A booking that was cancelled, or moved elsewhere, is evidence about a
+    client's habits — and evidence you cannot recover once the row is gone.
+    Only `BOOKED` rows occupy time; the rest are the record of what happened.
+    """
+    BOOKED = "booked"
+    CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"   # rescheduled; `supersedes` on the newer row points back
+
+
+class Origin(str, Enum):
+    """Who put the appointment where it is.
+
+    The distinction matters for anything that learns from history: a slot the
+    client asked for is evidence of preference, whereas one they were moved to
+    is evidence of disruption. Recording both alike would let the scheduler
+    launder its own rescheduling into a client's apparent habits.
+    """
+    CLIENT = "client"          # the client's own choice of slot
+    DISPLACED = "displaced"    # moved by the scheduler to make room for someone else
+
+
 @dataclass(frozen=True)
 class ClientAvailabilityRule:
     id: int
@@ -49,6 +73,10 @@ class Appointment:
     Discrete and individually identified, unlike rules/exceptions: two
     back-to-back appointments are never merged into one, even though they're
     contiguous — they're separate bookings, not a span of availability.
+
+    Rows accumulate rather than change: cancelling sets `status`, and
+    rescheduling writes a new row pointing back at the old one through
+    `supersedes`. So a client's history is the chain, not the surviving row.
     """
     id: int
     client_id: str  # "provider-self" is a valid pseudo-client for e.g. lunch breaks
@@ -56,3 +84,11 @@ class Appointment:
     range: TimeSegment
     locked: bool  # staff-pinned, immovable regardless of notice
     notes: Optional[str] = None  # free-text for end users; never read by any solver logic
+    status: AppointmentStatus = AppointmentStatus.BOOKED
+    origin: Origin = Origin.CLIENT
+    supersedes: Optional[int] = None  # the appointment this one replaces, if any
+
+    @property
+    def is_live(self) -> bool:
+        """Whether this row actually occupies time on the calendar."""
+        return self.status is AppointmentStatus.BOOKED

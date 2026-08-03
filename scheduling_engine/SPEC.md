@@ -349,6 +349,43 @@ Carried forward as a placeholder only, not a decision:
   How these two combine (is satisfaction lexicographically above disruption, or
   blended?) is explicitly unresolved.
 
+### 10.1 Habitual-slot anchoring — agreed in principle, not yet implemented
+
+Clients book weekly, so the point is **predictability**: a client should be able
+to plan around "my usual Tuesday at 15:00" even before the booking exists, and
+be moved off it only when something actually forces it. Left alone, the current
+objective works against this — `earliness` pulls every request to the first
+feasible slot, so a weekly client gets shuffled around the calendar for no
+reason they can see.
+
+Agreed so far:
+
+- **Anchor rule.** Three appointments a client *chose* at the same
+  `(weekday, time-of-day)` establish that as their anchor. Deliberately a
+  countable rule rather than a statistical mode: it is explainable to a client,
+  and stable with the handful of appointments a real client will have.
+- **Distance in cyclic minutes-within-the-week.** Tue 15:00 → Tue 15:30 is 30;
+  Tue 15:00 → Wed 15:00 is 1440. A different day therefore costs roughly 48× a
+  half-hour slip with no hand-tuned weighting, and the term stays in the same
+  unit as `earliness` and displacement shift.
+- **Anchor replaces earliness, per request.** Where a client has an anchor, it
+  substitutes for the earliness term rather than competing with it — earliness
+  is a proxy for "do not make people wait needlessly", and for an established
+  client "their usual slot" states that better. Clients without an anchor (new,
+  or pattern not yet formed) keep earliness as today. This also avoids adding a
+  fourth term to the unresolved composition above.
+- **Self-reinforcement is intended here.** For preference *learning* it would be
+  a flaw; for stability it is the product.
+- **Forced moves must not become the pattern.** A displaced booking is the
+  exception, not new evidence — and after one, the client should be pulled
+  *back* toward their anchor rather than anchored to where they were pushed.
+  This is why `calendar_store` records `origin` (client-chosen vs displaced) and
+  retains cancelled and superseded rows: without that distinction the engine
+  would launder its own rescheduling into a client's apparent habits.
+
+Still open: how many weeks of history count, whether the anchor decays when a
+client's pattern shifts, and what a `provider-self` pseudo-client's anchor means.
+
 Do not implement against this section as-is — revisit it as its own focused pass
 before writing the actual objective function.
 
