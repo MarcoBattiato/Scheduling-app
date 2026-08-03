@@ -25,8 +25,14 @@ from typing import Dict, List, Optional, Sequence
 from calendar_store import Appointment, AvailabilityStore, TimeSegment
 
 from . import report
-from .availability import free_time
-from .models import BookingRequest, CostConfig, TimeRange
+from .availability import free_time, reschedule_windows
+from .models import (
+    BookingRequest,
+    CostConfig,
+    MovableAppointment,
+    RescheduleBounds,
+    TimeRange,
+)
 from .placement import solve_placements
 from .visualize import render
 
@@ -45,11 +51,15 @@ SCENARIO_HELP = """\
     "recurring":    [{"weekday": "tue", "from": "09:00", "to": "13:00"}]
   },
 
+  "max_displacements": 0,              // >0 lets already-agreed bookings move
+
   "booked": [{"date": "2026-05-04", "from": "11:00", "to": "12:00",
-              "client": "dana", "service": "consult"}],
+              "client": "dana", "service": "consult",
+              "movable": true}],       // may be rebooked if nothing else fits
 
   "clients": {
-    "alice": {"availability": [{"date": "2026-05-04", "from": "10:00", "to": "14:00"}]}
+    "alice": {"availability": [{"date": "2026-05-04", "from": "10:00", "to": "14:00"}],
+              "reschedule_bounds": {"earlier": 2, "later": 4}}   // days
   },
 
   "requests": [
@@ -60,8 +70,10 @@ SCENARIO_HELP = """\
 
 A span is either {"date","from","to"} with clock times, or {"from","to"} with
 full "YYYY-MM-DD HH:MM" stamps — use the latter for windows spanning days.
-Client availability is displayed but NOT enforced: this pass honours only what
-each request itself asked for.
+
+Client availability does not constrain that client's own new requests — those
+honour only the windows they arrive with. It does decide where an already-agreed
+booking of theirs may be moved to, cropped by their reschedule bounds.
 """
 
 _WEEKDAYS = {
@@ -78,6 +90,8 @@ class Scenario:
     booked: List[Appointment] = field(default_factory=list)
     client_availability: Dict[str, List[TimeSegment]] = field(default_factory=dict)
     requests: List[BookingRequest] = field(default_factory=list)
+    movable: List[MovableAppointment] = field(default_factory=list)
+    max_displacements: int = 0
 
 
 class ScenarioError(ValueError):
@@ -189,13 +203,14 @@ def parse(raw: dict) -> Scenario:
     for name, block in raw.get("clients", {}).items():
         _add_availability(store, name, block, f"clients.{name}")
 
-    booked = []
+    booked, movable_flags = [], []
     for entry in raw.get("booked", ()):
         start, end = _span(entry, "booked")
         booked.append(store.book_appointment(
             entry.get("client", "unknown"), entry.get("service", "appointment"),
             start, end, locked=bool(entry.get("locked", False)),
         ))
+        movable_flags.append(bool(entry.get("movable", False)))
 
     provider_availability = store.get_availability_segments(
         PROVIDER, window_start, window_end
@@ -222,17 +237,44 @@ def parse(raw: dict) -> Scenario:
             desired=windows,
         ))
 
+    client_availability = {
+        name: store.get_availability_segments(name, window_start, window_end)
+        for name in raw.get("clients", {})
+    }
+
+    # A booking may only be offered up if it is flagged movable, is not locked,
+    # and its client has somewhere to go within their reschedule bounds.
+    movable = []
+    for appointment, is_movable in zip(booked, movable_flags):
+        if not is_movable or appointment.locked:
+            continue
+        bounds_raw = raw.get("clients", {}).get(appointment.client_id, {}).get(
+            "reschedule_bounds", {}
+        )
+        bounds = RescheduleBounds(
+            max_days_earlier=int(bounds_raw.get("earlier", 2)),
+            max_days_later=int(bounds_raw.get("later", 4)),
+        )
+        current = TimeRange(appointment.range.start, appointment.range.end)
+        movable.append(MovableAppointment(
+            id=f"appt-{appointment.id}",
+            client_id=appointment.client_id,
+            range=current,
+            allowed=reschedule_windows(
+                current, client_availability.get(appointment.client_id, []), bounds
+            ),
+        ))
+
     return Scenario(
         title=raw.get("title", "Placement scenario"),
         config=config,
         provider_availability=provider_availability,
         provider_free=free_time(provider_availability, booked),
         booked=booked,
-        client_availability={
-            name: store.get_availability_segments(name, window_start, window_end)
-            for name in raw.get("clients", {})
-        },
+        client_availability=client_availability,
         requests=requests,
+        movable=movable,
+        max_displacements=int(raw.get("max_displacements", 0)),
     )
 
 
@@ -257,7 +299,7 @@ def build_page(scenario: Scenario, alphas: Sequence[float]) -> str:
             grid_minutes=scenario.config.grid_minutes,
             service_durations=scenario.config.service_durations,
         )
-        result = solve_placements(scenario.requests, scenario.provider_free, config)
+        result = _run(scenario, config)
         heading = (
             scenario.title if len(alphas) == 1
             else f"{scenario.title} — alpha {alpha:g}"
@@ -270,8 +312,57 @@ def build_page(scenario: Scenario, alphas: Sequence[float]) -> str:
             booked=scenario.booked,
             requests=scenario.requests,
             client_availability=scenario.client_availability,
+            movable=scenario.movable,
         ))
     return report.page(scenario.title, sections)
+
+
+def _diagnose(scenario: Scenario, result) -> List[str]:
+    """Explain a disappointing result rather than leaving it silent.
+
+    Displacement needs two independent switches — bookings flagged `movable`
+    and a non-zero `max_displacements` — and setting only one produces no
+    warning and no effect, which reads exactly like the feature not working.
+    """
+    notes = []
+    flagged = bool(scenario.movable)
+    allowed = scenario.max_displacements > 0
+
+    if result.unplaced and not (flagged and allowed):
+        missing = []
+        if not allowed:
+            missing.append('"max_displacements": 1 at the top level')
+        if not flagged:
+            missing.append('"movable": true on a booking under "booked"')
+        notes.append(
+            f"{len(result.unplaced)} request(s) did not fit and rescheduling is "
+            f"off — to let the solver free up space, add {' and '.join(missing)}."
+        )
+    elif allowed and not flagged:
+        notes.append(
+            'max_displacements is set but no booking is flagged "movable": true, '
+            "so nothing can be rescheduled."
+        )
+    elif flagged and not allowed:
+        notes.append(
+            'bookings are flagged "movable" but max_displacements is 0, '
+            "so none of them may actually be moved."
+        )
+    elif flagged and allowed and result.unplaced and not result.displacements:
+        notes.append(
+            "rescheduling was available but did not help — the movable bookings "
+            "have nowhere to go within their client's availability and "
+            "reschedule_bounds."
+        )
+    return notes
+
+
+def _run(scenario: Scenario, config: CostConfig):
+    return solve_placements(
+        scenario.requests, scenario.provider_free, config,
+        movable=scenario.movable,
+        max_displacements=scenario.max_displacements,
+    )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -305,18 +396,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     out = args.out or args.scenario.with_suffix(".html")
     out.write_text(page_html)
 
+    print(f"{args.scenario.name}: {len(scenario.requests)} requests · "
+          f"{len(scenario.booked)} existing bookings "
+          f"({len(scenario.movable)} movable) · "
+          f"max_displacements={scenario.max_displacements}")
+
     for alpha in alphas:
         config = CostConfig(
             alpha=alpha,
             grid_minutes=scenario.config.grid_minutes,
             service_durations=scenario.config.service_durations,
         )
-        result = solve_placements(scenario.requests, scenario.provider_free, config)
+        result = _run(scenario, config)
+        rebooked = (f" · rebooked {len(result.displacements)}"
+                    if result.displacements else "")
         print(f"alpha {alpha:g}: placed {len(result.placements)}/"
-              f"{len(scenario.requests)} · fragmentation "
+              f"{len(scenario.requests)}{rebooked} · fragmentation "
               f"{result.fragmentation_minutes}m · earliness {result.earliness_minutes}m")
         if args.text:
-            print(render(scenario.provider_free, result))
+            print(render(scenario.provider_free, result, movable=scenario.movable))
+        for note in _diagnose(scenario, result):
+            print(f"  note: {note}")
 
     print(f"\nwrote {out}")
     if args.open:

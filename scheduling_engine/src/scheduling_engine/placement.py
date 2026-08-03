@@ -33,10 +33,13 @@ from .fragmentation import waste_minutes, waste_table
 from .models import (
     BookingRequest,
     CostConfig,
+    Displacement,
+    MovableAppointment,
     Placement,
     PlacementResult,
     TimeRange,
     _Candidate,
+    _Move,
 )
 
 # CP-SAT needs integer objective coefficients. The two normalised weights sit
@@ -65,6 +68,9 @@ def solve_placements(
     provider_free: Sequence[TimeSegment],
     config: Optional[CostConfig] = None,
     *,
+    movable: Sequence[MovableAppointment] = (),
+    max_displacements: int = 0,
+    allow_chains: bool = False,
     time_limit_seconds: float = 10.0,
 ) -> PlacementResult:
     """Place as many of `requests` as will fit into `provider_free`.
@@ -72,7 +78,24 @@ def solve_placements(
     `provider_free` is provider availability with existing appointments
     already subtracted — calendar_store returns those separately and does not
     net them (see its INTERFACE.md "Guarantees"), so the repository adapter
-    does that before handing a snapshot here.
+    does that before handing a snapshot here. That includes the appointments
+    passed as `movable`: their current slots come back into play here, because
+    the space is usable only if its occupant agrees to move.
+
+    Displacement is off by default (`max_displacements=0`), and is a last
+    resort when on: the objective maximises requests placed first, then
+    minimises how many accepted bookings had to move, so nobody is disturbed
+    to buy something the calendar could have fitted anyway. `max_displacements`
+    is a hard ceiling on top of that — both a business limit and, since it
+    prunes hard, what keeps the solve fast.
+
+    `allow_chains=False` forbids a displaced booking from moving into a slot
+    another displaced booking is vacating, so every new placement depends on
+    at most one client agreeing rather than a sequence of them. Chains cost
+    5-10x solve time and bought nothing measurable; the flag exists because
+    the strongest argument against them (compounding refusal risk, and
+    SPEC.md §7.4's independent application of confirmed moves) belongs to
+    negotiation, which is not modelled yet.
 
     `time_limit_seconds` applies to each of the two solve phases (see `_solve`),
     so a fully saturated call can take twice it. On timeout the result is the
@@ -99,12 +122,21 @@ def solve_placements(
             raise ValueError(f"duplicate request id {request.id!r}")
         seen.add(request.id)
 
-    origin = _origin(requests, provider_free)
-    blocks = _blocks(provider_free, origin, grid)
+    movable = list(movable) if max_displacements > 0 else []
+    for appointment in movable:
+        if appointment.range.end <= appointment.range.start:
+            raise ValueError(f"appointment {appointment.id}: empty or reversed range")
 
-    candidates: List[_Candidate] = []
-    for index, request in enumerate(requests):
-        candidates.extend(_candidates_for(request, index, blocks, origin, config))
+    origin = _origin(requests, provider_free, movable)
+    free_blocks = _blocks(provider_free, origin, grid)
+
+    # A movable booking's slot is space the solver may hand to someone else, so
+    # it belongs in the domain requests are placed into — unlike a booking that
+    # cannot move, which stays subtracted.
+    movable, blocks, candidates = _with_movable(
+        requests, provider_free, movable, origin, config, allow_chains
+    )
+    moves = _moves_for(movable, blocks, free_blocks, origin, config, allow_chains)
 
     # Nothing to decide — but the calendar still has whatever waste it had, and
     # reporting 0 here would make the figure mean different things on different
@@ -115,7 +147,106 @@ def solve_placements(
             fragmentation_minutes=_idle_waste(blocks, config),
         )
 
-    return _solve(requests, blocks, candidates, origin, config, time_limit_seconds)
+    return _solve(
+        requests, movable, blocks, candidates, moves, origin, config,
+        max_displacements, time_limit_seconds,
+    )
+
+
+def _with_movable(
+    requests: Sequence[BookingRequest],
+    provider_free: Sequence[TimeSegment],
+    movable: Sequence[MovableAppointment],
+    origin: datetime,
+    config: CostConfig,
+    allow_chains: bool,
+) -> Tuple[List[MovableAppointment], List[_Block], List[_Candidate]]:
+    """Work out which bookings are worth offering up, and the domain that
+    leaves.
+
+    Vacating a slot no request could use helps nobody, so with chains
+    forbidden it is enough to keep the bookings whose slot overlaps somewhere a
+    request actually wants — and that filter is exact, not a heuristic, because
+    a displaced booking may only move into space that is already free. Dropped
+    bookings stay put, so their slots leave the domain again.
+    """
+    grid = config.grid_minutes
+
+    def domain_for(keep: Sequence[MovableAppointment]) -> List[_Block]:
+        spans = list(provider_free) + [m.range for m in keep]
+        return _blocks(spans, origin, grid)
+
+    def candidates_for(blocks: Sequence[_Block]) -> List[_Candidate]:
+        found: List[_Candidate] = []
+        for index, request in enumerate(requests):
+            found.extend(_candidates_for(request, index, blocks, origin, config))
+        return found
+
+    blocks = domain_for(movable)
+    candidates = candidates_for(blocks)
+    if not movable or allow_chains:
+        return list(movable), blocks, candidates
+
+    wanted = set()
+    for candidate in candidates:
+        wanted.update(range(candidate.start_cell, candidate.start_cell + candidate.cell_span))
+
+    keep = [
+        m for m in movable
+        if wanted.intersection(range(*_inner_cells(m.range.start, m.range.end, origin, grid)))
+    ]
+    if len(keep) == len(movable):
+        return keep, blocks, candidates
+
+    # Re-derive against the smaller domain. This settles in one step: a request
+    # whose slot needed a dropped booking's cells would have kept that booking.
+    blocks = domain_for(keep)
+    return keep, blocks, candidates_for(blocks)
+
+
+def _moves_for(
+    movable: Sequence[MovableAppointment],
+    blocks: Sequence[_Block],
+    free_blocks: Sequence[_Block],
+    origin: datetime,
+    config: CostConfig,
+    allow_chains: bool,
+) -> List[_Move]:
+    """Where each movable booking could go instead of where it is.
+
+    With chains forbidden the targets are drawn from time that is free right
+    now, not from the wider domain — so no move depends on another move
+    happening first.
+    """
+    grid = config.grid_minutes
+    targets = blocks if allow_chains else free_blocks
+
+    moves: List[_Move] = []
+    for index, appointment in enumerate(movable):
+        start_cell, end_cell = _inner_cells(
+            appointment.range.start, appointment.range.end, origin, grid
+        )
+        span = end_cell - start_cell
+        if span <= 0:
+            continue
+        starts = set()
+        for window in appointment.allowed:
+            want_start, want_end = _inner_cells(window.start, window.end, origin, grid)
+            for block in targets:
+                low = max(want_start, block.start_cell)
+                high = min(want_end, block.end_cell)
+                starts.update(range(low, high - span + 1))
+        starts.discard(start_cell)
+        moves.extend(
+            _Move(
+                movable_index=index,
+                start_cell=start,
+                cell_span=span,
+                shift_minutes=abs(start - start_cell) * grid,
+            )
+            for start in sorted(starts)
+        )
+    return moves
 
 
 def _idle_waste(blocks: Sequence[_Block], config: CostConfig) -> int:
@@ -132,7 +263,9 @@ def _idle_waste(blocks: Sequence[_Block], config: CostConfig) -> int:
 
 
 def _origin(
-    requests: Sequence[BookingRequest], provider_free: Sequence[TimeSegment]
+    requests: Sequence[BookingRequest],
+    provider_free: Sequence[TimeSegment],
+    movable: Sequence[MovableAppointment] = (),
 ) -> datetime:
     """Anchor the grid to midnight of the earliest day in play, so cell
     boundaries land on whole clock times (09:00, 09:15, ...) rather than on
@@ -140,6 +273,8 @@ def _origin(
     """
     moments = [seg.start for seg in provider_free]
     moments.extend(window.start for r in requests for window in r.desired)
+    moments.extend(m.range.start for m in movable)
+    moments.extend(w.start for m in movable for w in m.allowed)
     earliest = min(moments) if moments else datetime.min
     return datetime.combine(earliest.date(), time.min)
 
@@ -234,13 +369,16 @@ def _candidates_for(
 
 def _solve(
     requests: Sequence[BookingRequest],
+    movable: Sequence[MovableAppointment],
     blocks: Sequence[_Block],
     candidates: Sequence[_Candidate],
+    moves: Sequence[_Move],
     origin: datetime,
     config: CostConfig,
+    max_displacements: int,
     time_limit_seconds: float,
 ) -> PlacementResult:
-    """Two solves, not one.
+    """Three solves, not one.
 
     The objective is lexicographic — requests placed always beats cost — and
     the obvious encoding is a single objective with a big-M term. This is the
@@ -250,24 +388,62 @@ def _solve(
     better cost. Pinning the count makes that structural. Measured at the
     default grid it is also about 12% faster — worth having, but not the
     reason.
+
+    Displacement adds a tier between the two: among the arrangements that place
+    the most requests, prefer the one disturbing the fewest accepted bookings.
+    That ordering is what makes rescheduling a last resort rather than merely
+    another option — if the calendar could have fitted a request without moving
+    anyone, that solution wins outright.
     """
     grid = config.grid_minutes
-    reachable, fixed_waste = _reachable_blocks(blocks, candidates, config)
 
-    model, chosen, by_request = _base_model(requests, candidates)
+    # Cells the solver can do anything with: somewhere a request could land, a
+    # booking could move to, or a booking currently sits. Anything else is
+    # settled before the solve starts.
+    touched = set()
+    for candidate in candidates:
+        touched.update(range(candidate.start_cell, candidate.start_cell + candidate.cell_span))
+    for move in moves:
+        touched.update(range(move.start_cell, move.start_cell + move.cell_span))
+    for appointment in movable:
+        touched.update(range(*_inner_cells(
+            appointment.range.start, appointment.range.end, origin, grid
+        )))
+    reachable, fixed_waste = _reachable_blocks(blocks, touched, config)
+
+    def build():
+        return _base_model(
+            requests, candidates, movable, moves, max_displacements, origin, grid
+        )
+
+    model, chosen, kept, moved, _ = build()
     model.Maximize(sum(chosen))
     solver = _solver(time_limit_seconds)
     _check(solver.Solve(model), solver)
     placeable = int(round(solver.ObjectiveValue()))
 
-    model, chosen, by_request = _base_model(requests, candidates)
-    model.Add(sum(chosen) == placeable)
+    displaced = 0
+    if moves:
+        model, chosen, kept, moved, _ = build()
+        model.Add(sum(chosen) == placeable)
+        model.Minimize(sum(moved))
+        solver = _solver(time_limit_seconds)
+        _check(solver.Solve(model), solver)
+        displaced = int(round(solver.ObjectiveValue()))
 
-    occupied = _occupancy(model, reachable, chosen, candidates)
+    model, chosen, kept, moved, covering = build()
+    model.Add(sum(chosen) == placeable)
+    if moves:
+        model.Add(sum(moved) == displaced)
+
+    occupied = _occupancy(model, reachable, covering)
     fragmentation = _fragmentation_term(model, reachable, occupied, config)
+    # Both terms are minutes of inconvenience to a client — one waiting longer
+    # than they had to, the other shifted from a slot they had agreed to.
+    # Weighting them alike is provisional; SPEC.md §10 owns the real model.
     earliness = sum(
         candidate.earliness_minutes * chosen[i] for i, candidate in enumerate(candidates)
-    )
+    ) + sum(move.shift_minutes * moved[i] for i, move in enumerate(moves))
 
     # Normalisation folded into integer weights: cost = a*frag/F + (1-a)*earli/E.
     w_frag, w_earli = _weights(config)
@@ -309,48 +485,116 @@ def _solve(
         )
         placed_requests.add(candidate.request_index)
 
+    displacements = []
+    for i, move in enumerate(moves):
+        if not solver.BooleanValue(moved[i]):
+            continue
+        appointment = movable[move.movable_index]
+        start = origin + timedelta(minutes=move.start_cell * grid)
+        displacements.append(
+            Displacement(
+                appointment_id=appointment.id,
+                client_id=appointment.client_id,
+                was=appointment.range,
+                now=TimeRange(start, start + (appointment.range.end - appointment.range.start)),
+            )
+        )
+
     placements.sort(key=lambda p: p.range.start)
+    displacements.sort(key=lambda d: d.was.start)
     return PlacementResult(
         placements=tuple(placements),
         unplaced=tuple(
             r.id for i, r in enumerate(requests) if i not in placed_requests
         ),
+        displacements=tuple(displacements),
         fragmentation_minutes=int(solver.Value(fragmentation)) + fixed_waste,
         earliness_minutes=int(solver.Value(earliness)),
     )
 
 
 def _base_model(
-    requests: Sequence[BookingRequest], candidates: Sequence[_Candidate]
-) -> Tuple[cp_model.CpModel, List[cp_model.IntVar], Dict[int, List[int]]]:
-    """Assignment only: one slot per request at most, and no two placements
-    sharing a cell. Both solve phases start from this.
+    requests: Sequence[BookingRequest],
+    candidates: Sequence[_Candidate],
+    movable: Sequence[MovableAppointment],
+    moves: Sequence[_Move],
+    max_displacements: int,
+    origin: datetime,
+    grid: int,
+):
+    """Assignment only: at most one slot per request, exactly one per accepted
+    booking, and no two of anything sharing a cell. Every solve phase starts
+    from this.
+
+    The asymmetry between the two is the point. A request may end up with no
+    slot at all, which is what makes a partial solution expressible rather than
+    infeasible (SPEC.md §5). An accepted booking must land somewhere — staying
+    put counts — because the solver is never allowed to cancel a third party
+    to make room (SPEC.md §7.2).
     """
     model = cp_model.CpModel()
     chosen = [model.NewBoolVar(f"x{i}") for i in range(len(candidates))]
+    moved = [model.NewBoolVar(f"y{i}") for i in range(len(moves))]
+    kept = [model.NewBoolVar(f"stay{i}") for i in range(len(movable))]
 
-    # Zero placements for a request is allowed, which is what makes a partial
-    # solution expressible rather than infeasible (SPEC.md §5).
     by_request: Dict[int, List[int]] = {}
     for i, candidate in enumerate(candidates):
         by_request.setdefault(candidate.request_index, []).append(i)
     for indices in by_request.values():
         model.AddAtMostOne([chosen[i] for i in indices])
 
-    for indices in _covering_cells(candidates).values():
-        if len(indices) > 1:
-            model.AddAtMostOne([chosen[i] for i in indices])
+    by_movable: Dict[int, List[int]] = {}
+    for i, move in enumerate(moves):
+        by_movable.setdefault(move.movable_index, []).append(i)
+    for index in range(len(movable)):
+        model.AddExactlyOne(
+            [kept[index]] + [moved[i] for i in by_movable.get(index, [])]
+        )
+
+    if moves:
+        model.Add(sum(moved) <= max_displacements)
+
+    covering = _covering(candidates, chosen, moves, moved, movable, kept, origin, grid)
+    for literals in covering.values():
+        if len(literals) > 1:
+            model.AddAtMostOne(literals)
 
     _break_symmetry(model, requests, candidates, by_request, chosen)
-    return model, chosen, by_request
+    return model, chosen, kept, moved, covering
 
 
-def _covering_cells(candidates: Sequence[_Candidate]) -> Dict[int, List[int]]:
-    """cell -> the candidates that would occupy it."""
-    covering: Dict[int, List[int]] = {}
+def _covering(
+    candidates: Sequence[_Candidate],
+    chosen: Sequence,
+    moves: Sequence[_Move],
+    moved: Sequence,
+    movable: Sequence[MovableAppointment],
+    kept: Sequence,
+    origin: datetime,
+    grid: int,
+) -> Dict[int, List]:
+    """cell -> the literals whose being true would occupy it.
+
+    A booking that stays occupies its current cells, so `kept` appears here
+    exactly as a placement does. That is what stops a request being dropped on
+    top of a booking nobody agreed to move.
+    """
+    covering: Dict[int, List] = {}
+
+    def mark(cells, literal):
+        for cell in cells:
+            covering.setdefault(cell, []).append(literal)
+
     for i, candidate in enumerate(candidates):
-        for cell in range(candidate.start_cell, candidate.start_cell + candidate.cell_span):
-            covering.setdefault(cell, []).append(i)
+        mark(range(candidate.start_cell, candidate.start_cell + candidate.cell_span),
+             chosen[i])
+    for i, move in enumerate(moves):
+        mark(range(move.start_cell, move.start_cell + move.cell_span), moved[i])
+    for index, appointment in enumerate(movable):
+        start, end = _inner_cells(
+            appointment.range.start, appointment.range.end, origin, grid
+        )
+        mark(range(start, end), kept[index])
     return covering
 
 
@@ -395,21 +639,21 @@ def _as_literal(model: cp_model.CpModel, expression) -> cp_model.IntVar:
 def _occupancy(
     model: cp_model.CpModel,
     blocks: Sequence[_Block],
-    chosen: Sequence[cp_model.IntVar],
-    candidates: Sequence[_Candidate],
+    covering: Dict[int, List],
 ) -> Dict[int, cp_model.IntVar]:
-    covering = _covering_cells(candidates)
     occupied: Dict[int, cp_model.IntVar] = {}
     for block in blocks:
         for cell in range(block.start_cell, block.end_cell):
             var = model.NewBoolVar(f"occ{cell}")
             occupied[cell] = var
-            model.Add(sum(chosen[i] for i in covering.get(cell, [])) == var)
+            model.Add(sum(covering.get(cell, [])) == var)
     return occupied
 
 
 def _reachable_blocks(
-    blocks: Sequence[_Block], candidates: Sequence[_Candidate], config: CostConfig
+    blocks: Sequence[_Block],
+    touched: Sequence[int],
+    config: CostConfig,
 ) -> Tuple[List[_Block], int]:
     """Split the calendar into blocks the solver can actually change and the
     rest, whose waste is already decided.
@@ -425,10 +669,7 @@ def _reachable_blocks(
     in either case. What it buys is that model size tracks what the solver can
     actually decide, instead of growing with the length of the window.
     """
-    touched = set()
-    for candidate in candidates:
-        touched.update(range(candidate.start_cell, candidate.start_cell + candidate.cell_span))
-
+    touched = set(touched)
     reachable, fixed = [], 0
     for block in blocks:
         if touched.intersection(range(block.start_cell, block.end_cell)):

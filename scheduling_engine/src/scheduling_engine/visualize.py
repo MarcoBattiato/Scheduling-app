@@ -54,19 +54,35 @@ def gaps_left(
     provider_free: Sequence,
     placements: Sequence = (),
     config: Optional[CostConfig] = None,
+    *,
+    movable: Sequence = (),
+    displacements: Sequence = (),
 ) -> List[Gap]:
     """Every leftover gap, with how much of it is structurally unsellable.
 
     Computed on the solver's grid-aligned, merged blocks so the totals agree
     with what the solver optimised.
+
+    Pass `movable` and `displacements` when displacement was in play: a booking
+    that moved leaves its old slot free and occupies a new one, and a booking
+    that was offered up but stayed still occupies its own. Without them the
+    figures describe a calendar that never existed.
     """
     config = config or CostConfig()
     grid = config.grid_minutes
     origin = _origin([], provider_free)
-    booked = sorted((p.range.start, p.range.end) for p in placements)
+
+    # A movable booking's slot is part of the domain — it is only free if its
+    # occupant actually moved.
+    domain = list(provider_free) + [m.range for m in movable]
+    stayed = {d.appointment_id for d in displacements}
+    occupied = [(p.range.start, p.range.end) for p in placements]
+    occupied += [(m.range.start, m.range.end) for m in movable if m.id not in stayed]
+    occupied += [(d.now.start, d.now.end) for d in displacements]
+    booked = sorted(occupied)
 
     gaps: List[Gap] = []
-    for block in _blocks(provider_free, origin, grid):
+    for block in _blocks(domain, origin, grid):
         start = origin + timedelta(minutes=block.start_cell * grid)
         end = origin + timedelta(minutes=block.end_cell * grid)
 
@@ -98,31 +114,45 @@ def render(
     *,
     tracks: Sequence[Track] = (),
     config: Optional[CostConfig] = None,
+    movable: Sequence = (),
     minutes_per_cell: int = 15,
     show_gaps: bool = True,
 ) -> str:
     """A day-by-day chart, one line per track, plus a legend and gap report."""
     config = config or CostConfig()
     placements = list(result.placements) if result else []
+    displacements = list(result.displacements) if result else []
 
     all_tracks = [Track("free", list(provider_free))] + list(tracks)
-    gaps = gaps_left(provider_free, placements, config) if show_gaps else []
+    if movable:
+        all_tracks.append(Track("booked", [m.range for m in movable], glyph="▓"))
+    gaps = (
+        gaps_left(provider_free, placements, config,
+                  movable=movable, displacements=displacements)
+        if show_gaps else []
+    )
 
     days = sorted(
         {seg.start.date() for track in all_tracks for seg in track.segments}
         | {p.range.start.date() for p in placements}
+        | {d.now.start.date() for d in displacements}
+        | {d.was.start.date() for d in displacements}
     )
     if not days:
         return "(nothing to show)"
 
     # 2 leading spaces + longest name + at least 1 trailing, so no label ever
     # runs into its own row.
-    label_width = max(len(t.name) for t in all_tracks + [Track("placed", ())]) + 3
+    # Include the rows that are not tracks, or their labels run into the chart.
+    label_width = max(
+        len(t.name) for t in all_tracks + [Track("placed", ()), Track("moved in", ())]
+    ) + 3
     out: List[str] = []
     for day in days:
         out.extend(
             _render_day(
-                day, all_tracks, placements, gaps, minutes_per_cell, label_width
+                day, all_tracks, placements, gaps, minutes_per_cell, label_width,
+                displacements,
             )
         )
         out.append("")
@@ -139,6 +169,7 @@ def _render_day(
     gaps: Sequence[Gap],
     minutes_per_cell: int,
     label_width: int,
+    displacements: Sequence = (),
 ) -> List[str]:
     spans = [
         (seg.start, seg.end)
@@ -147,6 +178,7 @@ def _render_day(
         if seg.start.date() == day
     ]
     spans += [(p.range.start, p.range.end) for p in placements if p.range.start.date() == day]
+    spans += [(d.now.start, d.now.end) for d in displacements if d.now.start.date() == day]
     if not spans:
         return []
 
@@ -187,6 +219,25 @@ def _render_day(
                 f"{pad}{letters[id(placement)]}  "
                 f"{placement.range.start:%H:%M}–{placement.range.end:%H:%M}  "
                 f"{minutes:>3}m  {placement.request_id} ({placement.client_id})"
+            )
+
+    arriving = [d for d in displacements if d.now.start.date() == day]
+    leaving = [d for d in displacements if d.was.start.date() == day]
+    if arriving:
+        row = _row([d.now for d in arriving], first, cells, minutes_per_cell,
+                   lambda _: "~")
+        lines.append(f"  {'moved in':<{label_width - 2}}" + row)
+    if arriving or leaving:
+        lines.append("")
+        seen = []
+        for moved in sorted(leaving + arriving, key=lambda d: d.was.start):
+            if moved.appointment_id in seen:
+                continue          # a same-day move appears in both lists
+            seen.append(moved.appointment_id)
+            lines.append(
+                f"{pad}~  rebook {moved.appointment_id} ({moved.client_id})  "
+                f"{moved.was.start:%a %H:%M} → {moved.now.start:%a %H:%M}"
+                f"  ({moved.shift_minutes}m)"
             )
 
     today_gaps = [g for g in gaps if g.start.date() == day]
@@ -232,6 +283,9 @@ def _summary(result: PlacementResult) -> str:
     parts = [f"placed {len(result.placements)}/{total}"]
     if result.unplaced:
         parts.append("unplaced: " + ", ".join(result.unplaced))
+    if result.displacements:
+        parts.append(f"rebooked {len(result.displacements)} "
+                     f"({result.shift_minutes}m shifted)")
     parts.append(f"fragmentation {result.fragmentation_minutes}m")
     parts.append(f"earliness {result.earliness_minutes}m")
     return " · ".join(parts)

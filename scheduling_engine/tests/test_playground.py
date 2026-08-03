@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from scheduling_engine.playground import ScenarioError, build_page, load, parse
+from scheduling_engine import CostConfig, solve_placements
+from scheduling_engine.playground import (
+    ScenarioError,
+    _diagnose,
+    build_page,
+    load,
+    parse,
+)
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 EXAMPLE = EXAMPLES / "scenario.json"
@@ -155,6 +162,34 @@ def test_unplaceable_requests_are_called_out():
     assert "placed 1/2" in page
 
 
+def test_equal_durations_are_drawn_equal_width_on_every_day():
+    """Each day shares one clock axis. Scaling days independently made an hour
+    on a short day wider than an hour on a long one, so a booking moved to a
+    quieter day appeared to have been shortened.
+    """
+    import re
+
+    page = build_page(parse(DISPLACEMENT), [0.5])
+
+    # dana's 60 minutes: once where it was (Mon), once where it lands (Tue).
+    widths = {
+        round(float(w), 2)
+        for w in re.findall(
+            r"class='bar (?:vacated|arrived)' style='left:[\d.]+%;width:([\d.]+)%'",
+            page,
+        )
+    }
+    assert len(widths) == 1, f"same duration drawn at different widths: {widths}"
+
+    # The placement is the same 60 minutes, so it must draw the same width too.
+    (hour,) = widths
+    placed = {
+        round(float(w), 2)
+        for w in re.findall(r"class='bar placed' style='left:[\d.]+%;width:([\d.]+)%'", page)
+    }
+    assert placed == {hour}, f"60 minutes drawn as {placed}, expected {hour}"
+
+
 def test_bar_geometry_stays_inside_the_track():
     import re
 
@@ -183,12 +218,162 @@ def test_every_shipped_example_parses_solves_and_renders(path):
 def test_examples_use_documented_fields_only(path):
     raw = json.loads(path.read_text())
     known = {"title", "alpha", "grid_minutes", "service_durations", "window",
-             "provider", "booked", "clients", "requests"}
+             "provider", "booked", "clients", "requests", "max_displacements"}
     assert set(raw) <= known, f"undocumented top-level keys: {set(raw) - known}"
 
 
+# Built inline rather than read from examples/: those files exist to be edited
+# by whoever is trying a scenario out, so pinning tests to their contents makes
+# ordinary experimentation look like a broken build.
+DISPLACEMENT = {
+    "max_displacements": 1,
+    "provider": {"availability": [
+        {"date": "2026-05-04", "from": "09:00", "to": "10:00"},
+        {"date": "2026-05-05", "from": "09:00", "to": "17:00"}]},
+    "booked": [
+        {"date": "2026-05-04", "from": "09:00", "to": "10:00",
+         "client": "dana", "movable": True},
+        {"date": "2026-05-05", "from": "09:00", "to": "10:00",
+         "client": "frank", "locked": True, "movable": True}],
+    "clients": {
+        "dana": {"availability": [{"date": "2026-05-05", "from": "10:00", "to": "17:00"}],
+                 "reschedule_bounds": {"earlier": 0, "later": 3}},
+        "frank": {"availability": [{"date": "2026-05-05", "from": "09:00", "to": "17:00"}]}},
+    "requests": [{"id": "urgent", "client": "alice", "duration": 60,
+                  "windows": [{"date": "2026-05-04", "from": "09:00", "to": "10:00"}]}],
+}
+
+
+def test_movable_bookings_are_wired_through_from_json():
+    scenario = parse(DISPLACEMENT)
+
+    assert scenario.max_displacements == 1
+    # frank is flagged movable but locked, so must never be offered up.
+    assert {m.client_id for m in scenario.movable} == {"dana"}
+    assert all(m.allowed for m in scenario.movable), "each needs somewhere to go"
+
+
+def test_reschedule_bounds_from_json_limit_where_a_booking_may_go():
+    scenario = parse(DISPLACEMENT)
+    (dana,) = scenario.movable
+
+    # {earlier: 0} forbids moving to an earlier day than the one booked.
+    assert all(w.start.date() >= dana.range.start.date() for w in dana.allowed)
+
+
+def test_displacement_from_json_changes_the_outcome():
+    scenario = parse(DISPLACEMENT)
+    config = CostConfig(alpha=scenario.config.alpha)
+
+    without = solve_placements(scenario.requests, scenario.provider_free, config)
+    assert without.unplaced == ("urgent",)
+
+    with_moves = solve_placements(
+        scenario.requests, scenario.provider_free, config,
+        movable=scenario.movable, max_displacements=scenario.max_displacements,
+    )
+    assert with_moves.all_placed
+    assert len(with_moves.displacements) == 1
+
+
+def test_page_shows_rebookings():
+    page = build_page(parse(DISPLACEMENT), [0.5])
+
+    assert_well_formed(page)
+    for fragment in ("Movable bookings", "Rebooked", "Already-agreed bookings"):
+        assert fragment in page, f"missing: {fragment}"
+
+
+def _notes(raw, alpha=0.5):
+    scenario = parse(raw)
+    config = CostConfig(alpha=alpha, grid_minutes=scenario.config.grid_minutes)
+    result = solve_placements(
+        scenario.requests, scenario.provider_free, config,
+        movable=scenario.movable, max_displacements=scenario.max_displacements,
+    )
+    return " ".join(_diagnose(scenario, result))
+
+
+# Monday is full; the request needs the hour dana occupies.
+BLOCKED = {
+    "provider": {"availability": [{"date": "2026-05-04", "from": "09:00", "to": "10:00"}]},
+    "booked": [{"date": "2026-05-04", "from": "09:00", "to": "10:00", "client": "dana"}],
+    "clients": {"dana": {"availability": [
+        {"date": "2026-05-05", "from": "09:00", "to": "17:00"}]}},
+    "requests": [{"id": "r1", "client": "alice", "duration": 60,
+                  "windows": [{"date": "2026-05-04", "from": "09:00", "to": "10:00"}]}],
+}
+
+
+def test_a_request_that_did_not_fit_names_the_switch_that_is_missing():
+    """Displacement needs two independent switches. Setting neither, or only
+    one, produces no effect and no error — which reads as the feature being
+    broken unless the tool says otherwise.
+    """
+    neither = _notes(BLOCKED)
+    assert '"max_displacements": 1' in neither
+    assert '"movable": true' in neither
+
+    only_flagged = json.loads(json.dumps(BLOCKED))
+    only_flagged["booked"][0]["movable"] = True
+    note = _notes(only_flagged)
+    assert '"max_displacements": 1' in note
+    assert '"movable": true' not in note, "should not ask for what is already set"
+
+    only_capped = json.loads(json.dumps(BLOCKED))
+    only_capped["max_displacements"] = 1
+    note = _notes(only_capped)
+    assert '"movable": true' in note
+    assert '"max_displacements": 1' not in note
+
+
+def test_half_configured_displacement_is_called_out_even_when_nothing_failed():
+    """No request failed, so there is nothing to fix — but a switch set to no
+    effect is still worth saying out loud rather than leaving to be discovered.
+    """
+    fits = json.loads(json.dumps(BLOCKED))
+    fits["provider"]["availability"] = [
+        {"date": "2026-05-04", "from": "09:00", "to": "11:00"}]
+    # The request must be able to reach the hour dana is not sitting in.
+    fits["requests"][0]["windows"] = [
+        {"date": "2026-05-04", "from": "09:00", "to": "11:00"}]
+
+    only_flagged = json.loads(json.dumps(fits))
+    only_flagged["booked"][0]["movable"] = True
+    assert "max_displacements is 0" in _notes(only_flagged)
+
+    only_capped = json.loads(json.dumps(fits))
+    only_capped["max_displacements"] = 1
+    assert "no booking is flagged" in _notes(only_capped)
+
+
+def test_no_note_when_displacement_did_its_job():
+    working = json.loads(json.dumps(BLOCKED))
+    working["max_displacements"] = 1
+    working["booked"][0]["movable"] = True
+    working["provider"]["availability"].append(
+        {"date": "2026-05-05", "from": "09:00", "to": "17:00"})
+
+    assert _notes(working) == ""
+
+
+def test_note_when_rescheduling_was_available_but_could_not_help():
+    stuck = json.loads(json.dumps(BLOCKED))
+    stuck["max_displacements"] = 1
+    stuck["booked"][0]["movable"] = True
+    # dana is only free on the 5th, and the provider is not open then.
+    assert "nowhere to go" in _notes(stuck)
+
+
 def test_readme_lists_every_example():
-    """A scenario nobody is told about may as well not exist."""
+    """A scenario nobody is told about may as well not exist.
+
+    `*_template.json` is exempt: those are pristine copies of a scenario that
+    is already documented, kept so an edited one can be restored. Requiring a
+    README entry for each would turn making a backup into a failing build.
+    """
     readme = (EXAMPLES / "README.md").read_text()
     for path in EXAMPLES.glob("*.json"):
+        if path.stem.endswith("_template"):
+            continue
         assert path.name in readme, f"{path.name} is not mentioned in examples/README.md"

@@ -36,11 +36,12 @@ of the format.
 | File | What it is there to show |
 |---|---|
 | `scenario.json` | **The one to edit.** A full week — three open days, two slots already taken, five requests. Change it freely; it is a scratch file. |
-| `scenario_template.json` | An unedited copy of the same week. Leave it alone, and copy it back over `scenario.json` when you want to start from a known state. |
+| `*_template.json` | Unedited copies kept alongside the scenarios they mirror — `scenario_template.json`, `displacement_template.json`. Leave them alone; copy one back over its working file to start again from a known state. |
 | `where-does-it-go.json` | One request, one open morning. The smallest case where `alpha` visibly changes the answer. |
 | `shared-block.json` | Two requests competing for one block — why the queue is solved jointly rather than one at a time. |
 | `split-day.json` | An existing booking cutting a day in half, and requests fitting around it. |
 | `over-capacity.json` | Three 90-minute requests into three hours. One cannot fit; a partial solution is the correct answer, not a failure. |
+| `displacement.json` | Monday is full, so an already-agreed booking is rebooked to make room. Set `"max_displacements": 0` in it to watch the request fail instead. |
 
 Rendered `.html` output is gitignored — regenerate it any time by re-running.
 

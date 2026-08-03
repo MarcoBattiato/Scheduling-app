@@ -1,0 +1,41 @@
+{
+  "title": "Monday is full — rebooking one agreed appointment to fit an urgent 90 minutes",
+  "alpha": 0.5,
+  "max_displacements": 1,
+  "window": {"from": "2026-05-04", "to": "2026-05-05"},
+
+  "provider": {
+    "availability": [
+      {"date": "2026-05-04", "from": "09:00", "to": "12:00"},
+      {"date": "2026-05-05", "from": "09:00", "to": "17:00"}
+    ]
+  },
+
+  "booked": [
+    {"date": "2026-05-04", "from": "09:00", "to": "10:00",
+     "client": "dana", "service": "review", "movable": false},
+
+    {"date": "2026-05-04", "from": "11:00", "to": "12:00",
+     "client": "erik", "service": "intake", "movable": true},
+
+    {"date": "2026-05-05", "from": "09:00", "to": "10:30",
+     "client": "frank", "service": "consult", "locked": true, "movable": true}
+  ],
+
+  "clients": {
+    "dana":  {"availability": [{"date": "2026-05-05", "from": "10:30", "to": "17:00"}],
+              "reschedule_bounds": {"earlier": 0, "later": 3}},
+
+    "erik":  {"availability": [{"date": "2026-05-04", "from": "09:00", "to": "12:00"},
+  {"date": "2026-05-05", "from": "09:00", "to": "12:00"}],
+              "reschedule_bounds": {"earlier": 0, "later": 1}},
+
+    "frank": {"availability": [{"date": "2026-05-05", "from": "09:00", "to": "17:00"}],
+              "reschedule_bounds": {"earlier": 1, "later": 1}}
+  },
+
+  "requests": [
+    {"id": "urgent", "client": "alice", "duration": 90,
+     "windows": [{"date": "2026-05-04", "from": "09:00", "to": "12:00"}]}
+  ]
+}

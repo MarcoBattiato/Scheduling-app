@@ -6,8 +6,10 @@ from calendar_store import TimeSegment
 from scheduling_engine import (
     BookingRequest,
     CostConfig,
+    MovableAppointment,
     Track,
     TimeRange,
+    free_time,
     gaps_left,
     render,
     solve_placements,
@@ -105,3 +107,57 @@ def test_render_without_a_result_still_shows_the_calendar():
     chart = render([TimeSegment(at(9), at(12))])
     assert "free" in chart
     assert "placed" not in chart
+
+
+# --------------------------------------------------------------------------
+# Displacement
+# --------------------------------------------------------------------------
+
+TOMORROW = date(2026, 5, 6)
+
+
+def later(hour, minute=0):
+    return datetime.combine(TOMORROW, time(hour, minute))
+
+
+def _displacement_case():
+    dana = TimeRange(at(9), at(10))
+    availability = [TimeSegment(at(9), at(11)), TimeSegment(later(9), later(12))]
+    free = free_time(availability, [dana])
+    movable = [MovableAppointment("appt-dana", "dana", dana,
+                                  [TimeRange(later(9), later(12))])]
+    requests = [request("r1", 90, [(at(9), at(11))])]
+    result = solve_placements(requests, free, CFG, movable=movable, max_displacements=1)
+    return free, movable, result
+
+
+def test_gap_report_accounts_for_bookings_that_moved():
+    """A displaced booking frees its old slot and occupies a new one. Ignoring
+    that would describe a calendar that never existed — and disagree with the
+    fragmentation the solver actually minimised.
+    """
+    free, movable, result = _displacement_case()
+    assert result.displacements, "scenario should require a displacement"
+
+    gaps = gaps_left(free, result.placements, CFG,
+                     movable=movable, displacements=result.displacements)
+    assert sum(g.wasted_minutes for g in gaps) == result.fragmentation_minutes
+
+
+def test_render_shows_the_rebooking():
+    free, movable, result = _displacement_case()
+    chart = render(free, result, movable=movable)
+
+    assert "rebook appt-dana (dana)" in chart
+    assert "rebooked 1" in chart
+    assert "moved in" in chart
+
+
+def test_render_labels_still_clear_their_rows_with_displacement():
+    free, movable, result = _displacement_case()
+    chart = render(free, result, movable=movable)
+
+    rows = [ln for ln in chart.splitlines() if ln.startswith("  ") and ln[2:3].strip()]
+    for row in rows:
+        name = row.strip().split()[0]
+        assert row.startswith(f"  {name} "), f"label ran into its row: {row!r}"

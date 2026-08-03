@@ -14,9 +14,12 @@ done on the flat segment representation that crosses the boundary.
 """
 from __future__ import annotations
 
+from datetime import datetime, time, timedelta
 from typing import List, Sequence
 
 from calendar_store import TimeSegment
+
+from .models import RescheduleBounds, TimeRange
 
 
 def _span(item):
@@ -51,3 +54,35 @@ def free_time(
         if cursor < end:
             free.append(TimeSegment(cursor, end))
     return free
+
+
+def reschedule_windows(
+    current: TimeRange,
+    client_availability: Sequence,
+    bounds: RescheduleBounds,
+) -> List[TimeRange]:
+    """Where an accepted booking may be moved to.
+
+    The client's own availability, clipped to the days their reschedule bounds
+    allow (SPEC.md §4). Bounds are measured in whole days from the appointment's
+    current date, so `{0, 0}` confines a move to the same day — which is what
+    keeps a `provider-self` block such as lunch from being pushed to another
+    date at all.
+
+    Staying put is deliberately not included: it is always legal regardless of
+    what the client's availability says now, since availability may have been
+    edited since they booked.
+    """
+    day = current.start.date()
+    lower = datetime.combine(day - timedelta(days=bounds.max_days_earlier), time.min)
+    upper = datetime.combine(
+        day + timedelta(days=bounds.max_days_later) + timedelta(days=1), time.min
+    )
+
+    windows = []
+    for segment in client_availability:
+        inner = getattr(segment, "range", segment)
+        start, end = max(inner.start, lower), min(inner.end, upper)
+        if start < end:
+            windows.append(TimeRange(start, end))
+    return sorted(windows, key=lambda w: w.start)

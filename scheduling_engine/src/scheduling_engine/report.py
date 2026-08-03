@@ -10,7 +10,7 @@ opened straight from disk or mailed to someone.
 from __future__ import annotations
 
 import html
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Dict, Optional, Sequence
 
 from .models import CostConfig, PlacementResult
@@ -19,6 +19,16 @@ from .visualize import Gap, gaps_left
 def _span(item):
     inner = getattr(item, "range", item)
     return inner.start, inner.end
+
+
+def _axis_hours(items: Sequence) -> tuple:
+    """The clock range every day's chart is drawn against, as whole hours."""
+    bounds = [_span(i) for i in items if i is not None]
+    if not bounds:
+        return 9, 17
+    low = min(s.hour for s, _ in bounds)
+    high = max(e.hour + (1 if e.minute or e.second else 0) for _, e in bounds)
+    return low, max(high, low + 1)
 
 
 def page(title: str, sections: Sequence[str]) -> str:
@@ -47,10 +57,13 @@ def section(
     booked: Sequence = (),
     requests: Sequence = (),
     client_availability: Optional[Dict[str, Sequence]] = None,
+    movable: Sequence = (),
 ) -> str:
     config = config or CostConfig()
     placements = list(result.placements) if result else []
-    gaps = gaps_left(provider_free, placements, config)
+    displacements = list(result.displacements) if result else []
+    gaps = gaps_left(provider_free, placements, config,
+                     movable=movable, displacements=displacements)
     client_availability = client_availability or {}
 
     days = sorted(
@@ -59,6 +72,18 @@ def section(
         | {_span(b)[0].date() for b in booked}
         | {p.range.start.date() for p in placements}
         | {w.start.date() for r in requests for w in r.desired}
+        | {d.was.start.date() for d in displacements}
+        | {d.now.start.date() for d in displacements}
+    )
+
+    # One clock range for every day, so an hour is the same width wherever it
+    # is drawn. Scaling each day to its own contents makes equal appointments
+    # look unequal — the same booking appearing narrower after being moved to
+    # a longer day reads as the booking having been shortened.
+    hours = _axis_hours(
+        list(provider_availability) + list(provider_free) + list(booked)
+        + list(movable) + [p.range for p in placements]
+        + [d.was for d in displacements] + [d.now for d in displacements]
     )
 
     body = [
@@ -72,9 +97,10 @@ def section(
         body.append(
             _day(
                 day, provider_availability, booked, provider_free, placements,
-                gaps, requests, client_availability,
+                gaps, requests, client_availability, displacements, movable, hours,
             )
         )
+    body.append(_rebooking_note(displacements))
     body.append(_unplaced_note(result, requests))
     return "<article class='run'>" + "\n".join(p for p in body if p) + "</article>"
 
@@ -97,12 +123,39 @@ def _summary(result: Optional[PlacementResult]) -> str:
     total = len(result.placements) + len(result.unplaced)
     ok = len(result.placements)
     state = "good" if ok == total else "warn"
+    rebooked = (
+        f"<span class='pill move'>rebooked {len(result.displacements)} "
+        f"already-agreed booking{'s' if len(result.displacements) != 1 else ''}</span>"
+        if result.displacements else ""
+    )
     return (
         "<div class='summary'>"
         f"<span class='pill {state}'>placed {ok}/{total}</span>"
+        f"{rebooked}"
         f"<span class='pill'>fragmentation {result.fragmentation_minutes}m</span>"
         f"<span class='pill'>earliness {result.earliness_minutes}m</span>"
         "</div>"
+    )
+
+
+def _rebooking_note(displacements: Sequence) -> str:
+    """Spelled out separately because these are the disruptive part of the
+    plan — each one is a client who has to be asked, and may say no.
+    """
+    if not displacements:
+        return ""
+    rows = "".join(
+        f"<li><b>{html.escape(d.client_id)}</b> "
+        f"({html.escape(d.appointment_id)}) &mdash; "
+        f"{d.was.start:%a %d %b %H:%M} &rarr; {d.now.start:%a %d %b %H:%M} "
+        f"<span class='hint'>moves {d.shift_minutes} min</span></li>"
+        for d in displacements
+    )
+    return (
+        "<section class='rebooked'><h2>Already-agreed bookings this plan wants "
+        f"to move ({len(displacements)})</h2><ul>{rows}</ul>"
+        "<p class='hint'>Proposals, not facts — each needs the client's "
+        "agreement, and any of them may be refused.</p></section>"
     )
 
 
@@ -135,6 +188,9 @@ def _day(
     gaps: Sequence[Gap],
     requests: Sequence,
     client_availability: Dict[str, Sequence],
+    displacements: Sequence = (),
+    movable: Sequence = (),
+    hours: tuple = (9, 17),
 ) -> str:
     def on_day(items):
         return [i for i in items if _span(i)[0].date() == day]
@@ -150,16 +206,21 @@ def _day(
     ]
     windows_today = [(r, ws) for r, ws in windows_today if ws]
 
+    vacating = [d for d in displacements if d.was.start.date() == day]
+    arriving = [d for d in displacements if d.now.start.date() == day]
+    stayed = {d.appointment_id for d in displacements}
+
     everything = (
         [_span(i) for i in availability + booked_today + free_today]
         + [(p.range.start, p.range.end) for p in placed_today]
+        + [(d.now.start, d.now.end) for d in arriving]
+        + [_span(m) for m in on_day(movable)]
     )
     if not everything:
         return ""
-    low = min(s for s, _ in everything).replace(minute=0, second=0, microsecond=0)
-    high = max(e for _, e in everything)
-    if high.minute or high.second:
-        high = high.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    start_hour, end_hour = hours
+    low = datetime.combine(day, time(start_hour))
+    high = datetime.combine(day, time.min) + timedelta(hours=end_hour)
     total = (high - low).total_seconds() or 1
 
     def bar(start, end, css, label="", tip=""):
@@ -185,8 +246,26 @@ def _day(
                 tip=f"{getattr(b, 'client_id', 'booked')} "
                     f"{_span(b)[0]:%H:%M}–{_span(b)[1]:%H:%M}")
             for b in booked_today)))
+    if movable:
+        lanes.append(_lane("Movable bookings", "".join(
+            bar(*_span(m), css="held" if m.id not in stayed else "vacated",
+                label=m.client_id,
+                tip=f"{m.client_id} — "
+                    + ("stays put" if m.id not in stayed else "asked to move away"))
+            for m in on_day(movable))))
+
     lanes.append(_lane("Free", "".join(
         bar(*_span(s), css="free") for s in free_today)))
+
+    if vacating or arriving:
+        lanes.append(_lane("Rebooked", "".join(
+            [bar(d.was.start, d.was.end, css="vacated", label="↳ freed",
+                 tip=f"{d.client_id} moves out of "
+                     f"{d.was.start:%H:%M}–{d.was.end:%H:%M}")
+             for d in vacating]
+            + [bar(d.now.start, d.now.end, css="arrived", label=f"{d.client_id} ↴",
+                   tip=f"{d.client_id} moves in from {d.was.start:%a %H:%M}")
+               for d in arriving])))
 
     lanes.append(_lane("Placed", "".join(
         bar(p.range.start, p.range.end, css="placed",
@@ -268,12 +347,14 @@ _PAGE = """<!doctype html>
   --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --panel:#f9fafb;
   --avail:#dbeafe; --free:#bbf7d0; --booked:#9ca3af; --placed:#2563eb;
   --gap-ok:#a7f3d0; --gap-bad:#fca5a5; --want:#e9d5ff; --want-un:#fed7aa;
+  --held:#cbd5e1; --vacated:#fde68a; --arrived:#a78bfa;
 }}
 @media (prefers-color-scheme: dark) {{
   :root {{
     --bg:#0b0f19; --fg:#e5e7eb; --muted:#9ca3af; --line:#1f2937; --panel:#111827;
     --avail:#1e3a5f; --free:#14532d; --booked:#4b5563; --placed:#3b82f6;
     --gap-ok:#065f46; --gap-bad:#7f1d1d; --want:#4c1d95; --want-un:#7c2d12;
+    --held:#334155; --vacated:#78350f; --arrived:#5b21b6;
   }}
 }}
 * {{ box-sizing:border-box; }}
@@ -311,6 +392,13 @@ h2 {{ font-size:15px; margin:0 0 10px; font-weight:600; }}
 .bar.want {{ background:var(--want); }}
 .bar.want-unplaced {{ background:var(--want-un); }}
 .bar.client-avail {{ background:transparent; border:1px dashed var(--muted); }}
+.bar.held {{ background:var(--held); }}
+.bar.vacated {{ background:var(--vacated); border:1px dashed #b45309; }}
+.bar.arrived {{ background:var(--arrived); color:#fff; font-weight:600; }}
+.pill.move {{ border-color:#7c3aed; }}
+.rebooked {{ border:1px solid #7c3aed; border-radius:10px; padding:12px 16px;
+  margin-bottom:16px; }}
+.rebooked ul {{ margin:6px 0; padding-left:18px; }}
 .ruler .track {{ height:16px; background:none; }}
 .tick {{ position:absolute; top:0; border-left:1px solid var(--line);
   height:16px; padding-left:3px; }}

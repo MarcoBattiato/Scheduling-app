@@ -29,6 +29,10 @@
     "carol": {"availability": [
       {"date": "2026-05-06", "from": "09:00", "to": "13:00"}
     ]}
+    ,
+    "dana": {"availability": [
+      {"date": "2026-05-06", "from": "09:00", "to": "13:00"}
+    ]}
   },
 
   "requests": [
@@ -51,8 +55,8 @@
     {"id": "r6", "client": "marco", "duration": 60,
      "windows": [{"date": "2026-05-04", "from": "09:00", "to": "15:00"}]},
 
-    {"id": "r7", "client": "marco2", "duration": 90,
-     "windows": [{"date": "2026-05-04", "from": "09:00", "to": "10:30"}]}
+    {"id": "r7", "client": "marco2", "duration": 60,
+     "windows": [{"date": "2026-05-04", "from": "11:00", "to": "12:00"}]}
      
   ]
 }

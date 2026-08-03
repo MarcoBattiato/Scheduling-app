@@ -93,6 +93,44 @@ class CostConfig:
 
 
 @dataclass(frozen=True)
+class MovableAppointment:
+    """An already-accepted booking the solver is allowed to relocate.
+
+    Only ever offered as a last resort — see `solve_placements`. `allowed` is
+    where this booking may go instead: the client's own availability cropped by
+    their reschedule bounds, computed by the caller (see
+    `availability.reschedule_windows`). Staying put is always legal and is not
+    part of `allowed`, since a client's recorded availability may have drifted
+    since they booked.
+
+    Appointments that must not move — `locked`, or too close to now to give
+    fair notice (SPEC.md §4) — are simply not passed in.
+    """
+    id: str
+    client_id: ClientId
+    range: TimeRange
+    allowed: Sequence[TimeRange] = ()
+
+
+@dataclass(frozen=True)
+class Displacement:
+    """An already-accepted booking the solver wants to move, and where to.
+
+    A proposal, not a fact: obtaining the client's agreement is a separate
+    step this engine does not yet model.
+    """
+    appointment_id: str
+    client_id: ClientId
+    was: TimeRange
+    now: TimeRange
+
+    @property
+    def shift_minutes(self) -> int:
+        """How far the booking moves, in minutes, in either direction."""
+        return abs(int((self.now.start - self.was.start).total_seconds() // 60))
+
+
+@dataclass(frozen=True)
 class Placement:
     request_id: RequestId
     client_id: ClientId
@@ -106,6 +144,9 @@ class PlacementResult:
     """
     placements: Sequence[Placement] = field(default_factory=tuple)
     unplaced: Sequence[RequestId] = field(default_factory=tuple)
+    # Already-accepted bookings this solution wants to move. Empty unless
+    # displacement was both permitted and necessary.
+    displacements: Sequence[Displacement] = field(default_factory=tuple)
     # Reported raw (unnormalised, in minutes) so the numbers stay legible when
     # tuning `alpha`.
     fragmentation_minutes: int = 0
@@ -115,6 +156,10 @@ class PlacementResult:
     def all_placed(self) -> bool:
         return not self.unplaced
 
+    @property
+    def shift_minutes(self) -> int:
+        return sum(d.shift_minutes for d in self.displacements)
+
 
 @dataclass(frozen=True)
 class _Candidate:
@@ -123,3 +168,14 @@ class _Candidate:
     start_cell: int
     cell_span: int
     earliness_minutes: int
+
+
+@dataclass(frozen=True)
+class _Move:
+    """One (movable appointment, new start time) option. Staying put is not a
+    `_Move` — it is a separate literal, so "unchanged" is always available.
+    """
+    movable_index: int
+    start_cell: int
+    cell_span: int
+    shift_minutes: int
