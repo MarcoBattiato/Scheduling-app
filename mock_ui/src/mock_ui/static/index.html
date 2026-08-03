@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scheduling mock</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <strong id="who">…</strong>
+  <span class="sep">·</span>
+  <label>view as
+    <select id="role"></select>
+  </label>
+  <span class="grow"></span>
+  <span id="settings" class="settings"></span>
+  <button id="solve" class="ghost">Run scheduler</button>
+  <button id="save" class="ghost">Save session</button>
+  <button id="reset" class="ghost danger">Reset</button>
+</header>
+
+<main>
+  <section id="alerts"></section>
+
+  <div class="columns">
+    <section class="panel" id="panel-schedule">
+      <h2>Schedule</h2>
+      <div id="schedule"></div>
+    </section>
+
+    <div class="side">
+      <section class="panel" id="panel-availability">
+        <h2>Weekly availability <span class="hint" id="avail-for"></span></h2>
+        <p class="hint">Click and drag to select. This is where a booking of
+          yours may be <em>moved to</em> — it does not restrict what you ask for.</p>
+        <div id="grid"></div>
+        <button id="save-avail">Save availability</button>
+      </section>
+
+      <section class="panel" id="panel-request">
+        <h2>Ask for a booking</h2>
+        <form id="request-form">
+          <label>Length
+            <select name="duration"><option>60</option><option>90</option></select>
+          </label>
+          <label>Earliest <input type="datetime-local" name="from" required></label>
+          <label>Latest <input type="datetime-local" name="to" required></label>
+          <button type="submit">Request</button>
+        </form>
+        <div id="requests"></div>
+      </section>
+
+      <section class="panel" id="panel-log">
+        <h2>Activity</h2>
+        <div id="log"></div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

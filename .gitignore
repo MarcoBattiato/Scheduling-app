@@ -10,3 +10,7 @@ __pycache__/
 # Leading `**/` matters: a pattern containing a slash is anchored to this
 # file's directory, so a bare `examples/*.html` would only match at the root.
 **/examples/*.html
+
+# mock_ui session snapshots — regenerate by using the app
+mock_ui_session.json
+**/mock_ui_session.json

@@ -1,0 +1,57 @@
+# mock_ui
+
+A throwaway browser front end for driving `scheduling_engine` and
+`calendar_store` by hand. See SPEC.md for what it is for and what is
+deliberately crude about it.
+
+Run it:
+
+```bash
+cd mock_ui
+../scheduling_engine/.venv/bin/python -m uvicorn mock_ui.app:app --reload --port 8000
+```
+
+Then open a tab per person — `?as=alice`, `?as=bob`, `?as=provider`. **All tabs
+share one server process, hence one store and one engine**; that is the entire
+reason this is a server rather than a static page. Tabs poll every 2.5s, so one
+tab's action shows up in the others.
+
+Layers, and the rule that keeps them apart:
+
+- `state.py` — the `World`: every behaviour lives here, and it is the only
+  module that knows both packages.
+- `app.py` — HTTP only. If a route contains logic, it is in the wrong file;
+  the flow tests drive `World` directly and never go through HTTP.
+- `persistence.py` — session save/load. **Deliberately reaches into
+  `calendar_store`'s private lists**, because real persistence does not exist
+  yet and rebuilding through the public API would issue fresh appointment ids,
+  breaking the `supersedes` chain. Confined to this one file so it is obvious
+  what to delete later.
+- `static/` — one page, no build step, no framework.
+
+## The thing most worth not breaking
+
+This mock is what generates the artificial history that
+`scheduling_engine/SPEC.md` §10.1 (habitual-slot anchoring) will be judged
+against, so **`origin` has to be right**:
+
+- a slot the client asked for, or moved themselves to → `Origin.CLIENT`
+- a move the scheduler imposed and the client merely accepted →
+  `Origin.DISPLACED`
+
+The second is easy to get wrong. An accepted displacement is still a
+displacement — the client agreed, but they did not *choose* the slot, and
+recording it as a preference is precisely the failure the field exists to
+prevent. `test_flows.py` pins this.
+
+## Negotiation is owned here, temporarily
+
+The engine has no negotiation lifecycle yet, so `solve_placements` returns a
+plan nobody has agreed to. This mock holds such a plan pending, raises an
+approval per displacement, and applies the whole thing only once every affected
+client accepts. That is cruder than engine SPEC §7.4, which applies each
+confirmed move independently. When the engine grows `AcceptedChange`, this
+should lose the responsibility rather than keep a second implementation of it.
+
+Run tests: `../scheduling_engine/.venv/bin/pytest tests/` (this package shares
+the engine's venv — one interpreter can import all three).
