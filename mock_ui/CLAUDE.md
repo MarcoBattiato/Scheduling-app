@@ -8,8 +8,12 @@ Run it:
 
 ```bash
 cd mock_ui
-../scheduling_engine/.venv/bin/python -m uvicorn mock_ui.app:app --reload --port 8000
+../scheduling_engine/.venv/bin/python -m mock_ui        # --port, --reload
 ```
+
+Or in VS Code: **Run and Debug** panel (Cmd+Shift+D) → pick *"Mock UI: start
+the server"* from the dropdown → F5. That configuration is file-independent,
+unlike the Playground ones which run whichever `.json` is open.
 
 Then open a tab per person — `?as=alice`, `?as=bob`, `?as=provider`. **All tabs
 share one server process, hence one store and one engine**; that is the entire

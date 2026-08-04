@@ -2,13 +2,15 @@
   "version": "0.2.0",
   "configurations": [
     {
-      // Long-running: it keeps serving until you stop it. Then open
-      // http://localhost:8000/?as=alice (and ?as=bob, ?as=provider) in tabs.
+      // Does NOT depend on which file is open — unlike the Playground
+      // configurations below, which run "${file}". Pick this one from the
+      // dropdown at the top of the Run and Debug panel, then press F5.
+      // It keeps serving until you stop it; the terminal prints the URLs.
       "name": "Mock UI: start the server",
       "type": "debugpy",
       "request": "launch",
-      "module": "uvicorn",
-      "args": ["mock_ui.app:app", "--reload", "--port", "8000"],
+      "module": "mock_ui",
+      "args": ["--port", "8000"],
       "cwd": "${workspaceFolder}/mock_ui",
       "console": "integratedTerminal"
     },
