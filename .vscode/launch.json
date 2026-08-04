@@ -2,6 +2,17 @@
   "version": "0.2.0",
   "configurations": [
     {
+      // Long-running: it keeps serving until you stop it. Then open
+      // http://localhost:8000/?as=alice (and ?as=bob, ?as=provider) in tabs.
+      "name": "Mock UI: start the server",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["mock_ui.app:app", "--reload", "--port", "8000"],
+      "cwd": "${workspaceFolder}/mock_ui",
+      "console": "integratedTerminal"
+    },
+    {
       // Open any scenario .json and press F5 — this runs the one you are
       // looking at, at the "alpha" set inside that file. The playground is a
       // module, not a script, so VS Code's plain "Run Python File" button
