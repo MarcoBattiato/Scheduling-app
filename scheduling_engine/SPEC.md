@@ -327,27 +327,59 @@ customer** — easy to change later without touching the surrounding design.
 
 ---
 
-## 10. Cost model — DEFERRED
+## 10. Cost model — tuning deliberately deferred
 
-**Not resolved in this design pass; treated as a separable problem on purpose.**
-Carried forward as a placeholder only, not a decision:
+**Deferred to a later development stage, as a scheduling decision rather than an
+omission.** Two reasons, and they reinforce each other:
 
-- The original v1 five-tier lexicographic idea was cancellations > clients
-  affected > time-shift > priority-weighted disturbance > notice given. The
-  **cancellations tier no longer applies as originally conceived**: §7 now rules
-  that the solver never chooses to cancel a third party, so "number of
-  cancellations in *this* candidate solution" isn't a variable the solver is
-  weighing — a `NECESSARY` request's cancellation already happened, unconditionally,
-  at creation time (§6), before any solve runs. The remaining four tiers (clients
-  affected > time-shift > priority-weighted disturbance > notice given) are a
-  reasonable starting point for ranking candidate joint solutions; revisit whether
-  "number of still-unsatisfied `NECESSARY` requests" deserves to be its own
-  dominant tier instead, given it's the closest analogue to the old cancellation
-  concern.
-- §5/§7 additionally require an urgency-weighted "requests satisfied" term, since
-  the solver now jointly optimizes over a batch with partial solutions allowed.
-  How these two combine (is satisfaction lexicographically above disruption, or
-  blended?) is explicitly unresolved.
+- **It is decoupled from everything else.** Provided the history carries the
+  data a term might need (§10.0), changing how candidate solutions are *ranked*
+  touches nothing but the objective function. Nothing else in the engine, the
+  store, or the app depends on which weights win.
+- **It is the part the customer must have a say in.** How much fragmentation is
+  worth how much delay, how far a client may be pushed to fit someone in — these
+  are business judgements, not engineering ones, and they are far easier to
+  settle by pointing at a working app than by discussing them in the abstract.
+
+So the intended order is: build something demonstrable, run it, gather real
+history, *then* tune against that conversation.
+
+What already exists is provisional and marked as such in the code — the α blend
+of fragmentation against earliness (§7), the displacement-count tier, and the
+choice to weight earliness and displacement shift alike. None of it is a
+settled answer to this section.
+
+### 10.0 What is NOT deferred: what the history must capture
+
+Weights can be changed whenever. **Data that was never recorded cannot be
+recovered**, so the capture requirements are settled now even though their use
+is not. `calendar_store` therefore keeps, and must go on keeping:
+
+- **Cancelled appointments.** A cancelled booking is still evidence that a
+  client once held that slot. Deletion destroys it.
+- **Where a booking originally sat.** Rescheduling writes a new row and retires
+  the old one rather than overwriting the range, so the whole trail survives.
+- **Whether a slot was chosen or imposed** (`Origin.CLIENT` vs
+  `Origin.DISPLACED`). Without this, anything learning from history learns where
+  the *solver* put people, and the engine would launder its own rescheduling
+  into a client's apparent preferences — see §10.1.
+
+**Known gaps**, recorded so the decision to leave them is visible rather than
+accidental. Each is irrecoverable after the fact, so each should be settled
+before any history worth keeping is generated:
+
+- **No timestamps.** Rows carry no record of *when* a booking was made,
+  cancelled or moved — only when the appointment itself is. A "notice given"
+  term (below) cannot be computed without it, and recency-weighting of history
+  is impossible.
+- **No attendance.** `AppointmentStatus` has no `COMPLETED` / `NO_SHOW`, because
+  nothing can currently set them. A client who does not turn up is weak evidence
+  that they like that slot.
+- **No cancellation provenance.** A cancellation does not record whether the
+  client or the provider initiated it — the same distinction `origin` draws for
+  moves, missing for cancellations.
+- **Declined reschedule offers are not persisted.** A client refusing to move is
+  a strong signal about that slot; today it lives only in `mock_ui`'s memory.
 
 ### 10.1 Habitual-slot anchoring — agreed in principle, not yet implemented
 
@@ -373,7 +405,7 @@ Agreed so far:
   is a proxy for "do not make people wait needlessly", and for an established
   client "their usual slot" states that better. Clients without an anchor (new,
   or pattern not yet formed) keep earliness as today. This also avoids adding a
-  fourth term to the unresolved composition above.
+  fourth term to the unresolved composition in §10.2.
 - **Self-reinforcement is intended here.** For preference *learning* it would be
   a flaw; for stability it is the product.
 - **Forced moves must not become the pattern.** A displaced booking is the
@@ -385,6 +417,27 @@ Agreed so far:
 
 Still open: how many weeks of history count, whether the anchor decays when a
 client's pattern shifts, and what a `provider-self` pseudo-client's anchor means.
+
+### 10.2 Carried forward from v1, still unresolved
+
+The material below predates this pass and is a placeholder, not a decision:
+
+- The original v1 five-tier lexicographic idea was cancellations > clients
+  affected > time-shift > priority-weighted disturbance > notice given. The
+  **cancellations tier no longer applies as originally conceived**: §7 now rules
+  that the solver never chooses to cancel a third party, so "number of
+  cancellations in *this* candidate solution" isn't a variable the solver is
+  weighing — a `NECESSARY` request's cancellation already happened, unconditionally,
+  at creation time (§6), before any solve runs. The remaining four tiers (clients
+  affected > time-shift > priority-weighted disturbance > notice given) are a
+  reasonable starting point for ranking candidate joint solutions; revisit whether
+  "number of still-unsatisfied `NECESSARY` requests" deserves to be its own
+  dominant tier instead, given it's the closest analogue to the old cancellation
+  concern.
+- §5/§7 additionally require an urgency-weighted "requests satisfied" term, since
+  the solver now jointly optimizes over a batch with partial solutions allowed.
+  How these two combine (is satisfaction lexicographically above disruption, or
+  blended?) is explicitly unresolved.
 
 Do not implement against this section as-is — revisit it as its own focused pass
 before writing the actual objective function.
