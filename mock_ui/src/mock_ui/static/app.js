@@ -104,6 +104,9 @@ function renderSchedule() {
             <span class="name">${a.client_id}</span>
             ${a.origin === "displaced" ? `<span class="tag">moved by clinic</span>` : ""}
             ${a.locked ? `<span class="tag">locked</span>` : ""}
+            ${isProvider() && isPast(a.end)
+              ? `<button class="link" onclick="attend(${a.id}, true)">attended</button>
+                 <button class="link" onclick="attend(${a.id}, false)">no-show</button>` : ""}
             ${(isProvider() || a.client_id === me)
               ? `<button class="link" onclick="cancelAppt(${a.id})">cancel</button>` : ""}
           </div>`).join("")}
@@ -175,7 +178,16 @@ function renderRequests() {
 
 window.respond = async (id, accept) => { await api(`/api/approvals/${id}`, {accept}); refresh(); };
 window.cancelAppt = async (id) => {
-  if (confirm("Cancel this appointment?")) { await api(`/api/appointments/${id}/cancel`); refresh(); }
+  // Who cancels matters: a client dropping their slot says something about
+  // that slot, the provider closing a day says nothing about the client.
+  if (confirm("Cancel this appointment?")) {
+    await api(`/api/appointments/${id}/cancel`, {by_provider: isProvider()});
+    refresh();
+  }
+};
+window.attend = async (id, attended) => {
+  await api(`/api/appointments/${id}/attendance`, {attended});
+  refresh();
 };
 window.withdraw = async (id) => { await api(`/api/requests/${id}/withdraw`); refresh(); };
 
@@ -259,6 +271,7 @@ const runToRange = (d, run) => ({weekday: d, from: slotLabel(run.start), to: slo
 const fmt = (iso) => new Date(iso).toLocaleString([], {
   weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
 });
+const isPast = (iso) => new Date(iso) < new Date();
 const escapeHtml = (s) => s.replace(/[&<>]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
 
 refresh();

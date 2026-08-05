@@ -81,7 +81,7 @@ def test_cancelling_frees_the_slot_and_keeps_the_record(world):
 
     assert world.store.appointments_for("alice", at(0, 0), at(1, 0)) == []
     history = world.store.appointment_history("alice", at(0, 0), at(1, 0))
-    assert [a.status for a in history] == [AppointmentStatus.CANCELLED]
+    assert [a.status for a in history] == [AppointmentStatus.CANCELLED_BY_CLIENT]
 
 
 def test_a_client_moving_their_own_booking_counts_as_their_choice(world):
@@ -139,7 +139,7 @@ def test_accepting_applies_the_plan_and_records_it_as_a_displacement(world):
     assert alice.range.start == at(0, 9)
 
     moved = [a for a in world.store.appointment_history("bob", at(0, 0), at(5, 0))
-             if a.is_live]
+             if a.occupies_slot]
     assert len(moved) == 1
     assert moved[0].origin is Origin.DISPLACED, (
         "bob agreed to move but did not choose the slot — recording it as his "
@@ -172,7 +172,7 @@ def test_a_displaced_client_is_never_simply_cancelled(world):
     world.respond_to_approval(approval.id, accept=True)
 
     live = [a for a in world.store.appointment_history("bob", at(-7, 0), at(14, 0))
-            if a.is_live]
+            if a.occupies_slot]
     assert len(live) == 1, "bob still has an appointment; he was moved, not dropped"
 
 

@@ -23,11 +23,37 @@ class AppointmentStatus(str, Enum):
 
     A booking that was cancelled, or moved elsewhere, is evidence about a
     client's habits — and evidence you cannot recover once the row is gone.
-    Only `BOOKED` rows occupy time; the rest are the record of what happened.
+
+    Cancellation carries *who* cancelled in the status itself rather than in a
+    separate field, so a cancellation cannot be recorded without saying whose
+    it was. A client dropping their slot says something about that slot; the
+    provider closing the day says nothing about the client at all.
     """
     BOOKED = "booked"
-    CANCELLED = "cancelled"
+    COMPLETED = "completed"                     # the client attended
+    NO_SHOW = "no_show"                         # the slot was held and wasted
+    CANCELLED_BY_CLIENT = "cancelled_by_client"
+    CANCELLED_BY_PROVIDER = "cancelled_by_provider"
     SUPERSEDED = "superseded"   # rescheduled; `supersedes` on the newer row points back
+
+
+class Party(str, Enum):
+    """Who acted. Used when cancelling; `Origin` covers who chose a slot."""
+    CLIENT = "client"
+    PROVIDER = "provider"
+
+
+_CANCELLED = {
+    AppointmentStatus.CANCELLED_BY_CLIENT,
+    AppointmentStatus.CANCELLED_BY_PROVIDER,
+}
+# An appointment that happened, or is still going to, held its slot. Only
+# cancelling or moving it gives the time back.
+_HELD = {
+    AppointmentStatus.BOOKED,
+    AppointmentStatus.COMPLETED,
+    AppointmentStatus.NO_SHOW,
+}
 
 
 class Origin(str, Enum):
@@ -89,6 +115,15 @@ class Appointment:
     supersedes: Optional[int] = None  # the appointment this one replaces, if any
 
     @property
-    def is_live(self) -> bool:
-        """Whether this row actually occupies time on the calendar."""
-        return self.status is AppointmentStatus.BOOKED
+    def occupies_slot(self) -> bool:
+        """Whether this row holds its time on the calendar.
+
+        A completed appointment, and even one the client failed to turn up to,
+        held that slot as surely as an upcoming booking does — only cancelling
+        or rescheduling gives the time back.
+        """
+        return self.status in _HELD
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self.status in _CANCELLED

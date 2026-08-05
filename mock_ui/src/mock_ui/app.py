@@ -15,6 +15,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from calendar_store import Party
+
 from . import persistence
 from .state import PROVIDER, World
 
@@ -51,6 +53,14 @@ class MoveIn(BaseModel):
 
 class ApprovalIn(BaseModel):
     accept: bool
+
+
+class CancelIn(BaseModel):
+    by_provider: bool = False
+
+
+class AttendanceIn(BaseModel):
+    attended: bool
 
 
 class SettingsIn(BaseModel):
@@ -99,12 +109,26 @@ def withdraw_request(request_id: int):
 
 
 @app.post("/api/appointments/{appointment_id}/cancel")
-def cancel_appointment(appointment_id: int):
+def cancel_appointment(appointment_id: int, payload: CancelIn = CancelIn()):
     try:
-        world.cancel_appointment(appointment_id)
+        world.cancel_appointment(
+            appointment_id,
+            by=Party.PROVIDER if payload.by_provider else Party.CLIENT,
+        )
     except KeyError:
         raise HTTPException(404, "no such appointment") from None
     world.solve()
+    return {"ok": True}
+
+
+@app.post("/api/appointments/{appointment_id}/attendance")
+def mark_attendance(appointment_id: int, payload: AttendanceIn):
+    try:
+        world.mark_attendance(appointment_id, payload.attended)
+    except KeyError:
+        raise HTTPException(404, "no such appointment") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
     return {"ok": True}
 
 

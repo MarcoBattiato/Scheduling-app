@@ -5,6 +5,7 @@ from .models import (
     ClientAvailabilityRule,
     Kind,
     Origin,
+    Party,
 )
 from .queries import crop, intersect, negate, union
 from .segments import TimeSegment, to_segments
@@ -17,6 +18,7 @@ __all__ = [
     "ClientAvailabilityRule",
     "Kind",
     "Origin",
+    "Party",
     "AvailabilityStore",
     "TimeSegment",
     "to_segments",

@@ -363,23 +363,35 @@ is not. `calendar_store` therefore keeps, and must go on keeping:
   `Origin.DISPLACED`). Without this, anything learning from history learns where
   the *solver* put people, and the engine would launder its own rescheduling
   into a client's apparent preferences — see §10.1.
+- **Who cancelled** (`CANCELLED_BY_CLIENT` vs `CANCELLED_BY_PROVIDER`). A client
+  dropping their slot is evidence about that slot; the provider closing a day
+  says nothing about the client, and reading the two alike would be worse than
+  reading neither.
+- **Whether the client turned up** (`COMPLETED` / `NO_SHOW`, recorded by the
+  provider). Someone who did not attend is weak evidence that they wanted that
+  time.
 
-**Known gaps**, recorded so the decision to leave them is visible rather than
-accidental. Each is irrecoverable after the fact, so each should be settled
-before any history worth keeping is generated:
+### 10.0.1 Considered and deliberately not captured
 
-- **No timestamps.** Rows carry no record of *when* a booking was made,
-  cancelled or moved — only when the appointment itself is. A "notice given"
-  term (below) cannot be computed without it, and recency-weighting of history
-  is impossible.
-- **No attendance.** `AppointmentStatus` has no `COMPLETED` / `NO_SHOW`, because
-  nothing can currently set them. A client who does not turn up is weak evidence
-  that they like that slot.
-- **No cancellation provenance.** A cancellation does not record whether the
-  client or the provider initiated it — the same distinction `origin` draws for
-  moves, missing for cancellations.
-- **Declined reschedule offers are not persisted.** A client refusing to move is
-  a strong signal about that slot; today it lives only in `mock_ui`'s memory.
+**Timestamps on rows** — when a booking was made, cancelled or moved. Rejected
+after weighing it, not overlooked:
+
+- Anchoring cares *when the appointment happened*, which is `range.start`, not
+  when it was booked. Ordering of history is available anyway, since ids are
+  monotonic.
+- The "notice given" tier of §10.2 does not need them either: notice is
+  `appointment.start − now`, computed at solve time from live inputs.
+
+The one thing lost is **cancellation lead time** — dropping a slot three weeks
+out versus one hour out are different behaviours, and only a stored
+`cancelled_at` could tell them apart. Attendance marking covers the severe end
+of that, so the residual gap is small. Revisit only if late cancellations turn
+out to be worth pricing.
+
+**Declined reschedule offers** are also not persisted. A refusal marks that
+appointment unmovable for subsequent solves and nothing more; there is no
+per-date block of the kind §9 describes. Deliberately simpler: the alternative
+adds a second kind of history for a signal that has no consumer yet.
 
 ### 10.1 Habitual-slot anchoring — agreed in principle, not yet implemented
 

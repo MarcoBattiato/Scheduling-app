@@ -26,9 +26,17 @@ class Kind(str, Enum):
 
 
 class AppointmentStatus(str, Enum):
-    BOOKED = "booked"           # the only status that occupies time
-    CANCELLED = "cancelled"
+    BOOKED = "booked"
+    COMPLETED = "completed"                       # the client attended
+    NO_SHOW = "no_show"                           # the slot was held and wasted
+    CANCELLED_BY_CLIENT = "cancelled_by_client"
+    CANCELLED_BY_PROVIDER = "cancelled_by_provider"
     SUPERSEDED = "superseded"   # rescheduled away; a newer row supersedes it
+
+
+class Party(str, Enum):
+    CLIENT = "client"
+    PROVIDER = "provider"
 
 
 class Origin(str, Enum):
@@ -70,7 +78,9 @@ class Appointment:
     supersedes: Optional[int] = None  # id of the appointment this one replaces
 
     @property
-    def is_live(self) -> bool: ...   # status is BOOKED
+    def occupies_slot(self) -> bool: ...   # BOOKED, COMPLETED or NO_SHOW
+    @property
+    def is_cancelled(self) -> bool: ...    # either CANCELLED_BY_* status
 
 
 @dataclass(frozen=True)
@@ -139,8 +149,16 @@ def book_appointment(
     *, locked: bool = False, notes: Optional[str] = None,
 ) -> Appointment: ...
 
-def cancel_appointment(appointment_id: int) -> Appointment: ...          # raises KeyError if unknown
-    # sets status to CANCELLED and returns the updated row; nothing is deleted
+def cancel_appointment(appointment_id: int, *, by: Party) -> Appointment: ...
+    # raises KeyError if unknown. Sets CANCELLED_BY_CLIENT or
+    # CANCELLED_BY_PROVIDER and returns the updated row; nothing is deleted.
+    # `by` is required: who cancelled is part of the record, not an optional
+    # detail, and a default would let it be forgotten.
+
+def mark_attendance(appointment_id: int, *, attended: bool) -> Appointment: ...
+    # BOOKED -> COMPLETED or NO_SHOW. raises KeyError if unknown, ValueError if
+    # the appointment is not BOOKED — something cancelled or moved never
+    # happened at that time, so it can be neither attended nor missed.
 
 def reschedule_appointment(
     appointment_id: int, start: datetime, end: datetime, *, origin: Origin = Origin.CLIENT,
@@ -188,8 +206,9 @@ def to_segments(calendar: portion.Interval) -> list[TimeSegment]: ...
   non-overlapping.
 - `Appointment` rows are never merged or normalized — two back-to-back
   bookings stay two separate rows.
-- `appointments_for` returns only rows with `status == BOOKED`. Cancelled and
-  superseded rows never occupy time.
+- `appointments_for` returns rows that hold their slot — `BOOKED`, `COMPLETED`
+  or `NO_SHOW`. An appointment the client missed still consumed that hour; only
+  cancelling or rescheduling gives the time back.
 - An appointment id, once issued, always resolves — cancelling or rescheduling
   changes a row's status but never removes it. A rescheduled booking therefore
   has two ids: the retired one and the new one, linked by `supersedes`.

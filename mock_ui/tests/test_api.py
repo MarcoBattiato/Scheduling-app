@@ -88,8 +88,45 @@ def test_cancelling_an_appointment_frees_it(client):
     after = client.get("/api/state").json()
     assert not any(a["id"] == booked["id"] and a["status"] == "booked"
                    for a in after["appointments"])
-    assert any(a["id"] == booked["id"] and a["status"] == "cancelled"
+    # Cancelled *by whom* is part of the status, so history can tell a client
+    # dropping their slot from the provider closing the day.
+    assert any(a["id"] == booked["id"] and a["status"] == "cancelled_by_client"
                for a in after["appointments"]), "the record survives"
+
+
+def test_the_provider_cancelling_is_recorded_differently(client):
+    state = client.get("/api/state").json()
+    booked = next(a for a in state["appointments"] if a["status"] == "booked")
+
+    client.post(f"/api/appointments/{booked['id']}/cancel", json={"by_provider": True})
+
+    after = client.get("/api/state").json()
+    assert any(a["id"] == booked["id"] and a["status"] == "cancelled_by_provider"
+               for a in after["appointments"])
+
+
+def test_the_provider_can_record_attendance(client):
+    state = client.get("/api/state").json()
+    booked = next(a for a in state["appointments"] if a["status"] == "booked")
+
+    assert client.post(f"/api/appointments/{booked['id']}/attendance",
+                       json={"attended": False}).status_code == 200
+
+    after = client.get("/api/state").json()
+    assert any(a["id"] == booked["id"] and a["status"] == "no_show"
+               for a in after["appointments"])
+
+
+def test_attendance_cannot_be_recorded_for_something_that_never_happened(client):
+    state = client.get("/api/state").json()
+    booked = next(a for a in state["appointments"] if a["status"] == "booked")
+    client.post(f"/api/appointments/{booked['id']}/cancel")
+
+    response = client.post(f"/api/appointments/{booked['id']}/attendance",
+                           json={"attended": True})
+
+    assert response.status_code == 409
+    assert "cancelled" in response.json()["detail"]
 
 
 def test_settings_are_clamped_to_something_sensible(client):

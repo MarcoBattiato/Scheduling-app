@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Sequence
 
-from calendar_store import Appointment, AvailabilityStore, Origin, TimeSegment
+from calendar_store import Appointment, AvailabilityStore, Origin, Party, TimeSegment
 from scheduling_engine import (
     BookingRequest,
     CostConfig,
@@ -145,13 +145,24 @@ class World:
         request.status = "withdrawn"
         self._note(f"{request.client_id} withdrew request {request_id}")
 
-    def cancel_appointment(self, appointment_id: int) -> Appointment:
-        appointment = self.store.cancel_appointment(appointment_id)
+    def cancel_appointment(
+        self, appointment_id: int, *, by: Party = Party.CLIENT
+    ) -> Appointment:
+        appointment = self.store.cancel_appointment(appointment_id, by=by)
         self._note(
-            f"{appointment.client_id} cancelled "
+            f"{by.value} cancelled {appointment.client_id}'s "
             f"{appointment.range.start:%a %d %b %H:%M}"
         )
         return appointment
+
+    def mark_attendance(self, appointment_id: int, attended: bool) -> Appointment:
+        """The provider recording whether the client turned up."""
+        marked = self.store.mark_attendance(appointment_id, attended=attended)
+        self._note(
+            f"{marked.client_id} {'attended' if attended else 'did not show for'} "
+            f"{marked.range.start:%a %d %b %H:%M}"
+        )
+        return marked
 
     def move_appointment(
         self, appointment_id: int, start: datetime, end: datetime

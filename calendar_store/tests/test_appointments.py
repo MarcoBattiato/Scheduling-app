@@ -6,6 +6,7 @@ from calendar_store import (
     AppointmentStatus,
     AvailabilityStore,
     Origin,
+    Party,
     TimeSegment,
 )
 
@@ -72,10 +73,11 @@ def test_cancel_appointment_frees_the_time_but_keeps_the_record():
     store = AvailabilityStore()
     appointment = store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
 
-    cancelled = store.cancel_appointment(appointment.id)
+    cancelled = store.cancel_appointment(appointment.id, by=Party.CLIENT)
 
-    assert cancelled.status is AppointmentStatus.CANCELLED
-    assert not cancelled.is_live
+    assert cancelled.status is AppointmentStatus.CANCELLED_BY_CLIENT
+    assert cancelled.is_cancelled
+    assert not cancelled.occupies_slot
     assert cancelled.id == appointment.id
     # The slot is free again...
     assert store.appointments_for("alice", dt(2026, 5, 5), dt(2026, 5, 6)) == []
@@ -86,7 +88,7 @@ def test_cancel_appointment_frees_the_time_but_keeps_the_record():
 def test_cancel_unknown_appointment_raises():
     store = AvailabilityStore()
     with pytest.raises(KeyError):
-        store.cancel_appointment(999)
+        store.cancel_appointment(999, by=Party.CLIENT)
 
 
 def test_reschedule_appointment_writes_a_new_row_and_retires_the_old_one():
@@ -150,7 +152,7 @@ def test_cancelling_a_rescheduled_appointment_leaves_the_whole_trail():
     store = AvailabilityStore()
     first = store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
     moved = store.reschedule_appointment(first.id, dt(2026, 5, 6, 15, 0), dt(2026, 5, 6, 16, 0))
-    store.cancel_appointment(moved.id)
+    store.cancel_appointment(moved.id, by=Party.CLIENT)
 
     assert store.appointments_for("alice", dt(2026, 5, 1), dt(2026, 5, 30)) == []
     assert len(store.appointment_history("alice", dt(2026, 5, 1), dt(2026, 5, 30))) == 2
@@ -159,7 +161,8 @@ def test_cancelling_a_rescheduled_appointment_leaves_the_whole_trail():
 def test_history_is_per_client_and_windowed_like_the_live_query():
     store = AvailabilityStore()
     store.cancel_appointment(
-        store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0)).id
+        store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0)).id,
+        by=Party.CLIENT,
     )
     store.book_appointment("bob", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
 
@@ -172,3 +175,57 @@ def test_reschedule_unknown_appointment_raises():
     store = AvailabilityStore()
     with pytest.raises(KeyError):
         store.reschedule_appointment(999, dt(2026, 5, 12, 9, 0), dt(2026, 5, 12, 10, 0))
+
+
+def test_attendance_is_recorded_by_the_provider():
+    store = AvailabilityStore()
+    kept = store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
+    missed = store.book_appointment("bob", "haircut", dt(2026, 5, 5, 16, 0), dt(2026, 5, 5, 17, 0))
+
+    assert store.mark_attendance(kept.id, attended=True).status is AppointmentStatus.COMPLETED
+    assert store.mark_attendance(missed.id, attended=False).status is AppointmentStatus.NO_SHOW
+
+
+def test_an_attended_or_missed_appointment_still_held_its_slot():
+    """Only cancelling or moving gives the time back. Someone who failed to
+    turn up occupied that hour as surely as someone who did.
+    """
+    store = AvailabilityStore()
+    appointment = store.book_appointment(
+        "alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0)
+    )
+    store.mark_attendance(appointment.id, attended=False)
+
+    assert store.appointments_for("alice", dt(2026, 5, 5), dt(2026, 5, 6))
+
+
+def test_attendance_cannot_be_recorded_for_a_cancelled_appointment():
+    store = AvailabilityStore()
+    appointment = store.book_appointment(
+        "alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0)
+    )
+    store.cancel_appointment(appointment.id, by=Party.CLIENT)
+
+    with pytest.raises(ValueError, match="cancelled_by_client"):
+        store.mark_attendance(appointment.id, attended=True)
+
+
+def test_who_cancelled_is_part_of_the_record():
+    store = AvailabilityStore()
+    theirs = store.book_appointment("alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
+    ours = store.book_appointment("bob", "haircut", dt(2026, 5, 5, 16, 0), dt(2026, 5, 5, 17, 0))
+
+    assert (store.cancel_appointment(theirs.id, by=Party.CLIENT).status
+            is AppointmentStatus.CANCELLED_BY_CLIENT)
+    assert (store.cancel_appointment(ours.id, by=Party.PROVIDER).status
+            is AppointmentStatus.CANCELLED_BY_PROVIDER)
+
+
+def test_cancelling_will_not_let_you_forget_whose_cancellation_it_was():
+    store = AvailabilityStore()
+    appointment = store.book_appointment(
+        "alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0)
+    )
+
+    with pytest.raises(TypeError):
+        store.cancel_appointment(appointment.id)

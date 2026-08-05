@@ -23,6 +23,7 @@ from .models import (
     ClientAvailabilityRule,
     Kind,
     Origin,
+    Party,
 )
 from .segments import TimeSegment, to_segments
 
@@ -248,17 +249,44 @@ class AvailabilityStore:
         self._appointments.append(appointment)
         return appointment
 
-    def cancel_appointment(self, appointment_id: int) -> Appointment:
+    def cancel_appointment(self, appointment_id: int, *, by: Party) -> Appointment:
         """Mark an appointment cancelled. The row stays; it is history now.
 
         Deleting it would destroy the only evidence that the client ever held
         that slot, which is exactly what anything learning from past bookings
         needs. Cancelled rows no longer occupy time — see `appointments_for`.
+
+        `by` has no default on purpose. A client dropping their own slot is
+        evidence about that slot; the provider closing a day says nothing about
+        the client, and treating the two alike would poison any reading of the
+        history. Making the caller state it means it cannot be forgotten.
         """
         appointment = self._get_appointment(appointment_id)
-        cancelled = replace(appointment, status=AppointmentStatus.CANCELLED)
+        cancelled = replace(appointment, status=(
+            AppointmentStatus.CANCELLED_BY_CLIENT if by is Party.CLIENT
+            else AppointmentStatus.CANCELLED_BY_PROVIDER
+        ))
         self._appointments[self._appointments.index(appointment)] = cancelled
         return cancelled
+
+    def mark_attendance(self, appointment_id: int, *, attended: bool) -> Appointment:
+        """Record whether the client turned up. The provider's call.
+
+        Only a booked appointment can be marked: an appointment that was
+        cancelled or moved never happened at that time, so it can be neither
+        attended nor missed.
+        """
+        appointment = self._get_appointment(appointment_id)
+        if appointment.status is not AppointmentStatus.BOOKED:
+            raise ValueError(
+                f"appointment {appointment_id} is {appointment.status.value}, "
+                "so attendance cannot be recorded for it"
+            )
+        marked = replace(appointment, status=(
+            AppointmentStatus.COMPLETED if attended else AppointmentStatus.NO_SHOW
+        ))
+        self._appointments[self._appointments.index(appointment)] = marked
+        return marked
 
     def reschedule_appointment(
         self,
@@ -305,7 +333,7 @@ class AvailabilityStore:
         """
         return [
             a for a in self._appointments
-            if a.is_live and a.client_id == client_id
+            if a.occupies_slot and a.client_id == client_id
             and a.range.start < window_end and window_start < a.range.end
         ]
 
