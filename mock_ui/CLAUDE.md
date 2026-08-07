@@ -7,13 +7,19 @@ deliberately crude about it.
 Run it:
 
 ```bash
-cd mock_ui
-../scheduling_engine/.venv/bin/python -m mock_ui        # --port, --reload
+mock_ui/run.sh          # --port, --reload
 ```
 
 Or in VS Code: **Run and Debug** panel (Cmd+Shift+D) → pick *"Mock UI: start
-the server"* from the dropdown → F5. That configuration is file-independent,
-unlike the Playground ones which run whichever `.json` is open.
+the server"* → F5. That configuration is file-independent, unlike the Playground
+ones which run whichever `.json` is open.
+
+**If it exits the instant you start it, it is the interpreter.** `python -m
+mock_ui` under a Python without the packages installed prints `No module named
+mock_ui` and returns immediately, which reads as a crash. `run.sh` picks the
+venv itself, and every launch configuration pins `"python"` for the same
+reason — relying on VS Code's selected interpreter has been the cause every
+time this has happened.
 
 Then open a tab per person — `?as=alice`, `?as=bob`, `?as=provider`. **All tabs
 share one server process, hence one store and one engine**; that is the entire

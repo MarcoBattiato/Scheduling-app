@@ -1,42 +1,55 @@
 {
+  // "python" is pinned on every configuration on purpose. Without it these
+  // run under whichever interpreter VS Code happens to have selected, and the
+  // failure mode is silent: "No module named mock_ui", printed to a terminal
+  // that closes, which reads as the server crashing on startup.
+  //
+  // The first configuration does NOT depend on which file is open — pick it
+  // from the dropdown at the top of the Run and Debug panel, then press F5.
+  // The Playground ones run "${file}", i.e. whichever .json you are looking at.
+
   "version": "0.2.0",
   "configurations": [
     {
-      // Does NOT depend on which file is open — unlike the Playground
-      // configurations below, which run "${file}". Pick this one from the
-      // dropdown at the top of the Run and Debug panel, then press F5.
-      // It keeps serving until you stop it; the terminal prints the URLs.
       "name": "Mock UI: start the server",
       "type": "debugpy",
       "request": "launch",
       "module": "mock_ui",
-      "args": ["--port", "8000"],
+      "args": [
+        "--port",
+        "8000"
+      ],
       "cwd": "${workspaceFolder}/mock_ui",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/scheduling_engine/.venv/bin/python"
     },
     {
-      // Open any scenario .json and press F5 — this runs the one you are
-      // looking at, at the "alpha" set inside that file. The playground is a
-      // module, not a script, so VS Code's plain "Run Python File" button
-      // cannot launch it directly.
       "name": "Playground: run the JSON I have open",
       "type": "debugpy",
       "request": "launch",
       "module": "scheduling_engine.playground",
-      "args": ["${file}", "--open"],
+      "args": [
+        "${file}",
+        "--open"
+      ],
       "cwd": "${workspaceFolder}/scheduling_engine",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/scheduling_engine/.venv/bin/python"
     },
     {
-      // Deliberately ignores the file's own "alpha" — the point is the
-      // comparison. Pick the one above if you want what the file says.
       "name": "Playground: compare alpha 0 / 0.5 / 1",
       "type": "debugpy",
       "request": "launch",
       "module": "scheduling_engine.playground",
-      "args": ["${file}", "--alpha", "0,0.5,1", "--open"],
+      "args": [
+        "${file}",
+        "--alpha",
+        "0,0.5,1",
+        "--open"
+      ],
       "cwd": "${workspaceFolder}/scheduling_engine",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/scheduling_engine/.venv/bin/python"
     },
     {
       "name": "Playground: examples/scenario.json",
@@ -48,7 +61,8 @@
         "--open"
       ],
       "cwd": "${workspaceFolder}/scheduling_engine",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/scheduling_engine/.venv/bin/python"
     }
   ]
 }
