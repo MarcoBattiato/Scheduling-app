@@ -1,85 +1,106 @@
-# Prompt for the review session
+# Workflow review — brief for the reviewing session
 
-Paste this into a fresh Claude Code session (a different one from the work
-being reviewed, so it has no stake in defending it).
+**You are reading this because you were asked to review how this project has
+been worked on.** Not the code: the collaboration. Carry out what follows.
+
+The person who asked wants to improve their own prompting and workflow. Be
+critical. Findings that make them look inefficient are the useful ones;
+reassurance is not what this is for.
 
 ---
 
-I want an honest review of how I have been working with you on this project,
-aimed at making my prompts and workflow better. Be critical. I am not looking
-for reassurance, and findings that make me look inefficient are the useful ones.
+## What happened here, in one paragraph
 
-**The material.** All of it is reachable from this directory; nothing needs
-attaching.
+This repository holds a scheduling system built over several sessions: a
+`calendar_store` package for availability and appointments, a
+`scheduling_engine` that places bookings with a CP-SAT solver, and a `mock_ui`
+for driving it by hand. Work proceeded conversationally — design discussion,
+then implementation, then correction. Several design decisions were revisited
+after being built. That pattern is the main thing to examine.
 
-1. `.claude/workflow_review/turns.csv` — one row per prompt, with timestamps,
-   latency, tool calls, files touched and exact token counts. Read this whole;
-   it is about 50 KB. Regenerate with:
+## What to read, and how
 
-   ```
-   python3 .claude/workflow_review/extract.py --all --format csv \
-       > .claude/workflow_review/turns.csv
-   ```
+Everything is reachable from this directory. Nothing was attached.
 
-2. **Full exchanges, one at a time.** The transcripts total several megabytes,
-   so do not read them whole — you will exhaust your context before reaching a
-   conclusion. Use the table to decide which turns matter, then:
+**1. The table — read this whole.** About 50 KB, one row per prompt.
 
-   ```
-   python3 .claude/workflow_review/extract.py --all --turn 26
-   ```
+```
+.claude/workflow_review/turns.csv
+```
 
-   That prints the prompt, the reply, and every tool call for one turn.
+Columns: `turn`, `asked_at`, `latency_s`, `prompt_chars`, `tool_calls`,
+`tools`, `files_touched`, `files`, `test_runs`, `git_commits`, `reply_chars`,
+`thinking_chars`, `in_tokens`, `cache_write_tokens`, `cache_read_tokens`,
+`out_tokens`, `prompt`.
 
-3. `git log` — the commit messages here carry the reasoning behind each
-   decision, so the log shows what was concluded while the transcript shows
-   what it cost to get there.
+If it is missing or stale, rebuild it:
 
-Budget yourself: pull perhaps fifteen or twenty turns in full, chosen from the
-table, rather than trying to read everything.
+```
+python3 .claude/workflow_review/extract.py --all --format csv \
+    > .claude/workflow_review/turns.csv
+```
 
-**What I want to know.**
+**2. Individual exchanges — one at a time.** The raw transcripts total nearly
+8 MB. **Do not read them whole**; you will exhaust your context before reaching
+a conclusion. Use the table to choose which turns matter, then:
 
-1. **Which of my prompts caused rework.** Find places where something was built,
-   then changed or undone a few turns later because my instruction was
-   ambiguous, incomplete, or contradicted something earlier. Quote both prompts
-   and say what wording would have avoided it. This is the most valuable output;
-   spend most of your effort here.
+```
+python3 .claude/workflow_review/extract.py --all --turn 26
+```
 
-2. **Where the tokens actually went.** Which turns were expensive, and was the
-   spend justified by what came out? Distinguish expensive-and-productive from
-   expensive-and-wasted. Look for: repeated reading of the same files, long
-   tool chains that ended in a small change, work that was later discarded.
+That prints the prompt, the reply, and every tool call for that turn. Budget
+yourself to roughly fifteen or twenty of these.
 
-3. **Decisions I changed my mind about**, and whether the reversal was caused by
-   new information (fine, unavoidable) or by not having thought it through
-   before asking (worth changing). Say which.
+**3. `git log`.** The commit messages here carry the reasoning behind each
+decision, not just what changed. The transcript shows what a conclusion cost to
+reach; the log shows what the conclusion was. Reading both is more informative
+than either.
 
-4. **Where I gave too little context, and where too much.** Both cost. Point at
-   specific prompts.
+## What to look for
 
-5. **Tools and features I did not use but should have.** Consider: plan mode,
+Roughly in order of value.
+
+1. **Prompts that caused rework.** Places where something was built, then
+   changed or undone a few turns later because the instruction was ambiguous,
+   incomplete, or contradicted something earlier. Quote both prompts and give
+   the wording that would have avoided it. Spend most of your effort here.
+
+2. **Where the tokens went.** Which turns were expensive, and was the spend
+   justified by what came out? Separate expensive-and-productive from
+   expensive-and-wasted. Look for repeated reading of the same files, long tool
+   chains ending in a small change, and work later discarded.
+
+3. **Reversals**, and whether each was caused by new information — unavoidable,
+   fine — or by not having thought it through before asking. Say which.
+
+4. **Too little context, and too much.** Both cost. Point at specific prompts.
+
+5. **Tools and features that went unused but would have helped.** Plan mode,
    subagents for parallel investigation, `/code-review`, custom slash commands
-   for repeated instructions, hooks for things I asked for repeatedly by hand,
-   `CLAUDE.md` for standing preferences I kept restating, and memory for facts I
+   for repeated instructions, hooks for things asked for by hand more than
+   once, `CLAUDE.md` for standing preferences restated often, memory for facts
    repeated. Only name ones that would genuinely have helped *this* work, and
-   say which turn they would have helped at.
+   say at which turn.
 
-6. **Anything I repeated more than twice.** Repetition is the clearest signal
-   that something belongs in configuration rather than in a prompt.
+6. **Anything repeated more than twice.** Repetition is the clearest sign that
+   something belongs in configuration rather than in a prompt.
 
-**How to answer.** Lead with the three or four findings that would save the most
-time or tokens, each with a concrete before/after rewrite of one of my actual
-prompts. Then the supporting detail. Keep the whole thing short enough to act
-on — a long report I skim is worse than a short one I use.
+## How to answer
 
-**Cautions.**
-- Latency in the table is wall-clock between my prompt and the last reply
-  record. It includes my own reading and typing time when I interrupted, so
-  treat large values as suspect rather than as thinking time.
-- Token counts are raw. Cache reads are much cheaper than cache writes or
-  output; do not add the four columns together and call it cost. Look up
-  current pricing if you want money figures, rather than assuming a rate.
-- Some turns are IDE noise (`<ide_opened_file>`, `<ide_selection>`) rather than
-  things I typed. Do not count those against me, but do note if they were
-  numerous enough to matter.
+Lead with the three or four findings that would save the most time or tokens,
+each with a concrete before/after rewrite of one of their actual prompts. Then
+the supporting detail. Keep it short enough to act on — a long report that gets
+skimmed is worse than a short one that gets used.
+
+## Cautions
+
+- **`latency_s` is wall clock**, prompt to last reply record. It includes the
+  person's own reading and typing time when they interrupted, and gaps where
+  they walked away. Treat large values as suspect, not as thinking time.
+- **Token counts are raw.** Cache reads are far cheaper than cache writes or
+  output; do not sum the four columns and call it cost. Look up current pricing
+  if you want money figures rather than assuming a rate.
+- **Some turns begin with `<ide_opened_file>` or `<ide_selection>`.** That is
+  the editor injecting context, not something the person typed. Do not count it
+  against them — but do say if the volume was enough to matter.
+- **One session in the logs may be this review itself.** Ignore it.
