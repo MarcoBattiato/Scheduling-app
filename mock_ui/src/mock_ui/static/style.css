@@ -132,8 +132,9 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
   border-left: 1px solid var(--line); background: repeating-linear-gradient(
     var(--bg) 0 20px, var(--line) 20px 21px); border-radius: 3px; cursor: crosshair; }
 .cal-avail { position: absolute; left: 0; right: 0; background: var(--avail);
-  opacity: .55; }
+  opacity: .55; z-index: 0; }
 .cal-block { position: absolute; left: 2px; right: 2px; border-radius: 4px;
+  z-index: 2;   /* appointments sit on top of the tint and the override dashes */
   background: var(--accent); color: #fff; font-size: 10px; line-height: 1.15;
   padding: 2px 4px; overflow: hidden; cursor: default; }
 .cal-block b { font-weight: 600; display: block; }
@@ -176,3 +177,9 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
 .client-row { display: flex; align-items: center; gap: 8px; font-size: 13px;
   padding: 2px 0; }
 .client-row .who { font-weight: 600; min-width: 60px; }
+
+/* Single-date overrides. The tint underneath already says whether the time is
+   available; the dashes only say "this date differs from the usual week". */
+.cal-exc { position: absolute; left: 0; right: 0; pointer-events: none;
+  border: 1.5px dashed #dc2626; border-radius: 3px; z-index: 1; }
+.legend .k-exc { background: var(--avail); border: 1.5px dashed #dc2626; }

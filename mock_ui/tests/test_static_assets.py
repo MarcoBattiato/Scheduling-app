@@ -191,3 +191,68 @@ def test_the_page_says_so_when_a_script_fails():
         "the handler must be registered before the scripts it reports on"
     )
     assert "unhandledrejection" in html, "a failed fetch must surface too"
+
+
+@node
+def test_the_calendar_marks_single_date_overrides():
+    """The tint is the resolved availability, so an override only needs an
+    outline: an added date is tinted inside the dashes, a removed one bare.
+    Appointments must sit above both.
+    """
+    harness = """
+      const vm = require("vm"), fs = require("fs");
+      const files = process.argv.slice(1);
+      const noop = () => {};
+      let painted = "";
+      const target = {innerHTML: "", querySelector: () => null,
+                      getBoundingClientRect: () => ({left:0,top:0,width:800,height:400})};
+      Object.defineProperty(target, "innerHTML",
+        {set(v) { painted = v; }, get() { return painted; }});
+      const sandbox = {console, CSS: {escape: (s) => s}, setInterval: noop,
+        setTimeout: noop, document: {addEventListener: noop},
+        location: {search: ""}, history: {replaceState: noop}};
+      const ctx = vm.createContext(sandbox);
+      sandbox.window = sandbox;
+      new vm.Script(fs.readFileSync(files[0], "utf8")).runInContext(ctx);
+
+      sandbox.window.renderCalendar(target, {
+        weeks: 1, start: new Date("2026-05-04T00:00"),
+        availability: [{start: "2026-05-04T09:00", end: "2026-05-04T10:00"},
+                       {start: "2026-05-04T18:00", end: "2026-05-04T20:00"}],
+        exceptions: [{start: "2026-05-04T10:00", end: "2026-05-04T11:00", kind: "remove"},
+                     {start: "2026-05-04T18:00", end: "2026-05-04T20:00", kind: "add"}],
+        blocks: [{id: "x", start: "2026-05-04T09:00", end: "2026-05-04T10:00",
+                  label: "alice"}],
+      });
+      console.log(JSON.stringify({
+        tint: (painted.match(/cal-avail/g) || []).length,
+        added: painted.includes('cal-exc add'),
+        removed: painted.includes('cal-exc remove'),
+        block: painted.includes('cal-block'),
+      }));
+    """
+    result = subprocess.run(
+        ["node", "-e", harness, str(STATIC / "calendar.js")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    drawn = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert drawn["tint"] == 2, "both available stretches are tinted"
+    assert drawn["added"], "an added date is outlined"
+    assert drawn["removed"], "a removed date is outlined too"
+    assert drawn["block"], "appointments are still drawn"
+
+
+def test_appointments_are_stacked_above_the_override_outlines():
+    css = (STATIC / "style.css").read_text()
+    import re
+
+    def z(selector):
+        block = re.search(rf"{re.escape(selector)} \{{(.*?)\}}", css, re.S)
+        found = re.search(r"z-index:\s*(\d+)", block.group(1)) if block else None
+        return int(found.group(1)) if found else 0
+
+    assert z(".cal-avail") < z(".cal-exc") < z(".cal-block"), (
+        "an appointment must never be drawn under the availability markings"
+    )

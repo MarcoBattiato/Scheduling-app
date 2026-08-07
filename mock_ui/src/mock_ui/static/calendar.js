@@ -36,7 +36,11 @@ function minutesInto(iso) {
  *   weeks        how many weeks to show
  *   start        Date inside the first week
  *   dayStart/dayEnd  hours bounding each day column
- *   availability [{start,end}]  tinted background
+ *   availability [{start,end}]  tinted background (already resolved, i.e.
+ *                              it includes added dates and excludes removed
+ *                              ones — so an override needs only an outline)
+ *   exceptions   [{start,end,kind}]  dashed outline marking a single-date
+ *                              override; "add" sits on tint, "remove" on bare
  *   blocks       [{id,start,end,label,sub,cls,data}]
  *   ghosts       [{id,start,end,label,cls}]  where something currently sits
  *   arrows       [{from,to}]  ids, drawn as a curve with a head
@@ -45,7 +49,8 @@ function minutesInto(iso) {
 function renderCalendar(el, opts) {
   const {
     weeks = 2, start = new Date(), dayStart = 8, dayEnd = 20,
-    availability = [], blocks = [], ghosts = [], arrows = [], onSelect = null,
+    availability = [], exceptions = [], blocks = [], ghosts = [], arrows = [],
+    onSelect = null,
   } = opts;
 
   const first = mondayOf(start);
@@ -69,6 +74,7 @@ function renderCalendar(el, opts) {
     return map;
   };
   const avail = byDay(availability), blocked = byDay(blocks), was = byDay(ghosts);
+  const overrides = byDay(exceptions);
 
   const hours = [];
   for (let h = dayStart; h <= dayEnd; h++) hours.push(h);
@@ -87,6 +93,9 @@ function renderCalendar(el, opts) {
         const key = ymd(d);
         return `<div class="cal-day" data-date="${key}">
           ${(avail[key] || []).map((a) => `<div class="cal-avail" style="${band(a)}"></div>`).join("")}
+          ${(overrides[key] || []).map((x) => `<div class="cal-exc ${x.kind}"
+                title="${x.kind === "remove" ? "away" : "available"} on this date only"
+                style="${band(x)}"></div>`).join("")}
           ${(was[key] || []).map((g) => `<div class="cal-block ghost ${g.cls || ""}"
                 id="cb-${g.id}" style="${band(g)}"><b>${esc(g.label || "")}</b></div>`).join("")}
           ${(blocked[key] || []).map((b) => `<div class="cal-block ${b.cls || ""}"

@@ -83,6 +83,11 @@ function renderSchedule() {
     weeks: weeksShown(),
     start: new Date(state.today + "T00:00"),
     availability: (state.availability[whose()] || []),
+    // The tint is already the resolved availability, so an override only needs
+    // outlining: an added date is blue inside the dashes, a removed one bare.
+    exceptions: ((state.exceptions || {})[whose()] || []).map((e) => ({
+      start: `${e.date}T${e.from}:00`, end: `${e.date}T${e.to}:00`, kind: e.kind,
+    })),
     blocks: live.map((a) => ({
       id: `a${a.id}`,
       start: a.start, end: a.end,
