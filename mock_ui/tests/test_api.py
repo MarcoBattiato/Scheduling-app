@@ -309,3 +309,38 @@ def test_an_exception_can_be_cleared_through_the_api(client):
     client.post("/api/exceptions", json={**body, "clear": True})
 
     assert client.get("/api/state").json()["exceptions"]["alice"] == []
+
+
+def test_a_session_is_saved_without_being_asked(client, tmp_path, monkeypatch):
+    """Losing an afternoon of hand-built history to a restart is a poor way to
+    find out that saving was manual.
+    """
+    from mock_ui import app as module
+    monkeypatch.setattr(module, "SNAPSHOT", tmp_path / "auto.json")
+
+    client.post("/api/clients", json={"id": "dana", "name": "Dana"})
+
+    assert (tmp_path / "auto.json").exists()
+    assert "dana" in (tmp_path / "auto.json").read_text()
+
+
+def test_resetting_clears_the_saved_session_too(client, tmp_path, monkeypatch):
+    """Otherwise a reset undoes itself at the next restart."""
+    from mock_ui import app as module
+    monkeypatch.setattr(module, "SNAPSHOT", tmp_path / "auto.json")
+    client.post("/api/clients", json={"id": "dana", "name": "Dana"})
+    assert (tmp_path / "auto.json").exists()
+
+    client.post("/api/reset")
+
+    assert not (tmp_path / "auto.json").exists()
+
+
+def test_the_snapshot_lives_beside_the_package_not_the_shell():
+    """A relative default put the session wherever you happened to launch
+    from, so a restart could silently start empty.
+    """
+    from mock_ui import app as module
+
+    assert module.SNAPSHOT.is_absolute()
+    assert module.SNAPSHOT.parent.name == "mock_ui"

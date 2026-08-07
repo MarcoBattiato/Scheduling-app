@@ -324,3 +324,65 @@ def test_clearing_an_added_exception_removes_it_too(world):
     assert world.snapshot()["exceptions"]["alice"] == []
     assert world.availability_segments(
         "alice", saturday, saturday + timedelta(days=1)) == []
+
+
+# -- persistence ------------------------------------------------------
+
+
+def test_a_saved_session_resumes_the_workflow_not_just_the_calendar(world, tmp_path):
+    """A restored session with the bookings but an empty queue — no pending
+    request, no draft to approve, nobody waiting to answer — would be missing
+    most of what there is to play with.
+    """
+    from mock_ui import persistence
+
+    ask(world, "alice", 60, 0, 9, 17)
+    world.propose()
+    plan = next(p for p in world.plans.values() if p.status == "draft")
+    world.provider_approve(plan.id)
+    world.policy.urgency_hours = 6
+    world.immovable.add(99)
+
+    path = tmp_path / "session.json"
+    persistence.save(world, path)
+    back = persistence.load(path)
+
+    assert len(back.requests) == len(world.requests)
+    assert len(back.plans) == len(world.plans)
+    assert len(back.approvals) == len(world.approvals)
+    assert back.policy.urgency_hours == 6
+    assert 99 in back.immovable
+    assert back.last_run is not None
+
+
+def test_a_resumed_session_can_be_carried_on(world, tmp_path):
+    from mock_ui import persistence
+
+    ask(world, "alice", 60, 0, 9, 17)
+    world.propose()
+    plan = next(p for p in world.plans.values() if p.status == "draft")
+    world.provider_approve(plan.id)
+
+    path = tmp_path / "session.json"
+    persistence.save(world, path)
+    back = persistence.load(path)
+
+    (approval,) = back.pending_approvals()
+    back.respond_to_approval(approval.id, accept=True)
+
+    assert back.store.appointments_for("alice", at(0, 0), at(1, 0))
+
+
+def test_ids_issued_after_a_reload_do_not_collide(world, tmp_path):
+    from mock_ui import persistence
+
+    ask(world, "alice", 60, 0, 9, 17)
+    world.propose()
+    path = tmp_path / "session.json"
+    persistence.save(world, path)
+
+    back = persistence.load(path)
+    fresh = back.submit_request("alice", "s60", [
+        {"from": at(1, 9).isoformat(), "to": at(1, 17).isoformat()}])
+
+    assert fresh.id not in {r.id for r in world.requests.values()} | set(world.plans)

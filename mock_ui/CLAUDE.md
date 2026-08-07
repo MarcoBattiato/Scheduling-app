@@ -37,6 +37,15 @@ Layers, and the rule that keeps them apart:
   yet and rebuilding through the public API would issue fresh appointment ids,
   breaking the `supersedes` chain. Confined to this one file so it is obvious
   what to delete later.
+
+  It saves the **workflow** as well as the calendar — pending requests, drafts
+  awaiting approval, approvals awaiting an answer, refusals, and the scheduler
+  policy. A session restored with the bookings but an empty queue would be
+  missing most of what there is to play with. Saving happens automatically
+  after any successful mutation; the file lives beside the package rather than
+  beside the shell, so a restart cannot silently start empty because you
+  launched from elsewhere. **Reset deletes it**, since a reset that undoes
+  itself on the next restart is not a reset.
 - `static/calendar.js` — a week-column calendar drawn from a plain
   description: availability to tint, blocks to place, ghosts for where
   something used to be, arrows between them. The same component renders the

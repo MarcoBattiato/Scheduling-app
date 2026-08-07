@@ -22,7 +22,12 @@ from . import persistence
 from .state import PROVIDER, World
 
 STATIC = Path(__file__).parent / "static"
-SNAPSHOT = Path(os.environ.get("MOCK_UI_SNAPSHOT", "mock_ui_session.json"))
+# Beside the package, not beside the shell. Defaulting to a relative path meant
+# the session landed somewhere different depending on where you launched from,
+# so a restart could silently start empty.
+SNAPSHOT = Path(os.environ.get(
+    "MOCK_UI_SNAPSHOT", Path(__file__).resolve().parents[2] / "mock_ui_session.json"
+))
 
 app = FastAPI(title="Scheduling mock UI")
 world = persistence.load(SNAPSHOT) if SNAPSHOT.exists() else World()
@@ -300,16 +305,24 @@ def settings(payload: SettingsIn):
 
 @app.post("/api/snapshot/save")
 def snapshot_save():
+    """Explicit save. Redundant with the autosave above, kept so there is a
+    way to confirm where the session actually lives."""
     persistence.save(world, SNAPSHOT)
     return {"saved": str(SNAPSHOT)}
 
 
 @app.post("/api/reset")
 def reset(seed: bool = True):
+    """Start again — including on disk.
+
+    Leaving the saved file behind would mean a reset that undoes itself at the
+    next restart, which is the opposite of what the button says.
+    """
     global world
     world = World()
     if seed:
         seed_world(world)
+    SNAPSHOT.unlink(missing_ok=True)
     return {"ok": True}
 
 
@@ -361,6 +374,23 @@ def _asset_version() -> str:
         digest.update(name.read_bytes())
     digest.update((STATIC / "style.css").read_bytes())
     return digest.hexdigest()[:12]
+
+
+@app.middleware("http")
+async def autosave(request, call_next):
+    """Keep the session on disk without anyone having to remember to.
+
+    Losing an afternoon of hand-built history to a restart is a poor way to
+    learn that saving was manual.
+    """
+    response = await call_next(request)
+    if request.method == "POST" and response.status_code < 400 \
+            and not request.url.path.endswith("/reset"):
+        try:
+            persistence.save(world, SNAPSHOT)
+        except Exception as exc:                     # never break a request over it
+            world._note(f"could not save the session: {exc}")
+    return response
 
 
 @app.middleware("http")

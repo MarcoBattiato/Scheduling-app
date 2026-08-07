@@ -25,7 +25,15 @@ from calendar_store import (
     TimeSegment,
 )
 
-from .state import Client, World
+from .state import Approval, Client, Plan, Request, TimeRange, World
+
+
+def _dt(value):
+    return value.isoformat() if value else None
+
+
+def _back(value):
+    return datetime.fromisoformat(value) if value else None
 
 
 def save(world: World, path: Path) -> None:
@@ -61,6 +69,43 @@ def save(world: World, path: Path) -> None:
              "client_bookable": s.client_bookable, "description": s.description}
             for s in world.catalogue.services(include_inactive=True)
         ],
+        # The workflow, not just the calendar. Without these a restored session
+        # has the bookings but an empty queue: no pending requests, no draft to
+        # approve, nobody waiting to answer — which is most of what there is to
+        # play with.
+        "requests": [
+            {"id": r.id, "client_id": r.client_id, "service_id": r.service_id,
+             "duration_minutes": r.duration_minutes, "status": r.status,
+             "windows": [{"from": _dt(w.start), "to": _dt(w.end)} for w in r.windows]}
+            for r in world.requests.values()
+        ],
+        "plans": [
+            {"id": p.id, "status": p.status, "reason": p.reason, "detail": p.detail,
+             "params": p.params, "metrics": p.metrics,
+             "placements": [{**x, "start": _dt(x["start"]), "end": _dt(x["end"])}
+                            for x in p.placements],
+             "displacements": [
+                 {**x, "was_start": _dt(x["was_start"]), "was_end": _dt(x["was_end"]),
+                  "now_start": _dt(x["now_start"]), "now_end": _dt(x["now_end"])}
+                 for x in p.displacements]}
+            for p in world.plans.values()
+        ],
+        "approvals": [
+            {"id": a.id, "plan_id": a.plan_id, "client_id": a.client_id,
+             "kind": a.kind, "status": a.status, "applied": a.applied,
+             "request_id": a.request_id, "appointment_id": a.appointment_id,
+             "depends_on": list(a.depends_on),
+             "was_start": _dt(a.was_start), "was_end": _dt(a.was_end),
+             "now_start": _dt(a.now_start), "now_end": _dt(a.now_end)}
+            for a in world.approvals.values()
+        ],
+        "immovable": sorted(world.immovable),
+        "scheduler": {
+            "auto_run": world.policy.auto_run,
+            "urgency_hours": world.policy.urgency_hours,
+            "retry_after_minutes": world.policy.retry_after_minutes,
+            "last_run": _dt(world.last_run),
+        },
         "log": world.log,
     }
     path.write_text(json.dumps(payload, indent=2))
@@ -119,6 +164,44 @@ def load(path: Path) -> World:
         )
         for a in payload.get("appointments", [])
     ]
+    for entry in payload.get("requests", []):
+        world.requests[entry["id"]] = Request(
+            id=entry["id"], client_id=entry["client_id"],
+            service_id=entry["service_id"],
+            duration_minutes=entry["duration_minutes"], status=entry["status"],
+            windows=[TimeRange(_back(w["from"]), _back(w["to"]))
+                     for w in entry["windows"]],
+        )
+    for entry in payload.get("plans", []):
+        world.plans[entry["id"]] = Plan(
+            id=entry["id"], status=entry["status"], reason=entry["reason"],
+            detail=entry["detail"], params=entry["params"], metrics=entry["metrics"],
+            placements=[{**x, "start": _back(x["start"]), "end": _back(x["end"])}
+                        for x in entry["placements"]],
+            displacements=[
+                {**x, "was_start": _back(x["was_start"]), "was_end": _back(x["was_end"]),
+                 "now_start": _back(x["now_start"]), "now_end": _back(x["now_end"])}
+                for x in entry["displacements"]],
+        )
+    for entry in payload.get("approvals", []):
+        world.approvals[entry["id"]] = Approval(
+            id=entry["id"], plan_id=entry["plan_id"], client_id=entry["client_id"],
+            kind=entry["kind"], status=entry["status"], applied=entry["applied"],
+            request_id=entry["request_id"], appointment_id=entry["appointment_id"],
+            depends_on=tuple(entry["depends_on"]),
+            was_start=_back(entry["was_start"]), was_end=_back(entry["was_end"]),
+            now_start=_back(entry["now_start"]), now_end=_back(entry["now_end"]),
+        )
+    world.immovable = set(payload.get("immovable", []))
+
+    scheduler = payload.get("scheduler", {})
+    world.policy.auto_run = scheduler.get("auto_run", world.policy.auto_run)
+    world.policy.urgency_hours = scheduler.get(
+        "urgency_hours", world.policy.urgency_hours)
+    world.policy.retry_after_minutes = scheduler.get(
+        "retry_after_minutes", world.policy.retry_after_minutes)
+    world.last_run = _back(scheduler.get("last_run"))
+
     world.log = payload.get("log", [])
 
     # Restart id issuing above everything restored, so a reloaded session
@@ -130,5 +213,9 @@ def load(path: Path) -> World:
         + [a.id for a in world.store._appointments]
     )
     world.store._ids = itertools.count(highest + 1)
-    world._ids = itertools.count(highest + 1000)
+    # The World issues its own ids for requests, plans and approvals, and those
+    # are now restored too, so it must start above them as well.
+    world._ids = itertools.count(max(
+        [highest] + list(world.requests) + list(world.plans) + list(world.approvals)
+    ) + 1)
     return world
