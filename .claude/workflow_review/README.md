@@ -5,10 +5,19 @@ Not part of the app. Tooling for looking back at the sessions themselves.
 ```bash
 python3 .claude/workflow_review/extract.py            # newest session, readable
 python3 .claude/workflow_review/extract.py --all      # every session
-python3 .claude/workflow_review/extract.py --all --format csv > /tmp/turns.csv
+python3 .claude/workflow_review/extract.py --all --turn 26    # one exchange in full
+
+# what the review session reads:
+python3 .claude/workflow_review/extract.py --all --format csv \
+    > .claude/workflow_review/turns.csv
 ```
 
-Then open a **fresh** session and paste `ANALYSIS_PROMPT.md` into it.
+Then open a **fresh** session *in this directory* and paste
+`ANALYSIS_PROMPT.md` into it. Nothing needs attaching — everything is reachable
+from here.
+
+`turns.csv` is gitignored: it is regenerable, and it embeds the full text of
+every prompt.
 
 ## Why this reads the transcripts instead of keeping a log
 

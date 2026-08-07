@@ -165,6 +165,38 @@ def turns(path: Path) -> Iterator[dict]:
         }
 
 
+def show_turn(paths: List[Path], wanted: int) -> None:
+    """One exchange, in full. Reading a whole transcript is not an option at
+    several megabytes, so this is the way to look at a turn closely."""
+    n = 0
+    for path in paths:
+        rows = [r for r in records(path) if r.get("type") in ("user", "assistant")]
+        starts = [i for i, r in enumerate(rows) if is_prompt(r)]
+        for k, start in enumerate(starts):
+            n += 1
+            if n != wanted:
+                continue
+            end = starts[k + 1] if k + 1 < len(starts) else len(rows)
+            print(f"=== turn {n} · {path.stem[:8]} · {rows[start].get('timestamp', '')}\n")
+            print("--- asked ---")
+            print(prompt_text(rows[start]))
+            for record in rows[start + 1:end]:
+                for block in _blocks(record):
+                    kind = block.get("type")
+                    if kind == "text" and block.get("text", "").strip():
+                        print(f"\n--- replied ---\n{block['text']}")
+                    elif kind == "tool_use":
+                        payload = block.get("input") or {}
+                        detail = (payload.get("command")
+                                  or payload.get("file_path")
+                                  or payload.get("pattern") or "")
+                        print(f"\n[tool] {block.get('name')}: {str(detail)[:160]}")
+                    elif kind == "tool_result":
+                        pass
+            return
+    raise SystemExit(f"no turn {wanted}; there are {n}")
+
+
 FIELDS = ["turn", "session", "asked_at", "latency_s", "prompt_chars", "tool_calls",
           "tools", "files_touched", "files", "test_runs", "git_commits",
           "reply_chars", "thinking_chars",
@@ -180,7 +212,16 @@ def main() -> None:
     parser.add_argument("--format", choices=("table", "csv", "jsonl"), default="table")
     parser.add_argument("--full-prompts", action="store_true",
                         help="do not truncate prompts (csv/jsonl always keep them whole)")
+    parser.add_argument("--turn", type=int, metavar="N",
+                        help="print one turn in full — the prompt, the reply, and "
+                             "every tool call. The transcripts are far too large to "
+                             "read whole, so this is how to quote a specific exchange.")
     args = parser.parse_args()
+
+    paths = transcripts(args.project, args.all)
+    if args.turn:
+        show_turn(paths, args.turn)
+        return
 
     rows = [row for path in transcripts(args.project, args.all) for row in turns(path)]
     if not rows:

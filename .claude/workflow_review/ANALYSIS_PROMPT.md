@@ -9,16 +9,34 @@ I want an honest review of how I have been working with you on this project,
 aimed at making my prompts and workflow better. Be critical. I am not looking
 for reassurance, and findings that make me look inefficient are the useful ones.
 
-**The material.** Run this to get one row per prompt, with timestamps,
-latency, tool calls, files touched, and exact token counts:
+**The material.** All of it is reachable from this directory; nothing needs
+attaching.
 
-```
-python3 .claude/workflow_review/extract.py --all --format csv > /tmp/turns.csv
-```
+1. `.claude/workflow_review/turns.csv` — one row per prompt, with timestamps,
+   latency, tool calls, files touched and exact token counts. Read this whole;
+   it is about 50 KB. Regenerate with:
 
-The raw transcripts, if you need the actual exchanges, are in
-`~/.claude/projects/<project-slug>/*.jsonl`. Read the specific turns you want
-to quote rather than the whole file — they are large.
+   ```
+   python3 .claude/workflow_review/extract.py --all --format csv \
+       > .claude/workflow_review/turns.csv
+   ```
+
+2. **Full exchanges, one at a time.** The transcripts total several megabytes,
+   so do not read them whole — you will exhaust your context before reaching a
+   conclusion. Use the table to decide which turns matter, then:
+
+   ```
+   python3 .claude/workflow_review/extract.py --all --turn 26
+   ```
+
+   That prints the prompt, the reply, and every tool call for one turn.
+
+3. `git log` — the commit messages here carry the reasoning behind each
+   decision, so the log shows what was concluded while the transcript shows
+   what it cost to get there.
+
+Budget yourself: pull perhaps fifteen or twenty turns in full, chosen from the
+table, rather than trying to read everything.
 
 The git log is a second, independent record: this project's commit messages
 carry the reasoning behind each decision, so `git log` shows what was actually
