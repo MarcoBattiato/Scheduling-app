@@ -256,3 +256,78 @@ def test_appointments_are_stacked_above_the_override_outlines():
     assert z(".cal-avail") < z(".cal-exc") < z(".cal-block"), (
         "an appointment must never be drawn under the availability markings"
     )
+
+
+@node
+def test_the_schedule_distinguishes_every_state_a_slot_can_be_in():
+    """Booked, cancelled, asked-to-move, and the slot it would move to must be
+    separable at a glance, and the move must be drawn as a link between the two.
+    """
+    harness = """
+      const vm = require("vm"), fs = require("fs");
+      const noop = () => {};
+      const sandbox = {console, setInterval: noop, setTimeout: noop,
+        document: {addEventListener: noop, getElementById: () => null},
+        location: {search: ""}, history: {replaceState: noop},
+        URLSearchParams: class { get() { return "provider"; } },
+        fetch: () => new Promise(noop), CSS: {escape: (s) => s}};
+      const ctx = vm.createContext(sandbox);
+      sandbox.window = sandbox;
+      for (const f of process.argv.slice(1)) {
+        try { new vm.Script(fs.readFileSync(f, "utf8"), {filename: f}).runInContext(ctx); }
+        catch (e) { /* no DOM: wiring fails, the pure function still loads */ }
+      }
+      const state = {
+        appointments: [
+          {id: 1, client_id: "alice", service: "Hour", status: "booked",
+           origin: "client", start: "2026-05-04T09:00", end: "2026-05-04T10:00"},
+          {id: 2, client_id: "bob", service: "Hour", status: "cancelled_by_client",
+           origin: "client", start: "2026-05-04T11:00", end: "2026-05-04T12:00"},
+          {id: 3, client_id: "carol", service: "Hour", status: "booked",
+           origin: "client", start: "2026-05-05T09:00", end: "2026-05-05T10:00"},
+        ],
+        approvals: [
+          {id: 7, kind: "reschedule", status: "pending", client_id: "carol",
+           appointment_id: 3, was: "2026-05-05T09:00", was_end: "2026-05-05T10:00",
+           now: "2026-05-06T14:00", now_end: "2026-05-06T15:00"},
+        ],
+      };
+      const out = sandbox.window.scheduleLayers(state, "provider", null);
+      const cls = (id) => (out.blocks.find((b) => b.id === id) || {}).cls;
+      console.log(JSON.stringify({
+        booked: cls("a1"), cancelled: cls("x2"), moving: cls("a3"),
+        proposed: cls("p7"), arrows: out.arrows,
+      }));
+    """
+    result = subprocess.run(
+        ["node", "-e", harness, *[str(STATIC / s) for s in SCRIPTS]],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert "cancelled" not in (out["booked"] or ""), "an ordinary booking is plain"
+    assert out["cancelled"] == "cancelled"
+    assert "moving" in out["moving"], "an appointment asked to move is marked at-risk"
+    assert out["proposed"] == "proposed-slot"
+    assert out["arrows"] == [{"from": "a3", "to": "p7"}], (
+        "the move must be drawn from the current slot to the proposed one"
+    )
+
+
+def test_the_calendar_palette_is_defined():
+    """`background: var(--undefined)` is transparent, so a missing variable
+    makes a whole layer silently invisible — which is how availability came to
+    be absent from the schedule.
+    """
+    import re
+
+    css = (STATIC / "style.css").read_text()
+    scripts = "".join((STATIC / s).read_text() for s in SCRIPTS)
+
+    used = set(re.findall(r"var\((--[a-z-]+)\)", css))
+    # Several are declared per line, and some are set inline by the scripts.
+    declared = set(re.findall(r"(--[a-z-]+)\s*:", css))
+    declared |= set(re.findall(r"(--[a-z-]+)\s*:", scripts))
+
+    assert not (used - declared), f"CSS variables used but never defined: {used - declared}"

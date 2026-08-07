@@ -800,7 +800,9 @@ class World:
             "approvals": [
                 {"id": a.id, "plan_id": a.plan_id, "kind": a.kind,
                  "client_id": a.client_id, "status": a.status,
+                 "appointment_id": a.appointment_id,
                  "was": a.was_start.isoformat() if a.was_start else None,
+                 "was_end": a.was_end.isoformat() if a.was_end else None,
                  "now": a.now_start.isoformat(), "now_end": a.now_end.isoformat()}
                 for a in self.approvals.values()
             ],

@@ -75,9 +75,59 @@ function render() {
 
 // -- the schedule calendar -------------------------------------------
 
+function scheduleLayers(state, me, hover) {
+  // Pure: state in, calendar layers out. The most fiddly view logic here, and
+  // the only way to test it without a DOM.
+  const isProv = me === "provider";
+  const mine = (a) => isProv || a.client_id === me;
+
+  // Anyone the clinic has asked to move: their current slot is provisional, so
+  // it reads as at-risk rather than settled, with the slot it would go to
+  // drawn alongside and an arrow between the two.
+  const asked = (state.approvals || []).filter(
+    (a) => a.status === "pending" && a.kind === "reschedule" && mine(a));
+  const movingIds = new Set(asked.map((a) => a.appointment_id));
+  const pending = (state.approvals || []).filter(
+    (a) => a.status === "pending" && mine(a));
+
+  const appts = state.appointments || [];
+  const blocks = [
+    // Cancelled first: same stacking level, so anything live paints over it.
+    ...appts.filter((a) => a.status.startsWith("cancelled") && mine(a)).map((a) => ({
+      id: `x${a.id}`, start: a.start, end: a.end,
+      label: isProv ? a.client_id : a.service, cls: "cancelled",
+      data: hover ? hover(a) : null,
+    })),
+    ...appts.filter((a) => a.status === "booked" && mine(a)).map((a) => ({
+      id: `a${a.id}`, start: a.start, end: a.end,
+      label: isProv ? a.client_id : a.service,
+      sub: `${a.start.slice(11, 16)}–${a.end.slice(11, 16)}`,
+      cls: [movingIds.has(a.id) ? "moving" : "",
+            a.origin === "displaced" ? "moved" : "",
+            new Date(a.end) < new Date() ? "past" : ""].filter(Boolean).join(" "),
+      data: hover ? hover(a) : null,
+    })),
+    ...pending.map((a) => ({
+      id: `p${a.id}`, start: a.now, end: a.now_end,
+      label: a.client_id,
+      sub: a.kind === "reschedule" ? "would move here" : "offered",
+      cls: "proposed-slot",
+      data: {Client: a.client_id,
+             What: a.kind === "reschedule" ? "proposed new slot" : "offered booking",
+             From: a.was ? a.was.slice(5, 16).replace("T", " ") : "—",
+             Status: "waiting on the client"},
+    })),
+  ];
+
+  return {
+    blocks,
+    arrows: asked.map((a) => ({from: `a${a.appointment_id}`, to: `p${a.id}`})),
+  };
+}
+window.scheduleLayers = scheduleLayers;
+
 function renderSchedule() {
-  const mine = (a) => isProvider() || a.client_id === me;
-  const live = state.appointments.filter((a) => a.status === "booked" && mine(a));
+  const {blocks, arrows} = scheduleLayers(state, me, hoverData);
 
   renderCalendar($("calendar"), {
     weeks: weeksShown(),
@@ -88,15 +138,8 @@ function renderSchedule() {
     exceptions: ((state.exceptions || {})[whose()] || []).map((e) => ({
       start: `${e.date}T${e.from}:00`, end: `${e.date}T${e.to}:00`, kind: e.kind,
     })),
-    blocks: live.map((a) => ({
-      id: `a${a.id}`,
-      start: a.start, end: a.end,
-      label: isProvider() ? a.client_id : a.service,
-      sub: `${a.start.slice(11, 16)}–${a.end.slice(11, 16)}`,
-      cls: [a.origin === "displaced" ? "moved" : "",
-            new Date(a.end) < new Date() ? "past" : ""].join(" "),
-      data: hoverData(a),
-    })),
+    blocks,
+    arrows,
     onSelect: (date, from, to, available) => setException(date, from, to, available),
   });
 }

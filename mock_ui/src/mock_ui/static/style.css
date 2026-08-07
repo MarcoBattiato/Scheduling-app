@@ -2,12 +2,22 @@
   --bg: #f6f7f9; --panel: #fff; --fg: #16181d; --muted: #6b7280;
   --line: #e3e6ea; --accent: #2563eb; --warn: #ea580c; --ok: #16a34a;
   --displaced: #7c3aed;
+  /* Calendar palette. Availability is a wash rather than a block, because
+     appointments are the thing being read and it sits underneath them. */
+  --avail: #cfe4ff;
+  --booked: #16a34a;          /* a kept appointment */
+  --cancelled: #dc2626;       /* was here, is not any more */
+  --moving: #ea580c;          /* asked to move — may be about to lose this slot */
+  --proposed: #92400e;        /* where it would go */
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0d1117; --panel: #161b22; --fg: #e6edf3; --muted: #8b949e;
     --line: #26303b; --accent: #4c8dff; --warn: #fb923c; --ok: #3fb950;
     --displaced: #a78bfa;
+    --avail: #1e3a5f;
+    --booked: #2ea043; --cancelled: #f85149;
+    --moving: #db6d28; --proposed: #b45309;
   }
 }
 * { box-sizing: border-box; }
@@ -113,7 +123,10 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
 .legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block;
   margin-right: 3px; vertical-align: -1px; }
 .legend .k-avail { background: var(--avail); }
-.legend .k-book { background: var(--accent); }
+.legend .k-book { background: var(--booked); }
+.legend .k-cancelled { background: var(--cancelled); }
+.legend .k-moving { background: var(--moving); }
+.legend .k-proposed { background: var(--proposed); }
 .legend .k-moved { background: var(--displaced); }
 .legend .k-past { background: var(--line); }
 
@@ -132,14 +145,18 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
   border-left: 1px solid var(--line); background: repeating-linear-gradient(
     var(--bg) 0 20px, var(--line) 20px 21px); border-radius: 3px; cursor: crosshair; }
 .cal-avail { position: absolute; left: 0; right: 0; background: var(--avail);
-  opacity: .55; z-index: 0; }
+  opacity: .5; z-index: 0; }
 .cal-block { position: absolute; left: 2px; right: 2px; border-radius: 4px;
   z-index: 2;   /* appointments sit on top of the tint and the override dashes */
-  background: var(--accent); color: #fff; font-size: 10px; line-height: 1.15;
+  background: var(--booked); color: #fff; font-size: 10px; line-height: 1.15;
   padding: 2px 4px; overflow: hidden; cursor: default; }
 .cal-block b { font-weight: 600; display: block; }
 .cal-block i { font-style: normal; opacity: .8; }
 .cal-block.moved { background: var(--displaced); }
+.cal-block.cancelled { background: var(--cancelled); opacity: .5;
+  text-decoration: line-through; }
+.cal-block.moving { background: var(--moving); }
+.cal-block.proposed-slot { background: var(--proposed); border: 1px dashed #fff6; }
 .cal-block.past { background: var(--line); color: var(--muted); }
 .cal-block.existing { background: var(--line); color: var(--muted); }
 .cal-block.proposed { outline: 2px solid var(--ok); }
