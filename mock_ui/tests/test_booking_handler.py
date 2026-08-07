@@ -607,3 +607,50 @@ def test_dependencies_come_from_the_engine_not_from_guesswork(world):
 
     assert placement["depends_on"] == [displacement["appointment_id"]]
     assert displacement["depends_on"] == []
+
+
+# -- the planning horizon ---------------------------------------------
+
+
+def test_the_horizon_crops_what_can_be_booked(world):
+    """It bounds the problem, not just the answer: everyone's availability is
+    cropped, so a wish beyond the horizon is met as near to it as possible
+    rather than granted.
+    """
+    world.policy.horizon_days = 7
+    beyond = datetime.now() + timedelta(days=20)
+    world.submit_request("alice", "s60", beyond.isoformat())
+
+    world.propose()
+
+    (placed,) = only_plan(world).placements
+    assert placed["start"] < datetime.now() + timedelta(days=7), (
+        "placed outside the horizon the provider set"
+    )
+
+
+def test_the_provider_setting_is_what_a_run_uses(world):
+    """The bug this pins: propose() had its own default, so the policy was
+    never consulted and the setting did nothing at all.
+    """
+    world.policy.horizon_days = 3
+    world.submit_request("alice", "s60",
+                         (datetime.now() + timedelta(days=30)).isoformat())
+
+    world.propose()
+
+    plan = next((p for p in world.plans.values() if p.status == "draft"), None)
+    if plan and plan.placements:
+        assert plan.placements[0]["start"] < datetime.now() + timedelta(days=3)
+
+
+def test_an_explicit_horizon_still_overrides_the_setting(world):
+    world.policy.horizon_days = 30
+    world.submit_request("alice", "s60",
+                         (datetime.now() + timedelta(days=20)).isoformat())
+
+    world.propose(horizon_days=5)
+
+    plan = next((p for p in world.plans.values() if p.status == "draft"), None)
+    if plan and plan.placements:
+        assert plan.placements[0]["start"] < datetime.now() + timedelta(days=5)

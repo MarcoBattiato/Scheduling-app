@@ -93,7 +93,17 @@ wish is stored on the booking, so a later reschedule is judged against what the
 client wanted rather than wherever they were last put.
 
 A consequence worth knowing: a client with no availability cannot be booked at
-all now, where previously the ask itself supplied the window.
+all now, where previously the ask itself supplied the window. Deliberate for the
+moment — surfacing it to the provider as something to chase is left for later.
+
+The **planning horizon** (`SchedulingPolicy.horizon_days`, a week by default,
+settable in the header) crops everyone's availability from the day a run
+happens, so it bounds the whole problem rather than just the answer. It is also
+the dominant cost: a request may be placed anywhere in its client's
+availability, so the horizon multiplies candidate slots for every request in the
+queue — 7 days ~2s against 21 days ~11s at 25 clients and 20 requests.
+`World.snapshot` deliberately reaches further (four weeks) so the calendar view
+does not go blank beyond the planning window.
 
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider

@@ -34,12 +34,16 @@ class SchedulingPolicy:
     # How long before unsatisfied work is retried. Without this, a queue that
     # cannot be solved would either spin or sit forever.
     retry_after_minutes: int = 60
-    # How far ahead a run plans. The dominant cost knob: a request may now be
-    # placed anywhere in its client's availability, so doubling the horizon
-    # roughly doubles the candidate slots for every request in the queue.
-    # Measured at 25 clients and 20 requests: 21 days ~11s, 7 days ~2s. Which
-    # is the argument for planning a week at a time.
-    horizon_days: int = 14
+    # How far ahead a run plans, counted from the day it runs. Crops everyone's
+    # availability, clients and provider alike, so it bounds the whole problem
+    # rather than merely the answer.
+    #
+    # A week by default, which is both what a provider naturally works in and
+    # what keeps the solve cheap: a request may be placed anywhere in its
+    # client's availability, so the horizon multiplies the candidate slots for
+    # every request in the queue. Measured at 25 clients and 20 requests:
+    # 7 days ~2s, 21 days ~11s.
+    horizon_days: int = 7
 
 
 @dataclass(frozen=True)

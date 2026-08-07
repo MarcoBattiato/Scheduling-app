@@ -11,6 +11,9 @@ from mock_ui import app as app_module
 def client():
     c = TestClient(app_module.app)
     c.post("/api/reset")          # fresh, seeded world for every test
+    # The scenarios book "next Monday", which is 1-7 days out depending on the
+    # weekday the suite runs. A 7-day horizon would exclude it on a Monday.
+    c.post("/api/settings", json={"horizon_days": 10})
     return c
 
 

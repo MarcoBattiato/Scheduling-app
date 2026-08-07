@@ -346,7 +346,7 @@ class World:
         now: Optional[datetime] = None,
         reason: str = "manual",
         detail: str = "",
-        horizon_days: int = 21,
+        horizon_days: Optional[int] = None,   # None = the provider's setting
         alpha: Optional[float] = None,
         max_displacements: Optional[int] = None,
         allow_chains: Optional[bool] = None,
@@ -744,7 +744,10 @@ class World:
             seen.extend(self.store.appointments_for(client_id, *window))
         return sorted(seen, key=lambda a: a.range.start)
 
-    def snapshot(self, horizon_days: int = 21) -> dict:
+    def snapshot(self, horizon_days: int = 28) -> dict:
+        """What every view needs. Deliberately wider than the planning horizon:
+        the calendar can show four weeks, and it should not go blank just
+        because the scheduler only plans one week ahead."""
         start = date.today()
         end = start + timedelta(days=horizon_days)
         window = (datetime.combine(start, time.min), datetime.combine(end, time.min))

@@ -51,8 +51,12 @@ function render() {
 
   const s = state.settings, sch = state.scheduler || {};
   $("settings").textContent =
-    `alpha ${s.alpha} · max moves ${s.max_displacements} · `
+    `saved: alpha ${s.alpha} · max moves ${s.max_displacements} · `
+    + `${sch.horizon_days}d ahead · `
     + (sch.auto_run ? `auto (urgent <${sch.urgency_hours}h)` : "manual only");
+  // Do not fight the provider while they are typing in it.
+  const horizon = $("horizon");
+  if (horizon && document.activeElement !== horizon) horizon.value = sch.horizon_days;
 
   renderProposal();
   renderAlerts();
@@ -464,6 +468,10 @@ $("role").onchange = (e) => {
   render();
 };
 $("weeks").onchange = render;
+$("horizon").onchange = async (e) => {
+  await api("/api/settings", {horizon_days: Number(e.target.value)});
+  refresh();
+};
 $("solve").onclick = async () => {
   await api("/api/solve", {alpha: Number($("try-alpha").value),
                            max_displacements: Number($("try-moves").value)});
