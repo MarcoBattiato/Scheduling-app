@@ -13,6 +13,9 @@ const START_HOUR = 8, END_HOUR = 20, STEP = 30;
 const SLOTS = ((END_HOUR - START_HOUR) * 60) / STEP;
 
 const $ = (id) => document.getElementById(id);
+// Never 0: an empty or missing selector would draw nothing at all,
+// which looks like the calendar being broken.
+const weeksShown = () => Number($("weeks")?.value) || 2;
 const isProvider = () => me === "provider";
 const whose = () => (isProvider() ? "provider-self" : me);
 
@@ -74,7 +77,7 @@ function renderSchedule() {
   const live = state.appointments.filter((a) => a.status === "booked" && mine(a));
 
   renderCalendar($("calendar"), {
-    weeks: Number($("weeks").value),
+    weeks: weeksShown(),
     start: new Date(state.today + "T00:00"),
     availability: (state.availability[whose()] || []),
     blocks: live.map((a) => ({
@@ -188,7 +191,7 @@ function drawDraft(p) {
   }));
 
   renderCalendar(el, {
-    weeks: Number($("weeks").value),
+    weeks: weeksShown(),
     start: new Date(state.today + "T00:00"),
     availability: state.availability["provider-self"] || [],
     blocks: [...staying, ...arriving, ...landing],

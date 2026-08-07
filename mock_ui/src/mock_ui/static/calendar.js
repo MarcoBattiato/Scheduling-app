@@ -5,6 +5,13 @@
 // same component renders the real schedule and a proposed one without knowing
 // the difference between them.
 
+// Wrapped so nothing but `renderCalendar` reaches the global scope. These are
+// classic scripts sharing one lexical scope, so a name declared here and in
+// app.js is a SyntaxError that stops the *other* file executing entirely —
+// which looks like the whole page being broken rather than a naming clash.
+(function () {
+"use strict";
+
 const MIN_PER_DAY = (h) => h * 60;
 
 function ymd(d) {
@@ -174,3 +181,4 @@ function wireSelection(el, dayStart, dayEnd, onSelect) {
 }
 
 window.renderCalendar = renderCalendar;
+})();
