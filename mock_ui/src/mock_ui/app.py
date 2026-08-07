@@ -5,13 +5,14 @@ Deliberately holds no logic of its own — anything interesting belongs in
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -343,9 +344,38 @@ def seed_world(target: World) -> None:
     target._note("seeded a starting calendar")
 
 
+def _asset_version() -> str:
+    """A hash of the scripts, so their URLs change whenever they do."""
+    digest = hashlib.sha256()
+    for name in sorted(STATIC.glob("*.js")):
+        digest.update(name.read_bytes())
+    digest.update((STATIC / "style.css").read_bytes())
+    return digest.hexdigest()[:12]
+
+
+@app.middleware("http")
+async def no_stale_assets(request, call_next):
+    """Serve the scripts fresh, always.
+
+    A cached copy of one script beside a new copy of another is a silent,
+    baffling failure: the page loads, nothing works, and the cause is invisible.
+    This is a development tool, so correctness beats a cache hit.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/static") or request.url.path == "/":
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    # Version the script URLs too, so even a cache that ignores the header
+    # cannot pair a stale script with a fresh one.
+    html = (STATIC / "index.html").read_text()
+    version = _asset_version()
+    for asset in ("calendar.js", "app.js", "style.css"):
+        html = html.replace(f"/static/{asset}", f"/static/{asset}?v={version}")
+    return HTMLResponse(html)
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

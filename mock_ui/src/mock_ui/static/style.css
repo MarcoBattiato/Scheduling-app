@@ -160,3 +160,6 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
 .hovercard div { display: grid; grid-template-columns: 74px 1fr; gap: 6px;
   padding: 1px 0; }
 .hovercard span { color: var(--muted); }
+
+#boot-error { display: none; background: #b91c1c; color: #fff; padding: 10px 18px;
+  font-size: 13px; font-family: ui-monospace, monospace; }

@@ -7,6 +7,25 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<!-- Registered before any other script: a syntax error or a missing global
+     otherwise leaves a page that looks fine and does nothing, with the reason
+     only in a console nobody has open. -->
+<div id="boot-error"></div>
+<script>
+window.addEventListener("error", function (e) {
+  var box = document.getElementById("boot-error");
+  if (!box) return;
+  box.style.display = "block";
+  box.textContent = "Script error — the page will not work: " + e.message
+    + "  (" + String(e.filename || "").split("/").pop() + ":" + e.lineno + ")";
+});
+window.addEventListener("unhandledrejection", function (e) {
+  var box = document.getElementById("boot-error");
+  if (!box) return;
+  box.style.display = "block";
+  box.textContent = "Failed talking to the server: " + (e.reason && e.reason.message || e.reason);
+});
+</script>
 <header>
   <strong id="who">…</strong>
   <span class="sep">·</span>

@@ -90,7 +90,11 @@ def test_the_page_actually_renders_against_real_state():
       const vm = require("vm"), fs = require("fs");
       const files = process.argv.slice(1, -1);
       const state = JSON.parse(fs.readFileSync(process.argv[process.argv.length - 1], "utf8"));
-      const noop = () => {}, els = {};
+      // Only ids that are really in the page resolve. A stub that invents
+      // elements cannot notice one that is missing, which is the whole point.
+      const html = fs.readFileSync(files[0].replace(/[^/]+$/, "index.html"), "utf8");
+      const realIds = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+      const noop = () => {}, els = {}, missing = [];
       const el = () => ({innerHTML: "", style: {}, textContent: "", value: "2",
                          options: {length: 0}, addEventListener: noop,
                          querySelector: () => null, getBoundingClientRect: () => (
@@ -98,7 +102,10 @@ def test_the_page_actually_renders_against_real_state():
       const sandbox = {
         console, CSS: {escape: (s) => s}, setInterval: noop, setTimeout: noop,
         document: {addEventListener: noop,
-                   getElementById: (id) => (els[id] = els[id] || el()),
+                   getElementById: (id) => {
+                     if (!realIds.has(id)) { missing.push(id); return null; }
+                     return els[id] = els[id] || el();
+                   },
                    querySelectorAll: () => [], querySelector: () => null},
         location: {search: "?as=provider"}, history: {replaceState: noop},
         URLSearchParams: class { get() { return "provider"; } },
@@ -115,7 +122,7 @@ def test_the_page_actually_renders_against_real_state():
       setTimeout(() => {
         const drawn = (els["calendar"] || {}).innerHTML || "";
         console.log(JSON.stringify({
-          problems,
+          problems, missing: [...new Set(missing)],
           calendar: drawn.includes("cal-week"),
           role: ((els["role"] || {}).innerHTML || "").includes("provider"),
         }));
@@ -134,6 +141,7 @@ def test_the_page_actually_renders_against_real_state():
     outcome = json.loads(result.stdout.strip().splitlines()[-1])
 
     assert not outcome["problems"], outcome["problems"]
+    assert not outcome["missing"], f"app.js asked for ids not in the page: {outcome['missing']}"
     assert outcome["role"], "the role picker was never filled in"
     assert outcome["calendar"], "the calendar drew nothing"
 
@@ -155,3 +163,31 @@ def test_every_element_the_scripts_reach_for_exists():
     wanted = set(re.findall(r'\$\("([a-z-]+)"\)', app))
     missing = {i for i in wanted if f'id="{i}"' not in html}
     assert not missing, f"app.js reaches for ids that are not in the page: {missing}"
+
+
+def test_assets_are_served_fresh_and_versioned():
+    """A cached copy of one script beside a fresh copy of another is a silent,
+    baffling failure — the page loads and nothing works.
+    """
+    from fastapi.testclient import TestClient
+    from mock_ui import app as app_module
+
+    client = TestClient(app_module.app)
+    page = client.get("/")
+
+    for name in SCRIPTS:
+        assert f"/static/{name}?v=" in page.text, f"{name} is not cache-busted"
+    assert "no-store" in client.get("/static/app.js").headers.get("cache-control", "")
+
+
+def test_the_page_says_so_when_a_script_fails():
+    """Otherwise the only symptom is a page that does nothing, with the reason
+    in a console nobody has open.
+    """
+    html = (STATIC / "index.html").read_text()
+
+    assert 'id="boot-error"' in html
+    assert html.index("boot-error") < html.index("calendar.js"), (
+        "the handler must be registered before the scripts it reports on"
+    )
+    assert "unhandledrejection" in html, "a failed fetch must surface too"
