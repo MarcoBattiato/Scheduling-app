@@ -66,31 +66,71 @@ provider's. No login; the role is a claim, not a credential.
 
 ---
 
-## 4. The negotiation loop (mock-owned, temporary)
+## 4. When the scheduler runs
+
+**Never on submission.** A request arriving is not a reason to re-plan the
+week; it is a reason to consider re-planning at the next point the provider
+has said they want to look. Firing on every request would also make the
+calendar churn under clients who are watching it.
+
+`policy.py` decides, as a pure function of (policy, clock, queue) so the
+question "why did it run?" always has an answer and so it can be tested
+without waiting for real time. Four ways in:
+
+1. **Weekly runs** at configured (weekday, time) marks — "plan the week on
+   Monday at 08:00".
+2. **Urgency**: a waiting request whose window opens within
+   `urgency_hours` cannot wait for the weekly run, so it earns one.
+3. **Retry**: unsatisfied work is reconsidered after `retry_after_minutes`,
+   so a queue that could not be solved neither spins nor sits forever.
+4. **The provider**, explicitly — including immediately after rejecting a
+   proposal.
+
+Evaluated on each state poll, which is how a timed run happens without a
+background thread.
+
+### 4.1 ON_HOLD
+
+A request the engine could not place is **parked**. Parked requests still take
+part in runs that happen for other reasons — being parked is not being
+abandoned — but they no longer *trigger* runs of their own.
+
+That distinction is the whole point. Without it, an unplaceable request whose
+wanted date is approaching satisfies the urgency condition on every single
+tick, and the scheduler runs forever, achieving nothing each time.
+
+## 5. Who agrees to what
 
 The engine does not model negotiation yet — `AcceptedChange`, cold-asks and the
 `PROPOSED → CONFIRMED → EXERCISED` lifecycle of engine SPEC §6–§9 do not exist.
 `solve_placements` returns a *plan*: placements, plus displacements it would
-like to make. Nobody has agreed to those.
+like to make. Nobody has agreed to any of it.
 
-So this mock owns the loop, crudely and on purpose:
+So this mock owns the loop:
 
-1. A plan containing displacements is held **pending**; nothing is written.
-2. Each displacement becomes an approval request for the affected client.
-3. All accepted → the whole plan is applied at once.
-4. Any declined → the plan is discarded, that appointment is marked unmovable,
-   and the scheduler runs again without it.
+1. The scheduler runs and produces a **draft** plan. Nothing is written.
+2. The **provider** approves it — meaning it is worth asking about, not that it
+   has happened. Still nothing is written.
+3. Each affected client is asked about their own part: a new booking, or a move
+   of one they already have. Both are the same question — "is this time all
+   right?" — so both are the same object.
+4. Each answer is applied **on its own** (engine SPEC §7.4). One client
+   declining does not undo what another has already agreed to.
 
-**This is deliberately cruder than the engine's own design.** Engine SPEC §7.4
-applies each confirmed move independently and immediately, rather than gating
-the plan on unanimity, and §7.3 supersedes stale proposals rather than
-discarding a whole plan. When the engine grows a real lifecycle, this section
-is what it replaces — the mock should lose this responsibility, not keep a
-second implementation of it.
+The single thing that cannot be independent is a booking that only exists
+because somebody was going to vacate the slot. The engine reports placements
+and displacements separately with no link between them, but with chains
+forbidden a placement can depend on at most one move — the one whose old slot
+it overlaps — so the dependency is derived rather than requiring an engine
+change.
+
+A refused slot becomes a single-date block on that client's availability
+(engine SPEC §9): saying no to next Tuesday at three says nothing about
+Tuesdays in general.
 
 ---
 
-## 5. Writing history correctly
+## 5.1 Writing history correctly
 
 The reason `calendar_store` retains cancelled and superseded rows is that
 history is evidence for anchoring, and the provenance matters (see engine
@@ -127,13 +167,17 @@ what to delete later.
 
 Recorded so nobody mistakes any of it for a decision:
 
-- Whole-plan approval rather than independent application (§4).
-- A declined move marks the appointment unmovable for the rest of the session,
-  rather than blocking that date/time specifically as engine SPEC §9 describes.
-- The scheduler runs on submission and on demand, not on the five triggers of
-  engine SPEC §5.
+- A declined *move* marks that appointment unmovable for the rest of the
+  session, which is blunter than the single-date block a declined *booking*
+  gets.
+- Only one proposal may be in flight at a time. Simple and legible, but a
+  provider cannot queue two.
+- The provider approves or rejects a plan whole. Approving parts of one, and
+  locking placements so the solver reoptimises around them, is not built yet.
 - `alpha` and `max_displacements` are global controls, not per-provider
   settings.
+- No expiry on a client's approval: a client who never answers holds their part
+  of a plan open indefinitely.
 - No validation that a client's requested window is one they are available
   for — the engine deliberately does not enforce that either, since a request
   states what the client wants regardless of their standing availability.

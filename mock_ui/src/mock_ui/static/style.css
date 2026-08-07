@@ -87,3 +87,10 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
 .req.placed { color: var(--ok); }
 .req.withdrawn { color: var(--muted); text-decoration: line-through; }
 .log-line { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.alert.proposal { border-color: var(--accent); }
+.plan { margin: 10px 0; display: grid; gap: 3px; }
+.tag.ok { color: var(--ok); border-color: var(--ok); }
+.tag.move { color: var(--displaced); border-color: var(--displaced); }
+.req.on_hold { color: var(--warn); }
+#proposal:not(:empty) { margin-bottom: 16px; }

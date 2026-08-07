@@ -46,10 +46,12 @@ function render() {
   }
   sel.value = me;
 
-  const s = state.settings;
+  const s = state.settings, sch = state.scheduler || {};
   $("settings").textContent =
-    `alpha ${s.alpha} · max moves ${s.max_displacements} · bounds -${s.bounds.earlier}/+${s.bounds.later}d`;
+    `alpha ${s.alpha} · max moves ${s.max_displacements} · `
+    + (sch.auto_run ? `auto (urgent <${sch.urgency_hours}h)` : "manual only");
 
+  renderProposal();
   renderAlerts();
   renderSchedule();
   renderGrid();
@@ -63,17 +65,47 @@ function render() {
   $("panel-catalogue").style.display = isProvider() ? "" : "none";
 }
 
+function renderProposal() {
+  const plans = (state.plans || []).filter((p) => p.status === "draft");
+  if (!isProvider() || !plans.length) { $("proposal").innerHTML = ""; return; }
+
+  $("proposal").innerHTML = plans.map((p) => `
+    <div class="alert proposal">
+      <div><b>The scheduler has a proposal</b>
+        <span class="hint">(${escapeHtml(p.reason)}${p.detail ? " — " + escapeHtml(p.detail) : ""})</span></div>
+      <div class="plan">
+        ${p.placements.map((x) => `
+          <div class="req"><span class="tag ok">book</span>
+            <span>${escapeHtml(x.client_id)}</span>
+            <span class="time">${fmt(x.start)}</span></div>`).join("")}
+        ${p.displacements.map((x) => `
+          <div class="req"><span class="tag move">move</span>
+            <span>${escapeHtml(x.client_id)}</span>
+            <span class="time">${fmt(x.was)} → ${fmt(x.now)}</span></div>`).join("")}
+      </div>
+      <p class="hint">Nothing is booked yet. Approving asks each client to
+        confirm their own part; whatever comes back agreed is what happens.</p>
+      <div class="row">
+        <button onclick="approvePlan(${p.id})">Approve and ask the clients</button>
+        <button class="ghost" onclick="rejectPlan(${p.id})">Reject and re-run</button>
+      </div>
+    </div>`).join("");
+}
+
 function renderAlerts() {
   const mine = state.approvals.filter(
     (a) => a.status === "pending" && (isProvider() || a.client_id === me));
   if (!mine.length) { $("alerts").innerHTML = ""; return; }
 
   $("alerts").innerHTML = mine.map((a) => {
+    const isMove = a.kind === "reschedule";
     const body = isProvider()
-      ? `Waiting on <b>${a.client_id}</b> to agree to move
-         ${fmt(a.was)} → ${fmt(a.now)}.`
-      : `The clinic asks to move your appointment from <b>${fmt(a.was)}</b>
-         to <b>${fmt(a.now)}</b>.`;
+      ? `Waiting on <b>${a.client_id}</b> to confirm
+         ${isMove ? `a move ${fmt(a.was)} → ${fmt(a.now)}` : `a booking at ${fmt(a.now)}`}.`
+      : (isMove
+          ? `We would like to move your appointment from <b>${fmt(a.was)}</b>
+             to <b>${fmt(a.now)}</b>.`
+          : `Your appointment is offered at <b>${fmt(a.now)}</b>. Does that suit?`);
     const buttons = isProvider() ? "" : `
       <div class="row">
         <button onclick="respond(${a.id}, true)">Accept</button>
@@ -216,6 +248,8 @@ window.attend = async (id, attended) => {
   await api(`/api/appointments/${id}/attendance`, {attended});
   refresh();
 };
+window.approvePlan = async (id) => { await api(`/api/plans/${id}/approve`); refresh(); };
+window.rejectPlan = async (id) => { await api(`/api/plans/${id}/reject`); refresh(); };
 window.setService = async (id, active) => {
   await api(`/api/services/${id}/active?active=${active}`);
   refresh();

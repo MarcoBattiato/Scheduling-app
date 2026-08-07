@@ -39,18 +39,64 @@ def test_the_page_is_served(client):
     assert "Scheduling mock" in page.text
 
 
-def test_submitting_a_request_schedules_it_in_one_call(client):
+def test_submitting_a_request_queues_it_without_scheduling_anything(client):
+    """A request arriving is not a reason to re-plan the week."""
     response = client.post("/api/requests", json={
         "client_id": "alice", "service_id": "session-60",
         "windows": [{"from": at(0, 9), "to": at(0, 17)}],
     })
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["outcome"]["placed"] == 1
+    state = client.get("/api/state").json()
+    assert any(r["status"] == "pending" for r in state["requests"])
+
+
+def test_the_provider_drives_the_proposal_and_the_client_settles_it(client):
+    client.post("/api/settings", json={"auto_run": False})
+    client.post("/api/requests", json={
+        "client_id": "alice", "service_id": "session-60",
+        "windows": [{"from": at(0, 9), "to": at(0, 17)}],
+    })
+
+    ran = client.post("/api/solve").json()
+    assert ran["ran"] and ran["placements"] >= 1
+
+    plan = client.get("/api/state").json()["plans"][0]
+    assert plan["status"] == "draft"
+
+    client.post(f"/api/plans/{plan['id']}/approve")
+    approvals = client.get("/api/state").json()["approvals"]
+    assert approvals and all(a["status"] == "pending" for a in approvals)
+
+    for approval in approvals:
+        client.post(f"/api/approvals/{approval['id']}", json={"accept": True})
 
     state = client.get("/api/state").json()
     assert any(r["status"] == "placed" for r in state["requests"])
+
+
+def test_a_rejected_plan_is_not_left_in_front_of_the_provider(client):
+    client.post("/api/settings", json={"auto_run": False})
+    client.post("/api/requests", json={
+        "client_id": "alice", "service_id": "session-60",
+        "windows": [{"from": at(0, 9), "to": at(0, 17)}],
+    })
+    client.post("/api/solve")
+    plan = client.get("/api/state").json()["plans"][0]
+
+    assert client.post(f"/api/plans/{plan['id']}/reject").status_code == 200
+    assert client.post(f"/api/plans/{plan['id']}/approve").status_code == 409
+
+
+def test_the_scheduler_policy_is_configurable(client):
+    client.post("/api/settings", json={
+        "auto_run": False, "urgency_hours": 6, "retry_after_minutes": 15,
+    })
+
+    scheduler = client.get("/api/state").json()["scheduler"]
+    assert scheduler["auto_run"] is False
+    assert scheduler["urgency_hours"] == 6
+    assert scheduler["retry_after_minutes"] == 15
 
 
 def test_every_tab_sees_the_same_world(client):
@@ -65,8 +111,7 @@ def test_every_tab_sees_the_same_world(client):
     other_tab = TestClient(app_module.app)
     seen = other_tab.get("/api/state").json()
 
-    assert any(a["client_id"] == "alice" and a["status"] == "booked"
-               for a in seen["appointments"])
+    assert any(r["client_id"] == "alice" for r in seen["requests"])
 
 
 def test_availability_can_be_set_and_read_back(client):

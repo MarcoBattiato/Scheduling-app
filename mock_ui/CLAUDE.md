@@ -48,14 +48,25 @@ displacement — the client agreed, but they did not *choose* the slot, and
 recording it as a preference is precisely the failure the field exists to
 prevent. `test_flows.py` pins this.
 
+The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
+It fires on weekly marks, on urgency, on a retry timer, or when the provider
+says so, and the decision is a pure function so it is testable without waiting
+for a clock. A request the engine cannot place is parked (`on_hold`): still
+reconsidered by runs that happen anyway, but no longer triggering runs of its
+own, which is what stops an unplaceable request whose date is approaching from
+firing the urgency trigger forever.
+
 ## Negotiation is owned here, temporarily
 
 The engine has no negotiation lifecycle yet, so `solve_placements` returns a
-plan nobody has agreed to. This mock holds such a plan pending, raises an
-approval per displacement, and applies the whole thing only once every affected
-client accepts. That is cruder than engine SPEC §7.4, which applies each
-confirmed move independently. When the engine grows `AcceptedChange`, this
-should lose the responsibility rather than keep a second implementation of it.
+plan nobody has agreed to. The scheduler produces a draft; the provider approves it (which only means it
+is worth asking about); each affected client is then asked about their own part
+and **each answer is applied on its own**, per engine SPEC §7.4. The one thing
+that cannot be independent is a booking that only exists because somebody was
+going to vacate the slot — that dependency is derived from the overlap between
+a placement and a displacement's old range, since the engine does not report
+the link. When the engine grows `AcceptedChange`, this should lose the
+responsibility rather than keep a second implementation of it.
 
 Run tests: `../scheduling_engine/.venv/bin/pytest tests/` (this package shares
 the engine's venv — one interpreter can import all three).

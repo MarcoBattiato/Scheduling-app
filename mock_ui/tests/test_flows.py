@@ -1,4 +1,8 @@
-"""The flows a person can actually drive, exercised without a browser."""
+"""Availability, the catalogue, and what a client can do to their own booking.
+
+The propose/approve/answer machinery lives in test_booking_handler.py; here it
+is only used as a means of getting something into the calendar.
+"""
 from datetime import date, datetime, time, timedelta
 
 import pytest
@@ -15,10 +19,6 @@ def monday() -> date:
 
 def at(day_offset: int, hour: int, minute: int = 0) -> datetime:
     return datetime.combine(monday() + timedelta(days=day_offset), time(hour, minute))
-
-
-def iso(moment: datetime) -> str:
-    return moment.isoformat()
 
 
 @pytest.fixture
@@ -38,33 +38,34 @@ def world() -> World:
     return w
 
 
-def request(world, client, duration, day, from_hour, to_hour):
+def ask(world, client, duration, day, from_hour, to_hour):
     return world.submit_request(client, f"s{duration}", [
-        {"from": iso(at(day, from_hour)), "to": iso(at(day, to_hour))}
+        {"from": at(day, from_hour).isoformat(), "to": at(day, to_hour).isoformat()}
     ])
 
 
-# -- the ordinary path ----------------------------------------------
+def place(world, client, duration, day, from_hour, to_hour):
+    """Drive a request all the way into the calendar."""
+    request = ask(world, client, duration, day, from_hour, to_hour)
+    world.propose()
+    plan = next(p for p in world.plans.values() if p.status == "draft")
+    world.provider_approve(plan.id)
+    for approval in world.pending_approvals(plan.id):
+        world.respond_to_approval(approval.id, accept=True)
+    return request
 
 
-def test_a_request_that_fits_is_booked_without_bothering_anyone(world):
-    request(world, "alice", 60, 0, 9, 17)
-    outcome = world.solve()
-
-    assert outcome["placed"] == 1
-    assert outcome["awaiting_approval"] == 0
-    assert not world.approvals
-    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
-    assert booked.origin is Origin.CLIENT, "a slot the client asked for is their choice"
+# -- availability -----------------------------------------------------
 
 
 def test_availability_round_trips_through_the_weekly_grid(world):
     world.set_weekly_availability("alice", [
         {"weekday": 1, "from": "10:00", "to": "12:30"},
     ])
-    weekly = world.snapshot()["weekly"]["alice"]
 
-    assert weekly == [{"weekday": 1, "from": "10:00", "to": "12:30"}]
+    assert world.snapshot()["weekly"]["alice"] == [
+        {"weekday": 1, "from": "10:00", "to": "12:30"}
+    ]
 
 
 def test_setting_availability_replaces_rather_than_accumulates(world):
@@ -74,9 +75,11 @@ def test_setting_availability_replaces_rather_than_accumulates(world):
     assert [r["weekday"] for r in world.snapshot()["weekly"]["alice"]] == [3]
 
 
+# -- what a client can do to their own booking ------------------------
+
+
 def test_cancelling_frees_the_slot_and_keeps_the_record(world):
-    request(world, "alice", 60, 0, 9, 17)
-    world.solve()
+    place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
 
     world.cancel_appointment(booked.id)
@@ -87,8 +90,7 @@ def test_cancelling_frees_the_slot_and_keeps_the_record(world):
 
 
 def test_a_client_moving_their_own_booking_counts_as_their_choice(world):
-    request(world, "alice", 60, 0, 9, 17)
-    world.solve()
+    place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
 
     moved = world.move_appointment(booked.id, at(1, 14), at(1, 15))
@@ -97,146 +99,53 @@ def test_a_client_moving_their_own_booking_counts_as_their_choice(world):
     assert moved.supersedes == booked.id
 
 
-# -- the negotiation the mock owns -----------------------------------
-
-
-def _full_monday(world):
-    """Monday holds exactly one hour and bob has it, so a Monday request can
-    only be met by moving him — and Tuesday is open, so he has somewhere to go.
-    """
-    world.set_weekly_availability(PROVIDER, [
-        {"weekday": 0, "from": "09:00", "to": "10:00"},
-        {"weekday": 1, "from": "09:00", "to": "17:00"},
-    ])
-    world.set_weekly_availability(
-        "bob", [{"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)]
-    )
-    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
-
-
-def test_a_displacement_waits_for_the_client_rather_than_happening(world):
-    _full_monday(world)
-    request(world, "alice", 60, 0, 9, 10)
-
-    outcome = world.solve()
-
-    assert outcome["awaiting_approval"] == 1
-    assert outcome["placed"] == 0, "nothing is written until the client agrees"
-    (approval,) = world.approvals.values()
-    assert approval.client_id == "bob"
-    # bob has not moved, and alice is not booked
-    assert world.store.appointments_for("bob", at(0, 0), at(1, 0))[0].range.start == at(0, 9)
-    assert world.store.appointments_for("alice", at(0, 0), at(1, 0)) == []
-
-
-def test_accepting_applies_the_plan_and_records_it_as_a_displacement(world):
-    _full_monday(world)
-    request(world, "alice", 60, 0, 9, 10)
-    world.solve()
-    (approval,) = world.approvals.values()
-
-    world.respond_to_approval(approval.id, accept=True)
-
-    (alice,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
-    assert alice.range.start == at(0, 9)
-
-    moved = [a for a in world.store.appointment_history("bob", at(0, 0), at(5, 0))
-             if a.occupies_slot]
-    assert len(moved) == 1
-    assert moved[0].origin is Origin.DISPLACED, (
-        "bob agreed to move but did not choose the slot — recording it as his "
-        "preference is exactly what the origin field exists to prevent"
-    )
-
-
-def test_declining_leaves_everything_alone_and_stops_re_asking(world):
-    _full_monday(world)
-    request(world, "alice", 60, 0, 9, 10)
-    world.solve()
-    (approval,) = world.approvals.values()
-    bob_before = world.store.appointments_for("bob", at(0, 0), at(1, 0))[0]
-
-    world.respond_to_approval(approval.id, accept=False)
-
-    assert world.store.appointments_for("bob", at(0, 0), at(1, 0))[0] == bob_before
-    assert world.store.appointments_for("alice", at(0, 0), at(1, 0)) == []
-    assert bob_before.id in world.immovable
-    # Re-solving must not pester bob again with the same ask.
-    world.solve()
-    assert not [a for a in world.approvals.values() if a.status == "pending"]
-
-
-def test_a_displaced_client_is_never_simply_cancelled(world):
-    _full_monday(world)
-    request(world, "alice", 60, 0, 9, 10)
-    world.solve()
-    (approval,) = world.approvals.values()
-    world.respond_to_approval(approval.id, accept=True)
-
-    live = [a for a in world.store.appointment_history("bob", at(-7, 0), at(14, 0))
-            if a.occupies_slot]
-    assert len(live) == 1, "bob still has an appointment; he was moved, not dropped"
-
-
 def test_locked_appointments_are_never_offered_up(world):
-    """Same situation as above, except bob's hour is staff-pinned — so the
-    request simply fails rather than anyone being asked to move.
+    """Staff-pinned time is immovable, so a request that would need it simply
+    fails rather than anyone being asked to move.
     """
     world.set_weekly_availability(PROVIDER, [
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10), locked=True)
-    request(world, "alice", 60, 0, 9, 10)
+    ask(world, "alice", 60, 0, 9, 10)
 
-    outcome = world.solve()
+    world.propose()
+    plan = next(iter(world.plans.values()), None)
 
-    assert outcome["awaiting_approval"] == 0
-    assert outcome["unplaced"] == 1
+    assert plan is None or not plan.displacements
 
 
 def test_displacement_can_be_turned_off_entirely(world):
     world.max_displacements = 0
-    _full_monday(world)
-    request(world, "alice", 60, 0, 9, 10)
+    world.set_weekly_availability(PROVIDER, [
+        {"weekday": 0, "from": "09:00", "to": "10:00"},
+        {"weekday": 1, "from": "09:00", "to": "17:00"},
+    ])
+    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
+    request = ask(world, "alice", 60, 0, 9, 10)
 
-    outcome = world.solve()
+    world.propose()
 
-    assert outcome["awaiting_approval"] == 0
-    assert outcome["unplaced"] == 1
-
-
-# -- snapshot --------------------------------------------------------
-
-
-def test_the_snapshot_carries_what_every_view_needs(world):
-    request(world, "alice", 60, 0, 9, 17)
-    world.solve()
-
-    snap = world.snapshot()
-
-    assert {c["id"] for c in snap["clients"]} == {"alice", "bob"}
-    assert snap["appointments"] and snap["appointments"][0]["origin"] == "client"
-    assert "provider-self" in snap["availability"]
-    assert snap["requests"][0]["status"] == "placed"
-    assert snap["log"]
+    assert world.requests[request.id].status == "on_hold"
+    assert not world.approvals
 
 
-# -- the catalogue ---------------------------------------------------
+# -- the catalogue ----------------------------------------------------
 
 
 def test_duration_comes_from_the_service_not_the_asking(world):
-    booked = world.submit_request("alice", "s90", [
-        {"from": iso(at(0, 9)), "to": iso(at(0, 17))}
+    requested = world.submit_request("alice", "s90", [
+        {"from": at(0, 9).isoformat(), "to": at(0, 17).isoformat()}
     ])
 
-    assert booked.duration_minutes == 90
+    assert requested.duration_minutes == 90
 
 
 def test_asking_for_a_service_that_does_not_exist_is_refused(world):
     with pytest.raises(KeyError):
         world.submit_request("alice", "nope", [
-            {"from": iso(at(0, 9)), "to": iso(at(0, 17))}
+            {"from": at(0, 9).isoformat(), "to": at(0, 17).isoformat()}
         ])
 
 
@@ -245,16 +154,30 @@ def test_the_solver_measures_gaps_against_what_is_still_on_sale(world):
     like something worth preserving.
     """
     world.catalogue.deactivate_service("s90")
-    request(world, "alice", 60, 0, 9, 17)
-    world.solve()
 
     assert world.catalogue.bookable_durations() == (60,)
 
 
 def test_a_booking_against_a_discontinued_service_still_resolves(world):
-    request(world, "alice", 60, 0, 9, 17)
-    world.solve()
+    place(world, "alice", 60, 0, 9, 17)
     world.catalogue.deactivate_service("s60")
 
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
     assert world.catalogue.get_service(booked.service_type_id).name == "Hour"
+
+
+# -- snapshot ---------------------------------------------------------
+
+
+def test_the_snapshot_carries_what_every_view_needs(world):
+    place(world, "alice", 60, 0, 9, 17)
+
+    snap = world.snapshot()
+
+    assert {c["id"] for c in snap["clients"]} == {"alice", "bob"}
+    assert snap["appointments"] and snap["appointments"][0]["origin"] == "client"
+    assert "provider-self" in snap["availability"]
+    assert snap["requests"][0]["status"] == "placed"
+    assert snap["services"]
+    assert snap["scheduler"]["urgency_hours"]
+    assert snap["log"]

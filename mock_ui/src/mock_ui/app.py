@@ -74,6 +74,9 @@ class AttendanceIn(BaseModel):
 class SettingsIn(BaseModel):
     alpha: Optional[float] = None
     max_displacements: Optional[int] = None
+    auto_run: Optional[bool] = None
+    urgency_hours: Optional[int] = None
+    retry_after_minutes: Optional[int] = None
 
 
 # -- routes ---------------------------------------------------------
@@ -81,6 +84,10 @@ class SettingsIn(BaseModel):
 
 @app.get("/api/state")
 def get_state():
+    # Every poll is also a chance for the provider's schedule policy to fire.
+    # Cheap, deterministic, and avoids a background thread for something a
+    # person is watching anyway.
+    world.tick()
     return world.snapshot()
 
 
@@ -105,8 +112,9 @@ def submit_request(payload: RequestIn):
         )
     except KeyError as exc:
         raise HTTPException(400, str(exc.args[0])) from None
-    outcome = world.solve()
-    return {"request_id": request.id, "outcome": outcome}
+    # Deliberately does NOT run the scheduler. A request arriving is not a
+    # reason to re-plan the week — see policy.py.
+    return {"request_id": request.id}
 
 
 @app.post("/api/services")
@@ -152,7 +160,6 @@ def cancel_appointment(appointment_id: int, payload: CancelIn = CancelIn()):
         )
     except KeyError:
         raise HTTPException(404, "no such appointment") from None
-    world.solve()
     return {"ok": True}
 
 
@@ -190,7 +197,28 @@ def respond(approval_id: int, payload: ApprovalIn):
 
 @app.post("/api/solve")
 def solve():
-    return world.solve()
+    """Run the scheduler now, on the provider's say-so."""
+    return world.propose(reason="provider")
+
+
+@app.post("/api/plans/{plan_id}/approve")
+def approve_plan(plan_id: int):
+    if plan_id not in world.plans:
+        raise HTTPException(404, "no such plan")
+    try:
+        return world.provider_approve(plan_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@app.post("/api/plans/{plan_id}/reject")
+def reject_plan(plan_id: int):
+    if plan_id not in world.plans:
+        raise HTTPException(404, "no such plan")
+    world.provider_reject(plan_id)
+    # Rejection is itself a trigger: try again without the arrangement the
+    # provider did not want.
+    return world.propose(reason="provider")
 
 
 @app.post("/api/settings")
@@ -199,6 +227,12 @@ def settings(payload: SettingsIn):
         world.alpha = max(0.0, min(1.0, payload.alpha))
     if payload.max_displacements is not None:
         world.max_displacements = max(0, payload.max_displacements)
+    if payload.auto_run is not None:
+        world.policy.auto_run = payload.auto_run
+    if payload.urgency_hours is not None:
+        world.policy.urgency_hours = max(0, payload.urgency_hours)
+    if payload.retry_after_minutes is not None:
+        world.policy.retry_after_minutes = max(1, payload.retry_after_minutes)
     return {"ok": True}
 
 
