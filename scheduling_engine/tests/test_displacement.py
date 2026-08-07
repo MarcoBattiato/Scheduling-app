@@ -238,3 +238,58 @@ def test_zero_bounds_confine_a_provider_block_to_its_own_day():
 
 def test_reschedule_windows_are_empty_when_the_client_is_never_free():
     assert reschedule_windows(rng(MON, 9, 10), [], RescheduleBounds(3, 3)) == []
+
+
+# --------------------------------------------------------------------------
+# Reported dependencies
+# --------------------------------------------------------------------------
+
+
+def test_a_placement_reports_the_move_it_is_waiting_on():
+    result = solve_placements(NEEDS_ROOM, FREE, CFG, movable=[MOVABLE], max_displacements=1)
+
+    (placement,) = result.placements
+    assert placement.depends_on == ("appt-dana",)
+
+
+def test_a_placement_that_needed_nobody_depends_on_nobody():
+    result = solve_placements(
+        [request("r1", 60, [rng(TUE, 9, 12)])], FREE, CFG,
+        movable=[MOVABLE], max_displacements=2,
+    )
+
+    (placement,) = result.placements
+    assert placement.depends_on == ()
+    assert result.displacements == ()
+
+
+def test_a_chained_move_reports_what_it_is_waiting_on():
+    """The case overlap alone cannot answer. With chains permitted, a1 lands in
+    the slot a2 is vacating — a dependency between two *moves*, which comparing
+    a placement against displacement ranges would never reveal.
+    """
+    first, second = rng(MON, 9, 10), rng(MON, 10, 11)
+    free = free_time([seg(MON, 9, 11), seg(TUE, 9, 10)], [first, second])
+    movable = [
+        booking("a1", "dana", first, [rng(MON, 10, 11)]),   # only into a2's slot
+        booking("a2", "erik", second, [rng(TUE, 9, 10)]),
+    ]
+
+    result = solve_placements(
+        [request("r1", 60, [rng(MON, 9, 10)])], free, CFG,
+        movable=movable, max_displacements=2, allow_chains=True,
+    )
+
+    assert result.all_placed
+    moves = {d.appointment_id: d for d in result.displacements}
+    assert moves["a1"].depends_on == ("a2",), "a1 cannot move until a2 has"
+    assert moves["a2"].depends_on == (), "a2 moves into space already free"
+    (placement,) = result.placements
+    assert placement.depends_on == ("a1",)
+
+
+def test_a_move_never_reports_itself_as_its_own_dependency():
+    result = solve_placements(NEEDS_ROOM, FREE, CFG, movable=[MOVABLE], max_displacements=1)
+
+    (moved,) = result.displacements
+    assert moved.appointment_id not in moved.depends_on

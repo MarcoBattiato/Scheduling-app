@@ -469,6 +469,26 @@ def _solve(
         solver = _solver(time_limit_seconds)
         _check(solver.Solve(model), solver)
 
+    # Which cells are only free because their occupant agreed to move. Built
+    # from the chosen assignment rather than inferred downstream, so it stays
+    # right when chains are allowed and a placement can rest on a sequence of
+    # moves that overlap alone would not reveal.
+    vacated: Dict[int, str] = {}
+    for i, move in enumerate(moves):
+        if not solver.BooleanValue(moved[i]):
+            continue
+        appointment = movable[move.movable_index]
+        start, end = _inner_cells(
+            appointment.range.start, appointment.range.end, origin, grid
+        )
+        for cell in range(start, end):
+            vacated[cell] = appointment.id
+
+    def _needs(cells, exclude=None):
+        found = {vacated[c] for c in cells if c in vacated}
+        found.discard(exclude)
+        return tuple(sorted(found))
+
     placements = []
     placed_requests = set()
     for i, candidate in enumerate(candidates):
@@ -481,6 +501,9 @@ def _solve(
                 request_id=request.id,
                 client_id=request.client_id,
                 range=TimeRange(start, start + timedelta(minutes=request.duration_minutes)),
+                depends_on=_needs(
+                    range(candidate.start_cell, candidate.start_cell + candidate.cell_span)
+                ),
             )
         )
         placed_requests.add(candidate.request_index)
@@ -497,6 +520,10 @@ def _solve(
                 client_id=appointment.client_id,
                 was=appointment.range,
                 now=TimeRange(start, start + (appointment.range.end - appointment.range.start)),
+                depends_on=_needs(
+                    range(move.start_cell, move.start_cell + move.cell_span),
+                    exclude=appointment.id,
+                ),
             )
         )
 

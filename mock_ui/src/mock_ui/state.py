@@ -83,6 +83,10 @@ class Approval:
     was_end: Optional[datetime] = None
     status: str = "pending"          # pending | accepted | declined
     applied: bool = False
+    # Appointment ids that must move before this can happen. Reported by the
+    # engine rather than inferred here: guessing from overlap is only right
+    # while chains are forbidden.
+    depends_on: tuple = ()
 
 
 @dataclass
@@ -114,6 +118,7 @@ class World:
         self.max_displacements = 1
         self.bounds = RescheduleBounds(max_days_earlier=2, max_days_later=4)
         self.policy = SchedulingPolicy()
+        self.allow_chains = False
         self.last_run: Optional[datetime] = None
         # Appointments a client refused to move this session. Cruder than the
         # engine's per-date blocking (SPEC.md §7 of the mock).
@@ -298,6 +303,7 @@ class World:
              for r in waiting],
             provider_free, config,
             movable=movable, max_displacements=self.max_displacements,
+            allow_chains=self.allow_chains,
         )
 
         # Anything the engine could not place is parked, so its approaching
@@ -320,13 +326,15 @@ class World:
             placements=[
                 {"request_id": int(p.request_id), "client_id": p.client_id,
                  "service_id": self.requests[int(p.request_id)].service_id,
-                 "start": p.range.start, "end": p.range.end}
+                 "start": p.range.start, "end": p.range.end,
+                 "depends_on": [int(a) for a in p.depends_on]}
                 for p in result.placements
             ],
             displacements=[
                 {"appointment_id": int(d.appointment_id), "client_id": d.client_id,
                  "was_start": d.was.start, "was_end": d.was.end,
-                 "now_start": d.now.start, "now_end": d.now.end}
+                 "now_start": d.now.start, "now_end": d.now.end,
+                 "depends_on": [int(a) for a in d.depends_on]}
                 for d in result.displacements
             ],
         )
@@ -356,14 +364,16 @@ class World:
         for placement in plan.placements:
             self._ask(plan, "booking", placement["client_id"],
                       request_id=placement["request_id"],
-                      now_start=placement["start"], now_end=placement["end"])
+                      now_start=placement["start"], now_end=placement["end"],
+                      depends_on=tuple(placement["depends_on"]))
         for displacement in plan.displacements:
             self._ask(plan, "reschedule", displacement["client_id"],
                       appointment_id=displacement["appointment_id"],
                       was_start=displacement["was_start"],
                       was_end=displacement["was_end"],
                       now_start=displacement["now_start"],
-                      now_end=displacement["now_end"])
+                      now_end=displacement["now_end"],
+                      depends_on=tuple(displacement["depends_on"]))
         self._note(f"provider approved plan {plan_id}; asking {len(self.pending_approvals(plan_id))} client(s)")
         return {"asked": len(self.pending_approvals(plan_id))}
 
@@ -412,6 +422,12 @@ class World:
             self._note(f"plan {plan.id} settled")
 
     def _apply_approval(self, approval: Approval) -> None:
+        blocker = self._unmet_dependency(approval)
+        if blocker is not None:
+            if blocker.status == "declined":
+                self._strand(approval, blocker)
+            return                      # still waiting, or never happening
+
         if approval.kind == "reschedule":
             # Agreed to, but not chosen: the client said yes to moving, they
             # did not pick the slot. Recording it as CLIENT would teach the
@@ -420,6 +436,7 @@ class World:
                 approval.appointment_id, approval.now_start, approval.now_end,
                 origin=Origin.DISPLACED,
             )
+            approval.applied = True
             self._note(f"{approval.client_id} moved to "
                        f"{approval.now_start:%a %d %b %H:%M}")
             self._apply_dependent_bookings(approval)
@@ -427,30 +444,22 @@ class World:
             self._book(approval)
 
     def _apply_dependent_bookings(self, moved: Approval) -> None:
-        """Book anything that was waiting on this slot being vacated.
+        """Do whatever was waiting on this slot being vacated.
 
-        The engine reports placements and displacements separately, with no
-        link between them — but with chains forbidden a placement can only
-        depend on one move, and it is the one whose old slot it overlaps.
+        Includes other *moves*: with chains permitted one displaced booking can
+        be waiting on another. The engine reports these dependencies, so this
+        does not have to guess.
         """
         for other in self.approvals.values():
-            if (other.kind == "booking" and other.status == "accepted"
-                    and not other.applied
+            if (other.status == "accepted" and not other.applied
                     and other.plan_id == moved.plan_id
-                    and _overlaps(other, moved)):
-                self._book(other)
+                    and moved.appointment_id in other.depends_on):
+                if other.kind == "booking":
+                    self._book(other)
+                else:
+                    self._apply_approval(other)
 
     def _book(self, approval: Approval) -> None:
-        blocker = self._unmet_dependency(approval)
-        if blocker is not None:
-            if blocker.status == "declined":
-                request = self.requests.get(approval.request_id)
-                if request:
-                    request.status = "on_hold"
-                self._note(f"{approval.client_id}'s booking fell through — "
-                           f"{blocker.client_id} would not move")
-            return                      # still waiting, or never happening
-
         request = self.requests[approval.request_id]
         self.store.book_appointment(
             approval.client_id, request.service_id,
@@ -461,13 +470,32 @@ class World:
         self._note(f"booked {approval.client_id} at "
                    f"{approval.now_start:%a %d %b %H:%M}")
 
-    def _unmet_dependency(self, booking: Approval) -> Optional[Approval]:
-        """The move this booking needs, if it has not happened yet."""
+    def _unmet_dependency(self, approval: Approval) -> Optional[Approval]:
+        """A move this one needs that has not happened yet."""
         for other in self.approvals.values():
-            if (other.kind == "reschedule" and other.plan_id == booking.plan_id
-                    and _overlaps(booking, other) and other.status != "accepted"):
+            if (other.appointment_id in approval.depends_on
+                    and other.plan_id == approval.plan_id
+                    and not other.applied):
                 return other
         return None
+
+    def _strand(self, approval: Approval, blocker: Approval) -> None:
+        """Something that can never happen now, because what it needed was
+        refused."""
+        if approval.kind == "booking":
+            request = self.requests.get(approval.request_id)
+            if request:
+                request.status = "on_hold"
+        self._note(f"{approval.client_id}'s slot fell through — "
+                   f"{blocker.client_id} would not move")
+
+    def _cascade_refusal(self, refused: Approval) -> None:
+        """Anything that had already agreed but was waiting on this."""
+        for other in self.approvals.values():
+            if (other.status == "accepted" and not other.applied
+                    and other.plan_id == refused.plan_id
+                    and refused.appointment_id in other.depends_on):
+                self._strand(other, refused)
 
     def _record_refusal(self, approval: Approval) -> None:
         """A refused slot becomes a hole in that client's availability.
@@ -483,7 +511,11 @@ class World:
                    f"blocked that slot for them")
 
         if approval.kind == "reschedule":
+            # Blunter than the single-date block a refused booking gets, and
+            # deliberately so: a client already holding an appointment has more
+            # standing to keep it than one merely being offered a slot.
             self.immovable.add(approval.appointment_id)
+            self._cascade_refusal(approval)
         else:
             request = self.requests.get(approval.request_id)
             if request:
@@ -587,11 +619,6 @@ class World:
 
     def _note(self, message: str) -> None:
         self.log.append(f"{datetime.now():%H:%M:%S}  {message}")
-
-
-def _overlaps(booking: "Approval", move: "Approval") -> bool:
-    """Whether a booking sits in the slot a move is vacating."""
-    return (booking.now_start < move.was_end and move.was_start < booking.now_end)
 
 
 def _parse_time(text: str) -> time:

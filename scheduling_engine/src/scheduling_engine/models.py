@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Sequence
+from typing import Sequence, Tuple
 
 ClientId = str
 RequestId = str
@@ -123,6 +123,9 @@ class Displacement:
     client_id: ClientId
     was: TimeRange
     now: TimeRange
+    # Appointments whose own move must happen first, because this one lands
+    # in space they are vacating. Empty unless chains are permitted.
+    depends_on: Tuple[str, ...] = ()
 
     @property
     def shift_minutes(self) -> int:
@@ -135,6 +138,15 @@ class Placement:
     request_id: RequestId
     client_id: ClientId
     range: TimeRange
+    # Appointments that must move before this booking can be made, because it
+    # occupies space they currently hold. Direct dependencies only: if one of
+    # those moves has dependencies of its own, walk them.
+    #
+    # Reported rather than left to be inferred. A consumer could guess by
+    # comparing this range against each displacement's old one, but that is
+    # only right while chains are forbidden — with chains a placement can rest
+    # on a sequence of moves that overlap tells you nothing about.
+    depends_on: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

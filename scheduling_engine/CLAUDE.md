@@ -14,6 +14,12 @@ request without moving anyone always wins. `max_displacements` is a hard
 ceiling on top, and being small is also what keeps the solve fast (66 days,
 374 bookings, 20 requests, K=3: ~1.1s).
 
+`Placement.depends_on` and `Displacement.depends_on` name the appointments
+that must move first — reported rather than left to be inferred. A consumer
+could guess from overlapping ranges, but that is only right while chains are
+forbidden; with chains a placement can rest on a sequence of moves that overlap
+reveals nothing about.
+
 A booking is never cancelled to make room (SPEC.md §7.2): it either stays or
 moves, `stay[A] + Σ y[A,t] == 1`. Where it may move comes from
 `reschedule_windows` — the client's availability cropped by their reschedule

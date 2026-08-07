@@ -303,3 +303,58 @@ def test_one_proposal_at_a_time(world):
 
     assert second["ran"] is False
     assert "already in flight" in second["reason"]
+
+
+def test_a_chained_refusal_strands_everything_that_was_waiting_on_it(world):
+    """With chains permitted the dependency can be two deep, and the engine
+    reports it — the mock does not have to guess from overlapping times.
+    """
+    world.max_displacements = 2
+    world.allow_chains = True
+    world.set_weekly_availability(PROVIDER, [
+        {"weekday": 0, "from": "09:00", "to": "11:00"},
+        {"weekday": 1, "from": "09:00", "to": "10:00"},
+    ])
+    world.set_weekly_availability(
+        "bob", [{"weekday": 0, "from": "09:00", "to": "11:00"}])
+    world.add_client("carol", "Carol")
+    world.set_weekly_availability(
+        "carol", [{"weekday": 1, "from": "09:00", "to": "10:00"}])
+    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
+    world.store.book_appointment("carol", "s60", at(0, 10), at(0, 11))
+    ask(world, "alice", 0, 9, 10)
+
+    world.propose()
+    plan = only_plan(world)
+    if len(plan.displacements) < 2:
+        pytest.skip("this calendar did not need a chain")
+
+    world.provider_approve(plan.id)
+    approvals = {a.client_id: a for a in world.pending_approvals()}
+    for approval in approvals.values():
+        if approval.client_id != "carol":
+            world.respond_to_approval(approval.id, accept=True)
+
+    world.respond_to_approval(approvals["carol"].id, accept=False)
+
+    assert not world.store.appointments_for("alice", at(0, 0), at(1, 0)), (
+        "alice's booking rested on bob moving, which rested on carol moving"
+    )
+    assert world.store.appointments_for("bob", at(0, 0), at(1, 0))[0].range.start == at(0, 9)
+
+
+def test_dependencies_come_from_the_engine_not_from_guesswork(world):
+    world.set_weekly_availability(PROVIDER, [
+        {"weekday": 0, "from": "09:00", "to": "10:00"},
+        {"weekday": 1, "from": "09:00", "to": "17:00"},
+    ])
+    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
+    ask(world, "alice", 0, 9, 10)
+    world.propose()
+
+    plan = only_plan(world)
+    (placement,) = plan.placements
+    (displacement,) = plan.displacements
+
+    assert placement["depends_on"] == [displacement["appointment_id"]]
+    assert displacement["depends_on"] == []
