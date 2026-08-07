@@ -102,7 +102,15 @@ class Plan:
     status: str = "draft"            # draft | awaiting_clients | applied | rejected
     reason: str = "manual"           # why the scheduler ran
     detail: str = ""
+    # What the optimiser was asked for, and what it achieved. Several drafts
+    # can sit side by side under different settings so the provider can see
+    # the trade-off rather than being told about it.
+    params: dict = field(default_factory=dict)
+    metrics: dict = field(default_factory=dict)
     created_at: datetime = field(default_factory=datetime.now)
+
+    def item_key(self, kind: str, ident: int) -> str:
+        return f"{'p' if kind == 'booking' else 'm'}:{ident}"
 
 
 class World:
@@ -244,6 +252,9 @@ class World:
         reason: str = "manual",
         detail: str = "",
         horizon_days: int = 21,
+        alpha: Optional[float] = None,
+        max_displacements: Optional[int] = None,
+        allow_chains: Optional[bool] = None,
     ) -> dict:
         """Run the engine and put the answer in front of the provider.
 
@@ -254,6 +265,11 @@ class World:
         Parked (ON_HOLD) requests are reconsidered here — being parked stops a
         request demanding runs of its own, it does not exclude it from runs
         that happen anyway.
+
+        Several drafts may sit side by side, each run under different settings:
+        nothing is reserved until one is approved, so proposing costs nothing.
+        Only one plan may be *in flight* with the clients at a time, which is
+        what stops two plans quietly promising the same slot.
         """
         now = now or datetime.now()
         self.last_run = now
@@ -262,15 +278,20 @@ class World:
                    if r.status in ("pending", "on_hold")]
         if not waiting:
             return {"ran": False, "reason": "nothing waiting"}
-        if any(p.status in ("draft", "awaiting_clients") for p in self.plans.values()):
-            return {"ran": False, "reason": "a proposal is already in flight"}
+        if any(p.status == "awaiting_clients" for p in self.plans.values()):
+            return {"ran": False, "reason": "a plan is already out with the clients"}
+
+        alpha = self.alpha if alpha is None else alpha
+        max_moves = (self.max_displacements if max_displacements is None
+                     else max_displacements)
+        chains = self.allow_chains if allow_chains is None else allow_chains
 
         window_start = now.date()
         window_end = window_start + timedelta(days=horizon_days)
         # Gap usability is measured against what can still be sold, so a
         # withdrawn service must stop making gaps of its length look useful.
         config = CostConfig(
-            alpha=self.alpha,
+            alpha=alpha,
             service_durations=self.catalogue.bookable_durations() or (60,),
         )
 
@@ -302,8 +323,8 @@ class World:
             [BookingRequest(str(r.id), r.client_id, r.duration_minutes, r.windows)
              for r in waiting],
             provider_free, config,
-            movable=movable, max_displacements=self.max_displacements,
-            allow_chains=self.allow_chains,
+            movable=movable, max_displacements=max_moves,
+            allow_chains=chains,
         )
 
         # Anything the engine could not place is parked, so its approaching
@@ -323,6 +344,16 @@ class World:
             status="draft",
             reason=reason,
             detail=detail,
+            params={"alpha": alpha, "max_displacements": max_moves,
+                    "allow_chains": chains},
+            metrics={
+                "placed": len(result.placements),
+                "unplaced": len(result.unplaced),
+                "displacements": len(result.displacements),
+                "fragmentation_minutes": result.fragmentation_minutes,
+                "earliness_minutes": result.earliness_minutes,
+                "shift_minutes": result.shift_minutes,
+            },
             placements=[
                 {"request_id": int(p.request_id), "client_id": p.client_id,
                  "service_id": self.requests[int(p.request_id)].service_id,
@@ -350,32 +381,103 @@ class World:
 
     # -- the provider's decision -------------------------------------
 
-    def provider_approve(self, plan_id: int) -> dict:
-        """Send the proposal on to the clients it affects.
+    def provider_approve(
+        self, plan_id: int, items: Optional[Sequence[str]] = None
+    ) -> dict:
+        """Send some or all of a proposal on to the clients it affects.
+
+        `items` are keys from the plan ("p:<request_id>", "m:<appointment_id>");
+        None means all of it. A part that depends on a move is pulled in with
+        it automatically — approving a booking while leaving the move that
+        frees its slot behind would promise something that cannot happen.
 
         Still nothing written: the provider agreeing means the plan is worth
-        asking about, not that it has happened.
+        asking about, not that it has happened. Approving one draft discards
+        the rest, which were computed against a calendar this one is about to
+        change.
         """
         plan = self.plans[plan_id]
         if plan.status != "draft":
             raise ValueError(f"plan {plan_id} is {plan.status}, not awaiting approval")
+        if any(p.status == "awaiting_clients" for p in self.plans.values()):
+            raise ValueError("a plan is already out with the clients")
 
+        chosen = self._expand(plan, items)
         plan.status = "awaiting_clients"
+
         for placement in plan.placements:
-            self._ask(plan, "booking", placement["client_id"],
-                      request_id=placement["request_id"],
-                      now_start=placement["start"], now_end=placement["end"],
-                      depends_on=tuple(placement["depends_on"]))
+            if plan.item_key("booking", placement["request_id"]) in chosen:
+                self._ask(plan, "booking", placement["client_id"],
+                          request_id=placement["request_id"],
+                          now_start=placement["start"], now_end=placement["end"],
+                          depends_on=tuple(placement["depends_on"]))
+            else:
+                self.requests[placement["request_id"]].status = "on_hold"
         for displacement in plan.displacements:
-            self._ask(plan, "reschedule", displacement["client_id"],
-                      appointment_id=displacement["appointment_id"],
-                      was_start=displacement["was_start"],
-                      was_end=displacement["was_end"],
-                      now_start=displacement["now_start"],
-                      now_end=displacement["now_end"],
-                      depends_on=tuple(displacement["depends_on"]))
-        self._note(f"provider approved plan {plan_id}; asking {len(self.pending_approvals(plan_id))} client(s)")
-        return {"asked": len(self.pending_approvals(plan_id))}
+            if plan.item_key("reschedule", displacement["appointment_id"]) in chosen:
+                self._ask(plan, "reschedule", displacement["client_id"],
+                          appointment_id=displacement["appointment_id"],
+                          was_start=displacement["was_start"],
+                          was_end=displacement["was_end"],
+                          now_start=displacement["now_start"],
+                          now_end=displacement["now_end"],
+                          depends_on=tuple(displacement["depends_on"]))
+
+        dropped = 0
+        for other in self.plans.values():
+            if other.id != plan_id and other.status == "draft":
+                other.status = "rejected"
+                dropped += 1
+
+        asked = len(self.pending_approvals(plan_id))
+        self._note(
+            f"provider approved {len(chosen)} of {len(plan.placements) + len(plan.displacements)} "
+            f"item(s) in plan {plan_id}; asking {asked} client(s)"
+            + (f", discarded {dropped} other draft(s)" if dropped else "")
+        )
+        return {"asked": asked, "approved": sorted(chosen), "discarded": dropped}
+
+    def _expand(self, plan: Plan, items: Optional[Sequence[str]]) -> set:
+        """Everything the provider picked, plus whatever it rests on.
+
+        Dependencies come from the engine, so this follows real links rather
+        than guessing from overlapping times, and it follows them transitively
+        — with chains a move can itself be waiting on another.
+        """
+        everything = (
+            {plan.item_key("booking", p["request_id"]) for p in plan.placements}
+            | {plan.item_key("reschedule", d["appointment_id"])
+               for d in plan.displacements}
+        )
+        if items is None:
+            return everything
+
+        unknown = set(items) - everything
+        if unknown:
+            raise ValueError(f"plan {plan.id} has no item(s) {sorted(unknown)}")
+
+        needs = {}
+        for placement in plan.placements:
+            needs[plan.item_key("booking", placement["request_id"])] = [
+                plan.item_key("reschedule", a) for a in placement["depends_on"]
+            ]
+        for displacement in plan.displacements:
+            needs[plan.item_key("reschedule", displacement["appointment_id"])] = [
+                plan.item_key("reschedule", a) for a in displacement["depends_on"]
+            ]
+
+        chosen, queue = set(), list(items)
+        while queue:
+            key = queue.pop()
+            if key in chosen:
+                continue
+            chosen.add(key)
+            queue.extend(needs.get(key, []))
+        return chosen
+
+    def discard_plan(self, plan_id: int) -> None:
+        self.plans[plan_id].status = "rejected"
+        self._note(f"discarded draft {plan_id}")
 
     def provider_reject(self, plan_id: int) -> None:
         plan = self.plans[plan_id]
@@ -593,15 +695,21 @@ class World:
             ],
             "plans": [
                 {"id": p.id, "status": p.status, "reason": p.reason,
-                 "detail": p.detail,
+                 "detail": p.detail, "params": p.params, "metrics": p.metrics,
                  "placements": [
-                     {"client_id": x["client_id"], "service_id": x["service_id"],
-                      "start": x["start"].isoformat(), "end": x["end"].isoformat()}
+                     {"key": p.item_key("booking", x["request_id"]),
+                      "client_id": x["client_id"], "service_id": x["service_id"],
+                      "start": x["start"].isoformat(), "end": x["end"].isoformat(),
+                      "depends_on": [p.item_key("reschedule", a)
+                                     for a in x["depends_on"]]}
                      for x in p.placements],
                  "displacements": [
-                     {"client_id": x["client_id"],
+                     {"key": p.item_key("reschedule", x["appointment_id"]),
+                      "client_id": x["client_id"],
                       "was": x["was_start"].isoformat(),
-                      "now": x["now_start"].isoformat()}
+                      "now": x["now_start"].isoformat(),
+                      "depends_on": [p.item_key("reschedule", a)
+                                     for a in x["depends_on"]]}
                      for x in p.displacements]}
                 for p in self.plans.values()
                 if p.status in ("draft", "awaiting_clients")

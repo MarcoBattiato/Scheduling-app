@@ -109,8 +109,22 @@ like to make. Nobody has agreed to any of it.
 So this mock owns the loop:
 
 1. The scheduler runs and produces a **draft** plan. Nothing is written.
-2. The **provider** approves it — meaning it is worth asking about, not that it
-   has happened. Still nothing is written.
+   Several drafts may sit side by side under different optimiser settings —
+   proposing costs nothing because nothing is reserved — so the provider can
+   compare arrangements rather than be told about one. Each draft carries what
+   it was asked for (`alpha`, `max_displacements`) and what it achieved
+   (booked, unplaced, moved, waste, delay).
+2. The **provider** approves it, in whole or in part — meaning it is worth
+   asking about, not that it has happened. Still nothing is written.
+   Approving one draft discards the others, which were computed against a
+   calendar this one is about to change.
+
+   A part that rests on a move is pulled in with it: sending on a booking
+   while holding back the move that frees its slot would promise something
+   that cannot happen. The dependency comes from the engine
+   (`Placement.depends_on`), so it is followed transitively rather than
+   guessed from overlapping times. It runs one way only — a move may be sent
+   on without the booking that wanted it.
 3. Each affected client is asked about their own part: a new booking, or a move
    of one they already have. Both are the same question — "is this time all
    right?" — so both are the same object.
@@ -170,10 +184,15 @@ Recorded so nobody mistakes any of it for a decision:
 - A declined *move* marks that appointment unmovable for the rest of the
   session, which is blunter than the single-date block a declined *booking*
   gets.
-- Only one proposal may be in flight at a time. Simple and legible, but a
-  provider cannot queue two.
-- The provider approves or rejects a plan whole. Approving parts of one, and
-  locking placements so the solver reoptimises around them, is not built yet.
+- Only one plan may be **out with the clients** at a time. Drafts are free;
+  two plans being asked about at once could quietly promise the same slot,
+  which is the reservation problem engine SPEC §8 deliberately avoids by
+  recomputing from scratch. Held-back items return to the queue and are picked
+  up by the next run rather than re-optimised immediately.
+- Locking approved placements and re-running the solver *around* them is not
+  built. That needs slots that are neither free nor booked — a soft
+  reservation — and deserves deciding deliberately rather than arriving as a
+  side effect.
 - `alpha` and `max_displacements` are global controls, not per-provider
   settings.
 - No expiry on a client's approval: a client who never answers holds their part

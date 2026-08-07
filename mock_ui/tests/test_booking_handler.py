@@ -295,14 +295,142 @@ def test_previous_occurrence_looks_backwards_never_forwards():
     assert previous_occurrence(wednesday, 2, time(6, 0)) == datetime(2026, 5, 6, 6, 0)
 
 
-def test_one_proposal_at_a_time(world):
+# -- comparing variants ----------------------------------------------
+
+
+def test_several_drafts_can_sit_side_by_side(world):
+    """Proposing costs nothing — nothing is reserved until one is approved —
+    so the provider can try settings and compare rather than being told.
+    """
+    ask(world, "alice", 0, 9, 17)
+
+    packed = world.propose(alpha=1.0)
+    early = world.propose(alpha=0.0)
+
+    assert packed["ran"] and early["ran"]
+    drafts = [p for p in world.plans.values() if p.status == "draft"]
+    assert len(drafts) == 2
+    assert {p.params["alpha"] for p in drafts} == {0.0, 1.0}
+
+
+def test_each_draft_carries_what_it_was_asked_for_and_what_it_achieved(world):
+    ask(world, "alice", 0, 9, 17)
+
+    world.propose(alpha=0.25, max_displacements=2)
+    (draft,) = [p for p in world.plans.values() if p.status == "draft"]
+
+    assert draft.params == {"alpha": 0.25, "max_displacements": 2,
+                            "allow_chains": False}
+    assert draft.metrics["placed"] == 1
+    assert "fragmentation_minutes" in draft.metrics
+    assert "earliness_minutes" in draft.metrics
+
+
+def test_trying_settings_does_not_change_the_defaults(world):
+    ask(world, "alice", 0, 9, 17)
+    world.propose(alpha=1.0, max_displacements=5)
+
+    assert world.alpha == 0.5
+    assert world.max_displacements == 1
+
+
+def test_approving_one_draft_discards_the_others(world):
+    ask(world, "alice", 0, 9, 17)
+    world.propose(alpha=1.0)
+    chosen = world.propose(alpha=0.0)
+
+    result = world.provider_approve(chosen["plan_id"])
+
+    assert result["discarded"] == 1
+    assert [p.status for p in world.plans.values() if p.id != chosen["plan_id"]] == ["rejected"]
+
+
+def test_only_one_plan_may_be_out_with_the_clients(world):
+    """Drafts are free; a plan being asked about is not. Two in flight could
+    quietly promise the same slot twice.
+    """
+    ask(world, "alice", 0, 9, 17)
+    world.propose()
+    world.provider_approve(only_plan(world).id)
+
+    assert world.propose()["ran"] is False
+
+
+# -- partial authorisation --------------------------------------------
+
+
+def test_the_provider_can_send_on_only_part_of_a_plan(world):
+    ask(world, "alice", 0, 9, 17)
+    ask(world, "bob", 0, 9, 17)
+    world.propose()
+    plan = only_plan(world)
+    keep = plan.item_key("booking", plan.placements[0]["request_id"])
+    drop = plan.item_key("booking", plan.placements[1]["request_id"])
+
+    world.provider_approve(plan.id, items=[keep])
+
+    assert [a.client_id for a in world.pending_approvals()] == [
+        plan.placements[0]["client_id"]
+    ]
+    dropped = plan.placements[1]["request_id"]
+    assert world.requests[dropped].status == "on_hold", "back in the queue, not lost"
+
+
+def test_approving_a_booking_pulls_in_the_move_it_needs(world):
+    """Sending on a booking while holding back the move that frees its slot
+    would promise something that cannot happen.
+    """
+    world.set_weekly_availability(PROVIDER, [
+        {"weekday": 0, "from": "09:00", "to": "10:00"},
+        {"weekday": 1, "from": "09:00", "to": "17:00"},
+    ])
+    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
+    ask(world, "alice", 0, 9, 10)
+    world.propose()
+    plan = only_plan(world)
+    booking = plan.item_key("booking", plan.placements[0]["request_id"])
+
+    result = world.provider_approve(plan.id, items=[booking])
+
+    move = plan.item_key("reschedule", plan.displacements[0]["appointment_id"])
+    assert move in result["approved"], "the move came along with it"
+    assert {a.kind for a in world.pending_approvals()} == {"booking", "reschedule"}
+
+
+def test_a_move_can_be_sent_on_without_the_booking_that_wanted_it(world):
+    """The dependency only runs one way."""
+    world.set_weekly_availability(PROVIDER, [
+        {"weekday": 0, "from": "09:00", "to": "10:00"},
+        {"weekday": 1, "from": "09:00", "to": "17:00"},
+    ])
+    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
+    ask(world, "alice", 0, 9, 10)
+    world.propose()
+    plan = only_plan(world)
+    move = plan.item_key("reschedule", plan.displacements[0]["appointment_id"])
+
+    result = world.provider_approve(plan.id, items=[move])
+
+    assert result["approved"] == [move]
+    assert {a.kind for a in world.pending_approvals()} == {"reschedule"}
+
+
+def test_approving_something_that_is_not_in_the_plan_is_refused(world):
     ask(world, "alice", 0, 9, 17)
     world.propose()
 
-    second = world.propose()
+    with pytest.raises(ValueError, match="no item"):
+        world.provider_approve(only_plan(world).id, items=["p:9999"])
 
-    assert second["ran"] is False
-    assert "already in flight" in second["reason"]
+
+def test_a_discarded_draft_cannot_be_approved(world):
+    ask(world, "alice", 0, 9, 17)
+    world.propose()
+    plan = only_plan(world)
+    world.discard_plan(plan.id)
+
+    with pytest.raises(ValueError, match="rejected"):
+        world.provider_approve(plan.id)
 
 
 def test_a_chained_refusal_strands_everything_that_was_waiting_on_it(world):

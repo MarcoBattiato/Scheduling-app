@@ -94,3 +94,14 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
 .tag.move { color: var(--displaced); border-color: var(--displaced); }
 .req.on_hold { color: var(--warn); }
 #proposal:not(:empty) { margin-bottom: 16px; }
+
+.try { display: inline-flex; gap: 8px; align-items: center; }
+.try input { width: 52px; }
+.drafts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.draft { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--panel); }
+.draft.chosen { border-color: var(--accent); }
+.draft h3 { margin-top: 0; }
+.metrics { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.item { display: flex; align-items: center; gap: 7px; font-size: 13px; padding: 2px 0; }
+.item input { margin: 0; }
+.item.needs { color: var(--muted); }

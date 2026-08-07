@@ -71,6 +71,18 @@ class AttendanceIn(BaseModel):
     attended: bool
 
 
+class SolveIn(BaseModel):
+    """Try the optimiser at settings other than the saved ones. Omitted
+    fields fall back to the provider's defaults."""
+    alpha: Optional[float] = None
+    max_displacements: Optional[int] = None
+    allow_chains: Optional[bool] = None
+
+
+class ApproveIn(BaseModel):
+    items: Optional[List[str]] = None     # None = the whole plan
+
+
 class SettingsIn(BaseModel):
     alpha: Optional[float] = None
     max_displacements: Optional[int] = None
@@ -196,19 +208,36 @@ def respond(approval_id: int, payload: ApprovalIn):
 
 
 @app.post("/api/solve")
-def solve():
-    """Run the scheduler now, on the provider's say-so."""
-    return world.propose(reason="provider")
+def solve(payload: SolveIn = SolveIn()):
+    """Run the scheduler now, on the provider's say-so.
+
+    Several drafts may coexist under different settings — nothing is reserved
+    until one is approved — so this is how the provider compares rather than
+    being told.
+    """
+    return world.propose(
+        reason="provider", alpha=payload.alpha,
+        max_displacements=payload.max_displacements,
+        allow_chains=payload.allow_chains,
+    )
 
 
 @app.post("/api/plans/{plan_id}/approve")
-def approve_plan(plan_id: int):
+def approve_plan(plan_id: int, payload: ApproveIn = ApproveIn()):
     if plan_id not in world.plans:
         raise HTTPException(404, "no such plan")
     try:
-        return world.provider_approve(plan_id)
+        return world.provider_approve(plan_id, payload.items)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
+
+
+@app.post("/api/plans/{plan_id}/discard")
+def discard_plan(plan_id: int):
+    if plan_id not in world.plans:
+        raise HTTPException(404, "no such plan")
+    world.discard_plan(plan_id)
+    return {"ok": True}
 
 
 @app.post("/api/plans/{plan_id}/reject")

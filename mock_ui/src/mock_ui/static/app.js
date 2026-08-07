@@ -66,30 +66,90 @@ function render() {
 }
 
 function renderProposal() {
-  const plans = (state.plans || []).filter((p) => p.status === "draft");
-  if (!isProvider() || !plans.length) { $("proposal").innerHTML = ""; return; }
+  const drafts = (state.plans || []).filter((p) => p.status === "draft");
+  $("try").style.display = isProvider() ? "" : "none";
+  if (!isProvider() || !drafts.length) { $("proposal").innerHTML = ""; return; }
 
-  $("proposal").innerHTML = plans.map((p) => `
+  const inFlight = (state.plans || []).some((p) => p.status === "awaiting_clients");
+
+  $("proposal").innerHTML = `
     <div class="alert proposal">
-      <div><b>The scheduler has a proposal</b>
-        <span class="hint">(${escapeHtml(p.reason)}${p.detail ? " — " + escapeHtml(p.detail) : ""})</span></div>
-      <div class="plan">
-        ${p.placements.map((x) => `
-          <div class="req"><span class="tag ok">book</span>
-            <span>${escapeHtml(x.client_id)}</span>
-            <span class="time">${fmt(x.start)}</span></div>`).join("")}
-        ${p.displacements.map((x) => `
-          <div class="req"><span class="tag move">move</span>
-            <span>${escapeHtml(x.client_id)}</span>
-            <span class="time">${fmt(x.was)} → ${fmt(x.now)}</span></div>`).join("")}
+      <div><b>${drafts.length === 1 ? "The scheduler has a proposal"
+                                    : `${drafts.length} arrangements to compare`}</b>
+        <span class="hint">Nothing is booked yet. Approving asks each client
+          to confirm their own part.</span></div>
+      ${inFlight ? `<p class="hint">A plan is already out with the clients —
+         approve nothing more until it settles.</p>` : ""}
+      <div class="drafts">${drafts.map(renderDraft).join("")}</div>
+    </div>`;
+
+  // Restore any ticks the poll would otherwise wipe, then apply dependencies.
+  for (const [key, on] of Object.entries(picked)) {
+    const box = document.querySelector(`input[data-key="${CSS.escape(key)}"]`);
+    if (box) box.checked = on;
+  }
+  drafts.forEach((p) => applyDeps(p.id));
+}
+
+function renderDraft(p) {
+  const m = p.metrics || {}, q = p.params || {};
+  const item = (x, kind) => `
+    <label class="item">
+      <input type="checkbox" checked data-plan="${p.id}" data-key="${x.key}"
+             data-needs="${(x.depends_on || []).join(",")}" onchange="tick(this)">
+      <span class="tag ${kind === "book" ? "ok" : "move"}">${kind}</span>
+      <span>${escapeHtml(x.client_id)}</span>
+      <span class="time">${kind === "book" ? fmt(x.start)
+                                           : `${fmt(x.was)} → ${fmt(x.now)}`}</span>
+    </label>`;
+
+  return `
+    <div class="draft" id="draft-${p.id}">
+      <h3>alpha ${q.alpha} · max moves ${q.max_displacements}</h3>
+      <div class="metrics">
+        <span class="tag">${m.placed} booked</span>
+        ${m.unplaced ? `<span class="tag">${m.unplaced} unplaced</span>` : ""}
+        ${m.displacements ? `<span class="tag move">${m.displacements} moved</span>` : ""}
+        <span class="tag">waste ${m.fragmentation_minutes}m</span>
+        <span class="tag">delay ${m.earliness_minutes}m</span>
       </div>
-      <p class="hint">Nothing is booked yet. Approving asks each client to
-        confirm their own part; whatever comes back agreed is what happens.</p>
-      <div class="row">
-        <button onclick="approvePlan(${p.id})">Approve and ask the clients</button>
-        <button class="ghost" onclick="rejectPlan(${p.id})">Reject and re-run</button>
+      ${p.placements.map((x) => item(x, "book")).join("")}
+      ${p.displacements.map((x) => item(x, "move")).join("")}
+      <div class="row" style="margin-top:10px">
+        <button onclick="approvePlan(${p.id})">Approve selected</button>
+        <button class="ghost" onclick="discardPlan(${p.id})">Discard</button>
       </div>
-    </div>`).join("");
+    </div>`;
+}
+
+// Ticks survive the 2.5s poll.
+let picked = {};
+
+window.tick = (box) => {
+  picked[box.dataset.key] = box.checked;
+  applyDeps(Number(box.dataset.plan));
+};
+
+function applyDeps(planId) {
+  // A part that rests on a move cannot be sent on without it: ticking the
+  // dependent forces its prerequisites on and locks them.
+  const boxes = [...document.querySelectorAll(`input[data-plan="${planId}"]`)];
+  const byKey = Object.fromEntries(boxes.map((b) => [b.dataset.key, b]));
+
+  boxes.forEach((b) => { b.disabled = false; b.title = ""; });
+  for (const box of boxes) {
+    if (!box.checked) continue;
+    const needs = (box.dataset.needs || "").split(",").filter(Boolean);
+    for (const key of needs) {
+      const dep = byKey[key];
+      if (!dep) continue;
+      dep.checked = true;
+      dep.disabled = true;
+      dep.title = "needed by another item you have selected";
+      dep.closest(".item").classList.add("needs");
+      picked[key] = true;
+    }
+  }
 }
 
 function renderAlerts() {
@@ -248,7 +308,15 @@ window.attend = async (id, attended) => {
   await api(`/api/appointments/${id}/attendance`, {attended});
   refresh();
 };
-window.approvePlan = async (id) => { await api(`/api/plans/${id}/approve`); refresh(); };
+window.approvePlan = async (id) => {
+  const items = [...document.querySelectorAll(`input[data-plan="${id}"]`)]
+    .filter((b) => b.checked).map((b) => b.dataset.key);
+  if (!items.length) { alert("Nothing selected."); return; }
+  await api(`/api/plans/${id}/approve`, {items});
+  picked = {};
+  refresh();
+};
+window.discardPlan = async (id) => { await api(`/api/plans/${id}/discard`); refresh(); };
 window.rejectPlan = async (id) => { await api(`/api/plans/${id}/reject`); refresh(); };
 window.setService = async (id, active) => {
   await api(`/api/services/${id}/active?active=${active}`);
@@ -262,7 +330,13 @@ $("role").onchange = (e) => {
   history.replaceState({}, "", `?as=${me}`);
   render();
 };
-$("solve").onclick = async () => { await api("/api/solve"); refresh(); };
+$("solve").onclick = async () => {
+  await api("/api/solve", {
+    alpha: Number($("try-alpha").value),
+    max_displacements: Number($("try-moves").value),
+  });
+  refresh();
+};
 $("save").onclick = async () => { const r = await api("/api/snapshot/save"); alert("Saved " + r.saved); };
 $("reset").onclick = async () => {
   if (confirm("Throw away this session and start again?")) {
