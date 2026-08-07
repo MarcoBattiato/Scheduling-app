@@ -350,8 +350,14 @@ def test_resetting_clears_the_saved_session_too(client, tmp_path, monkeypatch):
 def test_the_snapshot_lives_beside_the_package_not_the_shell():
     """A relative default put the session wherever you happened to launch
     from, so a restart could silently start empty.
+
+    Asserts the default rather than the live value: conftest redirects the live
+    one at a temporary path so the suite cannot touch a real session.
     """
     from mock_ui import app as module
 
-    assert module.SNAPSHOT.is_absolute()
-    assert module.SNAPSHOT.parent.name == "mock_ui"
+    assert module.default_snapshot().is_absolute()
+    assert module.default_snapshot().parent.name == "mock_ui"
+    assert module.SNAPSHOT != module.default_snapshot(), (
+        "the suite must never be pointed at the real session file"
+    )

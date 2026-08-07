@@ -100,6 +100,7 @@ function scheduleLayers(state, me, hover) {
     ...appts.filter((a) => a.status.startsWith("cancelled") && mine(a)).map((a) => ({
       id: `x${a.id}`, start: a.start, end: a.end,
       label: isProv ? a.client_id : a.service, cls: "cancelled",
+      client: a.client_id, order: 2,        // sits to the right of anything live
       data: hover ? hover(a) : null,
     })),
     ...appts.filter((a) => a.status === "booked" && mine(a)).map((a) => ({
@@ -109,13 +110,14 @@ function scheduleLayers(state, me, hover) {
       cls: [movingIds.has(a.id) ? "moving" : "",
             a.origin === "displaced" ? "moved" : "",
             new Date(a.end) < new Date() ? "past" : ""].filter(Boolean).join(" "),
+      client: a.client_id, order: 1,
       data: hover ? hover(a) : null,
     })),
     ...pending.map((a) => ({
       id: `p${a.id}`, start: a.now, end: a.now_end,
       label: a.client_id,
       sub: a.kind === "reschedule" ? "would move here" : "offered",
-      cls: "proposed-slot",
+      cls: "proposed-slot", client: a.client_id, order: 0,   // new work on the left
       data: {Client: a.client_id,
              What: a.kind === "reschedule" ? "proposed new slot" : "offered booking",
              From: a.was ? a.was.slice(5, 16).replace("T", " ") : "—",
@@ -225,24 +227,27 @@ function drawDraft(p) {
   const staying = state.appointments
     .filter((a) => a.status === "booked" && !moving.has(a.id))
     .map((a) => ({id: `d${p.id}-a${a.id}`, start: a.start, end: a.end,
-                  label: a.client_id, cls: "existing", data: hoverData(a)}));
+                  label: a.client_id, cls: "existing", client: a.client_id,
+                  order: 1, data: hoverData(a)}));
 
   const key = (k) => k.replace(":", "-");
   const arriving = p.placements.map((x) => ({
     id: `d${p.id}-${key(x.key)}`,
     start: x.start, end: x.end, label: x.client_id, sub: "new",
-    cls: "proposed", data: {Client: x.client_id, Service: x.service,
-                            What: "proposed booking", Request: `#${x.request_id}`},
+    cls: "proposed", client: x.client_id, order: 0,
+    data: {Client: x.client_id, Service: x.service,
+           What: "proposed booking", Request: `#${x.request_id}`},
   }));
   const landing = p.displacements.map((d) => ({
     id: `d${p.id}-${key(d.key)}-to`,
     start: d.now, end: d.now_end, label: d.client_id, sub: "moved to",
-    cls: "proposed moved", data: {Client: d.client_id,
-                                  What: "would be moved here", From: fmt(d.was)},
+    cls: "proposed moved", client: d.client_id, order: 0,
+    data: {Client: d.client_id, What: "would be moved here", From: fmt(d.was)},
   }));
   const leaving = p.displacements.map((d) => ({
     id: `d${p.id}-${key(d.key)}-from`,
     start: d.was, end: d.was_end, label: d.client_id, cls: "vacating",
+    client: d.client_id, order: 2,     // the slot being given up, on the right
   }));
 
   renderCalendar(el, {
@@ -393,10 +398,29 @@ function hoverData(a) {
   return data;
 }
 
+function peekAt(block) {
+  // Whose hours are these? Answering that on the calendar itself is the point:
+  // "moved to Wednesday 11:00" means little without seeing when they are free.
+  const root = block && block.closest("#calendar");
+  const client = block && block.dataset.client;
+  if (!root) return;
+  const segments = client ? (state.availability[client] || []) : [];
+  window.calendarOverlay(root, segments, "cal-peek");
+  root.querySelectorAll(".cal-day").forEach((d) => d.classList.toggle("dimmed", !!client));
+}
+
+function clearPeek() {
+  const root = $("calendar");
+  if (!root) return;
+  window.calendarOverlay(root, [], "cal-peek");
+  root.querySelectorAll(".cal-day").forEach((d) => d.classList.remove("dimmed"));
+}
+
 document.addEventListener("mouseover", (e) => {
   const block = e.target.closest("[data-hover]");
   const card = $("hover");
-  if (!block) { card.style.display = "none"; return; }
+  if (!block) { card.style.display = "none"; clearPeek(); return; }
+  peekAt(block);
   let data;
   try { data = JSON.parse(block.dataset.hover); } catch { return; }
   card.innerHTML = Object.entries(data)

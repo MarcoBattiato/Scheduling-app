@@ -73,13 +73,22 @@ function renderCalendar(el, opts) {
     }
     return map;
   };
-  const avail = byDay(availability), blocked = byDay(blocks), was = byDay(ghosts);
+  const avail = byDay(availability);
   const overrides = byDay(exceptions);
+
+  // Ghosts and blocks share one layout pass, so a booking and the slot it is
+  // vacating sit beside each other instead of one hiding the other. `order`
+  // decides which side: lower is further left.
+  const drawn = byDay([
+    ...ghosts.map((g) => ({...g, ghost: true, order: g.order ?? 2})),
+    ...blocks.map((b) => ({...b, order: b.order ?? 1})),
+  ]);
 
   const hours = [];
   for (let h = dayStart; h <= dayEnd; h++) hours.push(h);
 
-  let html = `<div class="cal" style="--rows:${dayEnd - dayStart}">`;
+  let html = `<div class="cal" style="--rows:${dayEnd - dayStart}"`
+    + ` data-day-start="${dayStart}" data-day-end="${dayEnd}">`;
   for (let w = 0; w < weeks; w++) {
     const week = days.slice(w * 7, w * 7 + 7);
     html += `<div class="cal-week">
@@ -96,11 +105,15 @@ function renderCalendar(el, opts) {
           ${(overrides[key] || []).map((x) => `<div class="cal-exc ${x.kind}"
                 title="${x.kind === "remove" ? "away" : "available"} on this date only"
                 style="${band(x)}"></div>`).join("")}
-          ${(was[key] || []).map((g) => `<div class="cal-block ghost ${g.cls || ""}"
-                id="cb-${g.id}" style="${band(g)}"><b>${esc(g.label || "")}</b></div>`).join("")}
-          ${(blocked[key] || []).map((b) => `<div class="cal-block ${b.cls || ""}"
-                id="cb-${b.id}" data-hover='${attr(b.data)}' style="${band(b)}">
-                <b>${esc(b.label || "")}</b>${b.sub ? `<i>${esc(b.sub)}</i>` : ""}</div>`).join("")}
+          ${sideBySide(drawn[key] || []).map(({item, slot, of}) => {
+            const width = 100 / of, left = slot * width;
+            const place = `${band(item)};left:${left}%;width:${width}%`;
+            return `<div class="cal-block ${item.ghost ? "ghost " : ""}${item.cls || ""}"
+                id="cb-${item.id}"${item.data ? ` data-hover='${attr(item.data)}'` : ""}
+                ${item.client ? ` data-client="${esc(item.client)}"` : ""}
+                style="${place}"><b>${esc(item.label || "")}</b>${
+                  item.sub ? `<i>${esc(item.sub)}</i>` : ""}</div>`;
+          }).join("")}
         </div>`;
       }).join("")}
     </div>`;
@@ -117,6 +130,60 @@ function renderCalendar(el, opts) {
   drawArrows(el, arrows);
   if (onSelect) wireSelection(el, dayStart, dayEnd, onSelect);
   return el;
+}
+
+function sideBySide(items) {
+  // Anything overlapping in time shares the width rather than stacking, so a
+  // booking never hides the one underneath it. Clusters are computed on the
+  // times alone; `order` only decides who sits on the left within a cluster.
+  const sorted = [...items].sort((a, b) => minutesInto(a.start) - minutesInto(b.start));
+  const out = [];
+  let cluster = [], clusterEnd = -1;
+
+  const flush = () => {
+    if (!cluster.length) return;
+    const ranked = [...cluster].sort((a, b) =>
+      (a.order - b.order) || (minutesInto(a.start) - minutesInto(b.start)));
+    ranked.forEach((item, slot) => out.push({item, slot, of: ranked.length}));
+    cluster = [];
+  };
+
+  for (const item of sorted) {
+    if (cluster.length && minutesInto(item.start) >= clusterEnd) {
+      flush();
+      clusterEnd = -1;
+    }
+    cluster.push(item);
+    clusterEnd = Math.max(clusterEnd, minutesInto(item.end));
+  }
+  flush();
+  return out;
+}
+
+
+/** Paint a temporary layer over an already-rendered calendar — used to show
+ *  whose availability you are looking at while hovering a booking. */
+function overlay(root, segments, cls) {
+  const cal = root.querySelector(".cal");
+  if (!cal) return;
+  cal.querySelectorAll("." + cls).forEach((node) => node.remove());
+  if (!segments || !segments.length) return;
+
+  const dayStart = Number(cal.dataset.dayStart), dayEnd = Number(cal.dataset.dayEnd);
+  const span = (dayEnd - dayStart) * 60;
+  const byDate = {};
+  for (const s of segments) (byDate[s.start.slice(0, 10)] ||= []).push(s);
+
+  for (const day of cal.querySelectorAll(".cal-day")) {
+    for (const s of byDate[day.dataset.date] || []) {
+      const top = ((minutesInto(s.start) - dayStart * 60) / span) * 100;
+      const height = ((minutesInto(s.end) - dayStart * 60) / span) * 100 - top;
+      const node = document.createElement("div");
+      node.className = cls;
+      node.style.cssText = `top:${top}%;height:${Math.max(height, 1)}%`;
+      day.appendChild(node);
+    }
+  }
 }
 
 function isToday(d) {
@@ -190,4 +257,5 @@ function wireSelection(el, dayStart, dayEnd, onSelect) {
 }
 
 window.renderCalendar = renderCalendar;
+window.calendarOverlay = overlay;
 })();

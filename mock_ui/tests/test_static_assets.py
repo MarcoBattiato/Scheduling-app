@@ -33,7 +33,7 @@ def test_the_scripts_do_not_collide_in_the_global_scope():
     a SyntaxError — and it stops the *second* file executing entirely, which
     reads as the whole page being broken rather than a naming clash.
     """
-    checker = """
+    checker = r"""
       const vm = require("vm"), fs = require("fs");
       // slice(1), not slice(2): under `node -e` there is no script path, so
       // argv[1] is already the first argument. Getting this wrong drops the
@@ -84,9 +84,14 @@ def test_the_page_actually_renders_against_real_state():
     from fastapi.testclient import TestClient
     from mock_ui import app as app_module
 
-    state = TestClient(app_module.app).get("/api/state").json()
+    # Reset first: without it this reads whatever session happens to be saved on
+    # the machine, so the test would pass or fail depending on what someone was
+    # last doing in the browser.
+    client = TestClient(app_module.app)
+    client.post("/api/reset")
+    state = client.get("/api/state").json()
 
-    harness = """
+    harness = r"""
       const vm = require("vm"), fs = require("fs");
       const files = process.argv.slice(1, -1);
       const state = JSON.parse(fs.readFileSync(process.argv[process.argv.length - 1], "utf8"));
@@ -94,6 +99,11 @@ def test_the_page_actually_renders_against_real_state():
       // elements cannot notice one that is missing, which is the whole point.
       const html = fs.readFileSync(files[0].replace(/[^/]+$/, "index.html"), "utf8");
       const realIds = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+      // Only ids named as plain strings in the source are the page's promise to
+      // keep; ones built from a template literal belong to elements the page
+      // creates itself, and are legitimately absent from index.html.
+      const app = fs.readFileSync(files[files.length - 1], "utf8");
+      const promised = new Set([...app.matchAll(/\$\("([^"]+)"\)/g)].map((m) => m[1]));
       const noop = () => {}, els = {}, missing = [];
       const el = () => ({innerHTML: "", style: {}, textContent: "", value: "2",
                          options: {length: 0}, addEventListener: noop,
@@ -103,7 +113,10 @@ def test_the_page_actually_renders_against_real_state():
         console, CSS: {escape: (s) => s}, setInterval: noop, setTimeout: noop,
         document: {addEventListener: noop,
                    getElementById: (id) => {
-                     if (!realIds.has(id)) { missing.push(id); return null; }
+                     if (!realIds.has(id)) {
+                       if (promised.has(id)) missing.push(id);
+                       return null;
+                     }
                      return els[id] = els[id] || el();
                    },
                    querySelectorAll: () => [], querySelector: () => null},
@@ -199,7 +212,7 @@ def test_the_calendar_marks_single_date_overrides():
     outline: an added date is tinted inside the dashes, a removed one bare.
     Appointments must sit above both.
     """
-    harness = """
+    harness = r"""
       const vm = require("vm"), fs = require("fs");
       const files = process.argv.slice(1);
       const noop = () => {};
@@ -263,7 +276,7 @@ def test_the_schedule_distinguishes_every_state_a_slot_can_be_in():
     """Booked, cancelled, asked-to-move, and the slot it would move to must be
     separable at a glance, and the move must be drawn as a link between the two.
     """
-    harness = """
+    harness = r"""
       const vm = require("vm"), fs = require("fs");
       const noop = () => {};
       const sandbox = {console, setInterval: noop, setTimeout: noop,
@@ -331,3 +344,67 @@ def test_the_calendar_palette_is_defined():
     declared |= set(re.findall(r"(--[a-z-]+)\s*:", scripts))
 
     assert not (used - declared), f"CSS variables used but never defined: {used - declared}"
+
+
+@node
+def test_overlapping_bookings_sit_beside_each_other():
+    """A booking and the slot it is vacating occupy the same hour. Stacked, the
+    newer one hides the older; side by side, both are readable — new on the
+    left, given-up on the right.
+    """
+    harness = r"""
+      const vm = require("vm"), fs = require("fs");
+      const noop = () => {};
+      let painted = "";
+      const target = {querySelector: () => null,
+                      getBoundingClientRect: () => ({left:0,top:0,width:800,height:400})};
+      Object.defineProperty(target, "innerHTML", {set(v){painted=v;}, get(){return painted;}});
+      const sandbox = {console, CSS: {escape: (s) => s}, document: {addEventListener: noop}};
+      const ctx = vm.createContext(sandbox); sandbox.window = sandbox;
+      new vm.Script(fs.readFileSync(process.argv[1], "utf8")).runInContext(ctx);
+
+      sandbox.window.renderCalendar(target, {
+        weeks: 1, start: new Date("2026-05-04T00:00"),
+        blocks: [
+          {id: "new", start: "2026-05-04T10:00", end: "2026-05-04T11:00",
+           label: "arriving", order: 0},
+          {id: "gone", start: "2026-05-04T10:00", end: "2026-05-04T11:00",
+           label: "leaving", order: 2},
+          {id: "alone", start: "2026-05-04T14:00", end: "2026-05-04T15:00",
+           label: "solo", order: 1},
+        ],
+      });
+      const grab = (id) => {
+        const m = painted.match(new RegExp(`id="cb-${id}"[^>]*style="([^"]*)"`));
+        const style = m ? m[1] : "";
+        const left = /left:([\d.]+)%/.exec(style), width = /width:([\d.]+)%/.exec(style);
+        return {left: left ? +left[1] : null, width: width ? +width[1] : null};
+      };
+      console.log(JSON.stringify({fresh: grab("new"), gone: grab("gone"), alone: grab("alone")}));
+    """
+    result = subprocess.run(["node", "-e", harness, str(STATIC / "calendar.js")],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert out["fresh"]["width"] == 50 and out["gone"]["width"] == 50, "the hour is shared"
+    assert out["fresh"]["left"] < out["gone"]["left"], "the new one goes on the left"
+    assert out["alone"]["width"] == 100, "a booking with nothing beside it keeps the day"
+
+
+def test_arrows_are_drawn_over_the_bookings():
+    """A displacement arrow that vanishes under a booking explains nothing."""
+    import re
+
+    css = (STATIC / "style.css").read_text()
+
+    def z(selector):
+        block = re.search(rf"{re.escape(selector)} \{{(.*?)\}}", css, re.S)
+        found = re.search(r"z-index:\s*(\d+)", block.group(1)) if block else None
+        return int(found.group(1)) if found else 0
+
+    assert z(".cal-arrows") > z(".cal-block"), "arrows must sit above the bookings"
+    assert z(".cal-peek") < z(".cal-block"), (
+        "the hovered client's availability answers a question about a booking; "
+        "it must not cover it"
+    )

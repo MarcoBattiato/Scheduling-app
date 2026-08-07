@@ -22,12 +22,16 @@ from . import persistence
 from .state import PROVIDER, World
 
 STATIC = Path(__file__).parent / "static"
-# Beside the package, not beside the shell. Defaulting to a relative path meant
-# the session landed somewhere different depending on where you launched from,
-# so a restart could silently start empty.
-SNAPSHOT = Path(os.environ.get(
-    "MOCK_UI_SNAPSHOT", Path(__file__).resolve().parents[2] / "mock_ui_session.json"
-))
+def default_snapshot() -> Path:
+    """Beside the package, not beside the shell.
+
+    A relative default meant the session landed somewhere different depending
+    on where you launched from, so a restart could silently start empty.
+    """
+    return Path(__file__).resolve().parents[2] / "mock_ui_session.json"
+
+
+SNAPSHOT = Path(os.environ.get("MOCK_UI_SNAPSHOT", default_snapshot()))
 
 app = FastAPI(title="Scheduling mock UI")
 world = persistence.load_or_new(SNAPSHOT)
