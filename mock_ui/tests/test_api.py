@@ -41,7 +41,7 @@ def test_the_page_is_served(client):
 
 def test_submitting_a_request_schedules_it_in_one_call(client):
     response = client.post("/api/requests", json={
-        "client_id": "alice", "duration_minutes": 60,
+        "client_id": "alice", "service_id": "session-60",
         "windows": [{"from": at(0, 9), "to": at(0, 17)}],
     })
 
@@ -58,7 +58,7 @@ def test_every_tab_sees_the_same_world(client):
     only reason the mock is a server rather than a static page.
     """
     client.post("/api/requests", json={
-        "client_id": "alice", "duration_minutes": 60,
+        "client_id": "alice", "service_id": "session-60",
         "windows": [{"from": at(0, 9), "to": at(0, 17)}],
     })
 
@@ -138,9 +138,9 @@ def test_settings_are_clamped_to_something_sensible(client):
 
 
 @pytest.mark.parametrize("payload,detail", [
-    ({"client_id": "alice", "duration_minutes": 0,
-      "windows": [{"from": at(0, 9), "to": at(0, 17)}]}, "duration"),
-    ({"client_id": "alice", "duration_minutes": 60, "windows": []}, "window"),
+    ({"client_id": "alice", "service_id": "nonexistent",
+      "windows": [{"from": at(0, 9), "to": at(0, 17)}]}, "no service"),
+    ({"client_id": "alice", "service_id": "session-60", "windows": []}, "window"),
 ])
 def test_nonsense_requests_are_refused_with_a_reason(client, payload, detail):
     response = client.post("/api/requests", json=payload)
@@ -159,7 +159,7 @@ def test_a_session_survives_being_saved_and_reloaded(client, tmp_path):
     from mock_ui import persistence
 
     client.post("/api/requests", json={
-        "client_id": "alice", "duration_minutes": 60,
+        "client_id": "alice", "service_id": "session-60",
         "windows": [{"from": at(0, 9), "to": at(0, 17)}],
     })
     before = client.get("/api/state").json()
@@ -173,3 +173,36 @@ def test_a_session_survives_being_saved_and_reloaded(client, tmp_path):
     # Ids must survive, or the supersedes chain stops meaning anything.
     assert ({a.id for a in restored.store._appointments}
             == {a.id for a in app_module.world.store._appointments})
+
+
+def test_the_catalogue_is_visible_and_editable_by_the_provider(client):
+    state = client.get("/api/state").json()
+    assert {s["id"] for s in state["services"]} >= {"session-60", "session-90"}
+
+    client.post("/api/services", json={
+        "id": "intake", "name": "Intake", "duration_minutes": 90,
+        "price_minor_units": 12000,
+    })
+    assert "intake" in {s["id"] for s in client.get("/api/state").json()["services"]}
+
+
+def test_a_discontinued_service_disappears_from_sale_but_not_from_the_record(client):
+    client.post("/api/services/session-90/active?active=false")
+
+    services = {s["id"]: s for s in client.get("/api/state").json()["services"]}
+    assert services["session-90"]["active"] is False, "still listed to the provider"
+
+    booked = client.post("/api/requests", json={
+        "client_id": "alice", "service_id": "session-90",
+        "windows": [{"from": at(0, 9), "to": at(0, 17)}],
+    })
+    assert booked.status_code == 200, "existing ids still resolve for rescheduling"
+
+
+def test_duplicate_service_ids_are_refused(client):
+    response = client.post("/api/services", json={
+        "id": "session-60", "name": "Clash", "duration_minutes": 60,
+        "price_minor_units": 1,
+    })
+    assert response.status_code == 400
+    assert "already exists" in response.json()["detail"]

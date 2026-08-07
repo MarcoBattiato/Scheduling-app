@@ -35,5 +35,15 @@ that lives in INTERFACE.md.
 Not yet implemented: any real persistence layer — `AvailabilityStore` is
 in-memory only so far.
 
+`ServiceCatalogue` (services.py) holds what may be booked: name, duration,
+price. Services are **deactivated, never deleted** — an appointment booked
+against a discontinued service still has to be readable, reschedulable and
+invoiceable, so `get_service` resolves inactive ones while `services()` hides
+them. `bookable_durations()` feeds `CostConfig.service_durations`: gap
+usability is measured against what can still be sold, so withdrawing a service
+should stop gaps of that length looking useful.
+
+Money is integer minor units, never float. Currency is not stored per service.
+
 Run tests: `.venv/bin/pytest tests/` (venv created via
 `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`).

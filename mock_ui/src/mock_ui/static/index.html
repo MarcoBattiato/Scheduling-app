@@ -41,14 +41,27 @@
       <section class="panel" id="panel-request">
         <h2>Ask for a booking</h2>
         <form id="request-form">
-          <label>Length
-            <select name="duration"><option>60</option><option>90</option></select>
+          <label>Service
+            <select name="service" id="service-picker"></select>
           </label>
           <label>Earliest <input type="datetime-local" name="from" required></label>
           <label>Latest <input type="datetime-local" name="to" required></label>
           <button type="submit">Request</button>
         </form>
         <div id="requests"></div>
+      </section>
+
+      <section class="panel" id="panel-catalogue">
+        <h2>Service catalogue</h2>
+        <p class="hint">Discontinued services stay resolvable, so existing
+          bookings and their invoices keep working.</p>
+        <div id="catalogue"></div>
+        <form id="service-form">
+          <label>Name <input name="name" required size="14"></label>
+          <label>Min <input name="duration" type="number" value="60" min="5" step="5" size="3"></label>
+          <label>Price <input name="price" type="number" value="80" min="0" step="1" size="4"></label>
+          <button type="submit">Add</button>
+        </form>
       </section>
 
       <section class="panel" id="panel-log">

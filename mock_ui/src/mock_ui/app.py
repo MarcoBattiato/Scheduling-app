@@ -42,8 +42,16 @@ class WeeklyIn(BaseModel):
 
 class RequestIn(BaseModel):
     client_id: str
-    duration_minutes: int
+    service_id: str
     windows: List[dict]
+
+
+class ServiceIn(BaseModel):
+    id: str
+    name: str
+    duration_minutes: int
+    price_minor_units: int
+    client_bookable: bool = True
 
 
 class MoveIn(BaseModel):
@@ -89,15 +97,42 @@ def set_availability(payload: WeeklyIn):
 
 @app.post("/api/requests")
 def submit_request(payload: RequestIn):
-    if payload.duration_minutes <= 0:
-        raise HTTPException(400, "duration must be positive")
     if not payload.windows:
         raise HTTPException(400, "a request needs at least one window")
-    request = world.submit_request(
-        payload.client_id, payload.duration_minutes, payload.windows
-    )
+    try:
+        request = world.submit_request(
+            payload.client_id, payload.service_id, payload.windows
+        )
+    except KeyError as exc:
+        raise HTTPException(400, str(exc.args[0])) from None
     outcome = world.solve()
     return {"request_id": request.id, "outcome": outcome}
+
+
+@app.post("/api/services")
+def add_service(payload: ServiceIn):
+    try:
+        service = world.catalogue.add_service(
+            payload.id, payload.name, payload.duration_minutes,
+            payload.price_minor_units, client_bookable=payload.client_bookable,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    world._note(f"added service {service.name}")
+    return {"ok": True}
+
+
+@app.post("/api/services/{service_id}/active")
+def set_service_active(service_id: str, active: bool = True):
+    try:
+        service = (world.catalogue.reactivate_service(service_id) if active
+                   else world.catalogue.deactivate_service(service_id))
+    except KeyError:
+        raise HTTPException(404, "no such service") from None
+    world._note(
+        f"{'re-listed' if active else 'discontinued'} {service.name}"
+    )
+    return {"ok": True}
 
 
 @app.post("/api/requests/{request_id}/withdraw")
@@ -192,6 +227,10 @@ def seed_world(target: World) -> None:
     availability, and one booking each so history starts accumulating rather
     than requiring setup before anything can be tried.
     """
+    target.catalogue.add_service("session-60", "Standard session", 60, 8000)
+    target.catalogue.add_service("session-90", "Extended session", 90, 11000)
+    target.catalogue.add_service("break", "Break", 60, 0, client_bookable=False)
+
     target.add_client("alice", "Alice")
     target.add_client("bob", "Bob")
     target.add_client("carol", "Carol")
@@ -214,7 +253,7 @@ def seed_world(target: World) -> None:
     ):
         start = datetime.combine(monday + timedelta(days=day_offset), time(hour))
         target.store.book_appointment(
-            client_id, "session", start, start + timedelta(minutes=60)
+            client_id, "session-60", start, start + timedelta(minutes=60)
         )
     target._note("seeded a starting calendar")
 

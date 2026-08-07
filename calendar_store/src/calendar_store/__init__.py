@@ -9,6 +9,7 @@ from .models import (
 )
 from .queries import crop, intersect, negate, union
 from .segments import TimeSegment, to_segments
+from .services import Service, ServiceCatalogue
 from .store import AvailabilityStore
 
 __all__ = [
@@ -20,6 +21,8 @@ __all__ = [
     "Origin",
     "Party",
     "AvailabilityStore",
+    "Service",
+    "ServiceCatalogue",
     "TimeSegment",
     "to_segments",
     "crop",

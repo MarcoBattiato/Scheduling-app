@@ -9,9 +9,16 @@ editing, check what imports `calendar_store` and read the relevant part of
 ## Scope
 
 `calendar_store` knows about clients, recurring availability rules, single-date
-exceptions, and booked appointments. It has no concept of requests, offers,
+exceptions, booked appointments, and the catalogue of services those
+appointments are booked against. It has no concept of requests, offers,
 negotiation, or disruption cost — one-way dependency, `calendar_store` must
 never import from `scheduling_engine`.
+
+The catalogue carries a price, which is the one commercial fact in an otherwise
+purely temporal package. It lives here because `Appointment.service_type_id`
+already points at it and because duration is scheduling-relevant. If invoicing,
+tax or discounting arrive, they belong elsewhere and the catalogue may well move
+with them.
 
 All times are naive `datetime`s (single implicit timezone per client, assumed
 consistent by the caller). All windows are half-open: `[window_start,
@@ -87,7 +94,23 @@ class Appointment:
 class TimeSegment:
     start: datetime
     end: datetime
+
+
+@dataclass(frozen=True)
+class Service:
+    id: str
+    name: str
+    duration_minutes: int
+    price_minor_units: int      # integer minor units (cents/pence), never a float
+    active: bool = True         # deactivated services are withdrawn, not deleted
+    client_bookable: bool = True  # False for provider-only entries, e.g. a break
+    description: Optional[str] = None
 ```
+
+Money is stored as an integer count of the currency's smallest unit. Floats
+accumulate rounding error that eventually surfaces on an invoice. The currency
+itself is not stored per service — a single-provider business has one, and
+repeating it invites disagreement.
 
 `ClientAvailabilityRule` and `AvailabilityException` are read-only results of
 `rules_for`/`exceptions_for` — availability is only ever changed through the
@@ -182,6 +205,41 @@ the original row, because a client's past bookings are evidence about their
 habits and that evidence cannot be recovered once discarded. Use
 `appointments_for` to ask what occupies time, and `appointment_history` to ask
 what has happened. A caller checking for double-booking must use the former.
+
+## `ServiceCatalogue`
+
+```python
+def add_service(
+    service_id: str, name: str, duration_minutes: int, price_minor_units: int,
+    *, client_bookable: bool = True, description: Optional[str] = None,
+) -> Service: ...
+    # ValueError on a duplicate id, non-positive duration, or negative price
+
+def update_service(service_id: str, **changes) -> Service: ...
+    # name / duration_minutes / price_minor_units / client_bookable /
+    # description. ValueError on anything else — the id is not editable.
+
+def deactivate_service(service_id: str) -> Service: ...
+def reactivate_service(service_id: str) -> Service: ...
+
+def get_service(service_id: str) -> Service: ...     # raises KeyError if unknown
+    # resolves whether or not the service is active
+
+def services(*, include_inactive: bool = False,
+             client_bookable_only: bool = False) -> list[Service]: ...
+
+def bookable_durations() -> tuple[int, ...]: ...
+    # distinct durations of ACTIVE services — what CostConfig.service_durations wants
+```
+
+**Services are deactivated, never removed.** An appointment booked against a
+service discontinued this morning must still be readable, reschedulable and
+invoiceable, so `get_service` is deliberately indifferent to `active` while
+`services()` hides withdrawn entries by default.
+
+**`update_service` rewrites the current definition.** An appointment booked at
+the old price resolves to the new one, so invoicing must record what was
+charged at the time rather than looking it up afterwards.
 
 ## Query helpers (`queries.py`)
 

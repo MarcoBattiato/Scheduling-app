@@ -109,7 +109,11 @@ class Appointment:
     service_type_id: str
     range: TimeSegment
     locked: bool  # staff-pinned, immovable regardless of notice
-    notes: Optional[str] = None  # free-text for end users; never read by any solver logic
+    # Booking-process notes only — "prefers the quiet room", "parking code 4821".
+    # Clinical or otherwise sensitive content is deliberately out of scope for
+    # this system; letting it in here would make a scheduling app a holder of
+    # medical records, with everything that implies. Never read by solver logic.
+    notes: Optional[str] = None
     status: AppointmentStatus = AppointmentStatus.BOOKED
     origin: Origin = Origin.CLIENT
     supersedes: Optional[int] = None  # the appointment this one replaces, if any

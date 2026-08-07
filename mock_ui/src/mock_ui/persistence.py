@@ -55,6 +55,12 @@ def save(world: World, path: Path) -> None:
              "origin": a.origin.value, "supersedes": a.supersedes}
             for a in world.store._appointments
         ],
+        "services": [
+            {"id": s.id, "name": s.name, "duration_minutes": s.duration_minutes,
+             "price_minor_units": s.price_minor_units, "active": s.active,
+             "client_bookable": s.client_bookable, "description": s.description}
+            for s in world.catalogue.services(include_inactive=True)
+        ],
         "log": world.log,
     }
     path.write_text(json.dumps(payload, indent=2))
@@ -72,6 +78,16 @@ def load(path: Path) -> World:
     world.max_displacements = settings.get(
         "max_displacements", world.max_displacements
     )
+
+    for entry in payload.get("services", []):
+        world.catalogue.add_service(
+            entry["id"], entry["name"], entry["duration_minutes"],
+            entry["price_minor_units"],
+            client_bookable=entry.get("client_bookable", True),
+            description=entry.get("description"),
+        )
+        if not entry.get("active", True):
+            world.catalogue.deactivate_service(entry["id"])
 
     world.store._rules = [
         ClientAvailabilityRule(

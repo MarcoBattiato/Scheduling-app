@@ -54,11 +54,13 @@ function render() {
   renderSchedule();
   renderGrid();
   renderRequests();
+  renderCatalogue();
   $("log").innerHTML = state.log.slice().reverse()
     .map((l) => `<div class="log-line">${escapeHtml(l)}</div>`).join("");
 
   $("avail-for").textContent = isProvider() ? "(provider)" : `(${me})`;
   $("panel-request").style.display = isProvider() ? "none" : "";
+  $("panel-catalogue").style.display = isProvider() ? "" : "none";
 }
 
 function renderAlerts() {
@@ -159,13 +161,38 @@ function renderGrid() {
   $("grid").innerHTML = html + `</table>`;
 }
 
+function money(minor) { return (minor / 100).toFixed(2); }
+
+function renderCatalogue() {
+  if (!isProvider()) return;
+  const services = state.services || [];
+  $("catalogue").innerHTML = services.map((s) => `
+    <div class="req ${s.active ? "" : "withdrawn"}">
+      <span>${escapeHtml(s.name)}</span>
+      <span class="tag">${s.duration}m</span>
+      <span class="tag">${money(s.price)}</span>
+      ${s.client_bookable ? "" : `<span class="tag">provider only</span>`}
+      <button class="link" onclick="setService('${s.id}', ${!s.active})">
+        ${s.active ? "discontinue" : "re-list"}</button>
+    </div>`).join("");
+
+  // Clients may only ask for what is on sale and meant for them.
+  const picker = $("service-picker");
+  if (picker) {
+    const offered = services.filter((s) => s.active && s.client_bookable);
+    picker.innerHTML = offered.map((s) =>
+      `<option value="${s.id}">${escapeHtml(s.name)} · ${s.duration}m · ${money(s.price)}</option>`
+    ).join("");
+  }
+}
+
 function renderRequests() {
   const mine = state.requests.filter((r) => isProvider() || r.client_id === me);
   const open = mine.filter((r) => r.status === "pending");
   $("requests").innerHTML = !mine.length ? "" : `
     <div class="reqs">${mine.slice(-6).reverse().map((r) => `
       <div class="req ${r.status}">
-        <span>${r.duration}m ${isProvider() ? "· " + r.client_id : ""}</span>
+        <span>${serviceName(r.service_id)} · ${r.duration}m ${isProvider() ? "· " + r.client_id : ""}</span>
         <span class="tag">${r.status}</span>
         ${r.status === "pending"
           ? `<button class="link" onclick="withdraw(${r.id})">withdraw</button>` : ""}
@@ -187,6 +214,10 @@ window.cancelAppt = async (id) => {
 };
 window.attend = async (id, attended) => {
   await api(`/api/appointments/${id}/attendance`, {attended});
+  refresh();
+};
+window.setService = async (id, active) => {
+  await api(`/api/services/${id}/active?active=${active}`);
   refresh();
 };
 window.withdraw = async (id) => { await api(`/api/requests/${id}/withdraw`); refresh(); };
@@ -229,9 +260,23 @@ $("request-form").onsubmit = async (e) => {
   const f = new FormData(e.target);
   await api("/api/requests", {
     client_id: me,
-    duration_minutes: Number(f.get("duration")),
+    service_id: f.get("service"),
     windows: [{from: f.get("from"), to: f.get("to")}],
   });
+  refresh();
+};
+
+$("service-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const name = f.get("name");
+  await api("/api/services", {
+    id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    name,
+    duration_minutes: Number(f.get("duration")),
+    price_minor_units: Math.round(Number(f.get("price")) * 100),
+  });
+  e.target.reset();
   refresh();
 };
 
@@ -271,6 +316,8 @@ const runToRange = (d, run) => ({weekday: d, from: slotLabel(run.start), to: slo
 const fmt = (iso) => new Date(iso).toLocaleString([], {
   weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
 });
+const serviceName = (id) =>
+  (state.services || []).find((s) => s.id === id)?.name || id || "session";
 const isPast = (iso) => new Date(iso) < new Date();
 const escapeHtml = (s) => s.replace(/[&<>]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
 

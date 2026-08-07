@@ -11,7 +11,14 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Sequence
 
-from calendar_store import Appointment, AvailabilityStore, Origin, Party, TimeSegment
+from calendar_store import (
+    Appointment,
+    AvailabilityStore,
+    Origin,
+    Party,
+    ServiceCatalogue,
+    TimeSegment,
+)
 from scheduling_engine import (
     BookingRequest,
     CostConfig,
@@ -38,6 +45,7 @@ class Request:
     """A client asking for a booking. Lives until placed or withdrawn."""
     id: int
     client_id: str
+    service_id: str
     duration_minutes: int
     windows: List[TimeRange]
     status: str = "pending"          # pending | placed | withdrawn
@@ -71,6 +79,7 @@ class Plan:
 class World:
     def __init__(self) -> None:
         self.store = AvailabilityStore()
+        self.catalogue = ServiceCatalogue()
         self.clients: Dict[str, Client] = {}
         self.requests: Dict[int, Request] = {}
         self.approvals: Dict[int, Approval] = {}
@@ -79,7 +88,6 @@ class World:
         self.alpha = 0.5
         self.max_displacements = 1
         self.bounds = RescheduleBounds(max_days_earlier=2, max_days_later=4)
-        self.service_durations = (60, 90)
         # Appointments a client refused to move this session. Cruder than the
         # engine's per-date blocking (SPEC.md §7 of the mock).
         self.immovable: set = set()
@@ -126,18 +134,22 @@ class World:
     # -- bookings ----------------------------------------------------
 
     def submit_request(
-        self, client_id: str, duration_minutes: int, windows: Sequence[dict]
+        self, client_id: str, service_id: str, windows: Sequence[dict]
     ) -> Request:
+        """Duration comes from the catalogue, not the caller: how long a
+        service takes is a property of the service, not of the asking."""
+        service = self.catalogue.get_service(service_id)
         request = Request(
             id=next(self._ids),
             client_id=client_id,
-            duration_minutes=int(duration_minutes),
+            service_id=service_id,
+            duration_minutes=service.duration_minutes,
             windows=[
                 TimeRange(_parse_dt(w["from"]), _parse_dt(w["to"])) for w in windows
             ],
         )
         self.requests[request.id] = request
-        self._note(f"{client_id} asked for {duration_minutes}m")
+        self._note(f"{client_id} asked for {service.name}")
         return request
 
     def withdraw_request(self, request_id: int) -> None:
@@ -188,8 +200,11 @@ class World:
 
         window_start = date.today()
         window_end = window_start + timedelta(days=horizon_days)
+        # Gap usability is measured against what can still be sold, so a
+        # withdrawn service must stop making gaps of its length look useful.
         config = CostConfig(
-            alpha=self.alpha, service_durations=self.service_durations
+            alpha=self.alpha,
+            service_durations=self.catalogue.bookable_durations() or (60,),
         )
 
         availability = self.availability_segments(PROVIDER, window_start, window_end)
@@ -227,6 +242,7 @@ class World:
 
         plan = Plan(id=next(self._ids), placements=[
             {"request_id": int(p.request_id), "client_id": p.client_id,
+             "service_id": self.requests[int(p.request_id)].service_id,
              "start": p.range.start, "end": p.range.end}
             for p in result.placements
         ])
@@ -296,7 +312,7 @@ class World:
             )
         for placement in plan.placements:
             self.store.book_appointment(
-                placement["client_id"], "session",
+                placement["client_id"], placement["service_id"],
                 placement["start"], placement["end"],
             )
             request = self.requests.get(placement["request_id"])
@@ -325,6 +341,7 @@ class World:
             for a in self.store.appointment_history(client_id, *window):
                 history.append({
                     "id": a.id, "client_id": a.client_id,
+                    "service_id": a.service_type_id,
                     "start": a.range.start.isoformat(), "end": a.range.end.isoformat(),
                     "status": a.status.value, "origin": a.origin.value,
                     "locked": a.locked, "supersedes": a.supersedes,
@@ -334,6 +351,12 @@ class World:
             "today": start.isoformat(),
             "horizon": end.isoformat(),
             "clients": [{"id": c.id, "name": c.name} for c in self.clients.values()],
+            "services": [
+                {"id": s.id, "name": s.name, "duration": s.duration_minutes,
+                 "price": s.price_minor_units, "active": s.active,
+                 "client_bookable": s.client_bookable}
+                for s in self.catalogue.services(include_inactive=True)
+            ],
             "settings": {"alpha": self.alpha,
                          "max_displacements": self.max_displacements,
                          "bounds": {"earlier": self.bounds.max_days_earlier,
@@ -356,7 +379,7 @@ class World:
                 for client_id in list(self.clients) + [PROVIDER]
             },
             "requests": [
-                {"id": r.id, "client_id": r.client_id,
+                {"id": r.id, "client_id": r.client_id, "service_id": r.service_id,
                  "duration": r.duration_minutes, "status": r.status,
                  "windows": [{"from": w.start.isoformat(), "to": w.end.isoformat()}
                              for w in r.windows]}

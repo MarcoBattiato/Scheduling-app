@@ -24,6 +24,8 @@ def iso(moment: datetime) -> str:
 @pytest.fixture
 def world() -> World:
     w = World()
+    w.catalogue.add_service("s60", "Hour", 60, 8000)
+    w.catalogue.add_service("s90", "Long", 90, 11000)
     w.add_client("alice", "Alice")
     w.add_client("bob", "Bob")
     w.set_weekly_availability(
@@ -37,7 +39,7 @@ def world() -> World:
 
 
 def request(world, client, duration, day, from_hour, to_hour):
-    return world.submit_request(client, duration, [
+    return world.submit_request(client, f"s{duration}", [
         {"from": iso(at(day, from_hour)), "to": iso(at(day, to_hour))}
     ])
 
@@ -109,7 +111,7 @@ def _full_monday(world):
     world.set_weekly_availability(
         "bob", [{"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)]
     )
-    world.store.book_appointment("bob", "session", at(0, 9), at(0, 10))
+    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
 
 
 def test_a_displacement_waits_for_the_client_rather_than_happening(world):
@@ -184,7 +186,7 @@ def test_locked_appointments_are_never_offered_up(world):
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
-    world.store.book_appointment("bob", "session", at(0, 9), at(0, 10), locked=True)
+    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10), locked=True)
     request(world, "alice", 60, 0, 9, 10)
 
     outcome = world.solve()
@@ -218,3 +220,41 @@ def test_the_snapshot_carries_what_every_view_needs(world):
     assert "provider-self" in snap["availability"]
     assert snap["requests"][0]["status"] == "placed"
     assert snap["log"]
+
+
+# -- the catalogue ---------------------------------------------------
+
+
+def test_duration_comes_from_the_service_not_the_asking(world):
+    booked = world.submit_request("alice", "s90", [
+        {"from": iso(at(0, 9)), "to": iso(at(0, 17))}
+    ])
+
+    assert booked.duration_minutes == 90
+
+
+def test_asking_for_a_service_that_does_not_exist_is_refused(world):
+    with pytest.raises(KeyError):
+        world.submit_request("alice", "nope", [
+            {"from": iso(at(0, 9)), "to": iso(at(0, 17))}
+        ])
+
+
+def test_the_solver_measures_gaps_against_what_is_still_on_sale(world):
+    """Withdrawing the 90-minute service should stop a 90-minute hole looking
+    like something worth preserving.
+    """
+    world.catalogue.deactivate_service("s90")
+    request(world, "alice", 60, 0, 9, 17)
+    world.solve()
+
+    assert world.catalogue.bookable_durations() == (60,)
+
+
+def test_a_booking_against_a_discontinued_service_still_resolves(world):
+    request(world, "alice", 60, 0, 9, 17)
+    world.solve()
+    world.catalogue.deactivate_service("s60")
+
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    assert world.catalogue.get_service(booked.service_type_id).name == "Hour"
