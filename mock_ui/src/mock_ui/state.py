@@ -144,6 +144,43 @@ class World:
 
     # -- availability ------------------------------------------------
 
+    def set_exception(
+        self, client_id: str, on_date: date, start: time, end: time, available: bool
+    ) -> None:
+        """Override the weekly pattern on one date only.
+
+        Recurring rules say what a client's week normally looks like; this is
+        for the week that is not normal — a Tuesday off, an extra Saturday.
+        """
+        if available:
+            self.store.add_exception_availability(client_id, on_date, start, end)
+        else:
+            self.store.remove_exception_availability(client_id, on_date, start, end)
+        self._note(
+            f"{client_id} is {'available' if available else 'away'} "
+            f"{on_date:%a %d %b} {start:%H:%M}-{end:%H:%M}"
+        )
+
+    def client_summary(self, client_id: str) -> dict:
+        """Enough about a client to be worth showing on hover."""
+        history = self.store.appointment_history(
+            client_id, datetime(2000, 1, 1), datetime(2100, 1, 1)
+        )
+        counts = {}
+        for appointment in history:
+            counts[appointment.status.value] = counts.get(appointment.status.value, 0) + 1
+        return {
+            "booked": counts.get("booked", 0),
+            "completed": counts.get("completed", 0),
+            "no_show": counts.get("no_show", 0),
+            "cancelled": (counts.get("cancelled_by_client", 0)
+                          + counts.get("cancelled_by_provider", 0)),
+            "moved_by_us": sum(1 for a in history if a.origin is Origin.DISPLACED),
+            "open_requests": sum(1 for r in self.requests.values()
+                                 if r.client_id == client_id
+                                 and r.status in ("pending", "on_hold", "awaiting_client")),
+        }
+
     def set_weekly_availability(
         self, client_id: str, ranges: Sequence[dict]
     ) -> None:
@@ -671,12 +708,18 @@ class World:
                     "start": a.range.start.isoformat(), "end": a.range.end.isoformat(),
                     "status": a.status.value, "origin": a.origin.value,
                     "locked": a.locked, "supersedes": a.supersedes,
+                    "service": self._service_name(a.service_type_id),
+                    "price": self._service_price(a.service_type_id),
+                    "notes": a.notes,
                 })
 
         return {
             "today": start.isoformat(),
             "horizon": end.isoformat(),
-            "clients": [{"id": c.id, "name": c.name} for c in self.clients.values()],
+            "clients": [
+                {"id": c.id, "name": c.name, **self.client_summary(c.id)}
+                for c in self.clients.values()
+            ],
             "services": [
                 {"id": s.id, "name": s.name, "duration": s.duration_minutes,
                  "price": s.price_minor_units, "active": s.active,
@@ -695,6 +738,16 @@ class World:
                 ]
                 for client_id in list(self.clients) + [PROVIDER]
             },
+            "exceptions": {
+                client_id: [
+                    {"date": e.date.isoformat(),
+                     "from": e.start_time.strftime("%H:%M"),
+                     "to": e.end_time.strftime("%H:%M"),
+                     "kind": e.kind.value}
+                    for e in self.store.exceptions_for(client_id)
+                ]
+                for client_id in list(self.clients) + [PROVIDER]
+            },
             "weekly": {
                 client_id: [
                     {"weekday": r.weekday,
@@ -706,6 +759,7 @@ class World:
             },
             "requests": [
                 {"id": r.id, "client_id": r.client_id, "service_id": r.service_id,
+                 "service": self._service_name(r.service_id),
                  "duration": r.duration_minutes, "status": r.status,
                  "windows": [{"from": w.start.isoformat(), "to": w.end.isoformat()}
                              for w in r.windows]}
@@ -723,16 +777,21 @@ class World:
                  "detail": p.detail, "params": p.params, "metrics": p.metrics,
                  "placements": [
                      {"key": p.item_key("booking", x["request_id"]),
+                      "request_id": x["request_id"],
                       "client_id": x["client_id"], "service_id": x["service_id"],
+                      "service": self._service_name(x["service_id"]),
                       "start": x["start"].isoformat(), "end": x["end"].isoformat(),
                       "depends_on": [p.item_key("reschedule", a)
                                      for a in x["depends_on"]]}
                      for x in p.placements],
                  "displacements": [
                      {"key": p.item_key("reschedule", x["appointment_id"]),
+                      "appointment_id": x["appointment_id"],
                       "client_id": x["client_id"],
                       "was": x["was_start"].isoformat(),
+                      "was_end": x["was_end"].isoformat(),
                       "now": x["now_start"].isoformat(),
+                      "now_end": x["now_end"].isoformat(),
                       "depends_on": [p.item_key("reschedule", a)
                                      for a in x["depends_on"]]}
                      for x in p.displacements]}
@@ -749,6 +808,18 @@ class World:
             },
             "log": self.log[-40:],
         }
+
+    def _service_name(self, service_id: str) -> str:
+        try:
+            return self.catalogue.get_service(service_id).name
+        except KeyError:
+            return service_id
+
+    def _service_price(self, service_id: str) -> int:
+        try:
+            return self.catalogue.get_service(service_id).price_minor_units
+        except KeyError:
+            return 0
 
     def _note(self, message: str) -> None:
         self.log.append(f"{datetime.now():%H:%M:%S}  {message}")

@@ -6,6 +6,7 @@ const params = new URLSearchParams(location.search);
 let me = params.get("as") || "provider";
 let state = null;
 let pendingGrid = null;          // weekday -> Set(slot index), while editing
+let picked = {};                 // plan item key -> ticked, survives the poll
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const START_HOUR = 8, END_HOUR = 20, STEP = 30;
@@ -13,6 +14,7 @@ const SLOTS = ((END_HOUR - START_HOUR) * 60) / STEP;
 
 const $ = (id) => document.getElementById(id);
 const isProvider = () => me === "provider";
+const whose = () => (isProvider() ? "provider-self" : me);
 
 async function api(path, body) {
   const res = await fetch(path, body ? {
@@ -36,13 +38,11 @@ function render() {
   if (!known.includes(me)) me = "provider";
 
   $("who").textContent = isProvider()
-    ? "Provider"
-    : (state.clients.find((c) => c.id === me)?.name || me);
+    ? "Provider" : (state.clients.find((c) => c.id === me)?.name || me);
 
   const sel = $("role");
   if (sel.options.length !== known.length) {
-    sel.innerHTML = known
-      .map((id) => `<option value="${id}">${id}</option>`).join("");
+    sel.innerHTML = known.map((id) => `<option value="${id}">${id}</option>`).join("");
   }
   sel.value = me;
 
@@ -58,20 +58,53 @@ function render() {
   renderRequests();
   renderCatalogue();
   $("log").innerHTML = state.log.slice().reverse()
-    .map((l) => `<div class="log-line">${escapeHtml(l)}</div>`).join("");
+    .map((l) => `<div class="log-line">${esc(l)}</div>`).join("");
 
   $("avail-for").textContent = isProvider() ? "(provider)" : `(${me})`;
   $("panel-request").style.display = isProvider() ? "none" : "";
   $("panel-catalogue").style.display = isProvider() ? "" : "none";
+  $("try").style.display = isProvider() ? "" : "none";
+  $("solve").style.display = isProvider() ? "" : "none";
 }
+
+// -- the schedule calendar -------------------------------------------
+
+function renderSchedule() {
+  const mine = (a) => isProvider() || a.client_id === me;
+  const live = state.appointments.filter((a) => a.status === "booked" && mine(a));
+
+  renderCalendar($("calendar"), {
+    weeks: Number($("weeks").value),
+    start: new Date(state.today + "T00:00"),
+    availability: (state.availability[whose()] || []),
+    blocks: live.map((a) => ({
+      id: `a${a.id}`,
+      start: a.start, end: a.end,
+      label: isProvider() ? a.client_id : a.service,
+      sub: `${a.start.slice(11, 16)}–${a.end.slice(11, 16)}`,
+      cls: [a.origin === "displaced" ? "moved" : "",
+            new Date(a.end) < new Date() ? "past" : ""].join(" "),
+      data: hoverData(a),
+    })),
+    onSelect: (date, from, to, available) => setException(date, from, to, available),
+  });
+}
+
+function setException(date, from, to, available) {
+  // Drag adds availability on that date; shift-drag takes it away. Either way
+  // it is a single-date exception, not a change to the weekly pattern.
+  api("/api/exceptions", {
+    client_id: whose(), date, from_time: from, to_time: to, available,
+  }).then(refresh);
+}
+
+// -- proposals, each on their own calendar ---------------------------
 
 function renderProposal() {
   const drafts = (state.plans || []).filter((p) => p.status === "draft");
-  $("try").style.display = isProvider() ? "" : "none";
   if (!isProvider() || !drafts.length) { $("proposal").innerHTML = ""; return; }
 
   const inFlight = (state.plans || []).some((p) => p.status === "awaiting_clients");
-
   $("proposal").innerHTML = `
     <div class="alert proposal">
       <div><b>${drafts.length === 1 ? "The scheduler has a proposal"
@@ -80,10 +113,10 @@ function renderProposal() {
           to confirm their own part.</span></div>
       ${inFlight ? `<p class="hint">Something is already out with the clients.
          Those slots are held, so this proposal plans around them.</p>` : ""}
-      <div class="drafts">${drafts.map(renderDraft).join("")}</div>
+      <div class="drafts">${drafts.map(draftShell).join("")}</div>
     </div>`;
 
-  // Restore any ticks the poll would otherwise wipe, then apply dependencies.
+  drafts.forEach(drawDraft);
   for (const [key, on] of Object.entries(picked)) {
     const box = document.querySelector(`input[data-key="${CSS.escape(key)}"]`);
     if (box) box.checked = on;
@@ -91,14 +124,14 @@ function renderProposal() {
   drafts.forEach((p) => applyDeps(p.id));
 }
 
-function renderDraft(p) {
+function draftShell(p) {
   const m = p.metrics || {}, q = p.params || {};
   const item = (x, kind) => `
     <label class="item">
       <input type="checkbox" checked data-plan="${p.id}" data-key="${x.key}"
              data-needs="${(x.depends_on || []).join(",")}" onchange="tick(this)">
       <span class="tag ${kind === "book" ? "ok" : "move"}">${kind}</span>
-      <span>${escapeHtml(x.client_id)}</span>
+      <span>${esc(x.client_id)}</span>
       <span class="time">${kind === "book" ? fmt(x.start)
                                            : `${fmt(x.was)} → ${fmt(x.now)}`}</span>
     </label>`;
@@ -113,45 +146,61 @@ function renderDraft(p) {
         <span class="tag">waste ${m.fragmentation_minutes}m</span>
         <span class="tag">delay ${m.earliness_minutes}m</span>
       </div>
+      <div class="draft-cal" id="draftcal-${p.id}"></div>
       ${p.placements.map((x) => item(x, "book")).join("")}
       ${p.displacements.map((x) => item(x, "move")).join("")}
       <div class="row" style="margin-top:10px">
         <button onclick="approvePlan(${p.id})">Approve selected</button>
-        <button class="ghost" onclick="lockAndRerun(${p.id})">Lock selected, re-plan the rest</button>
+        <button class="ghost" onclick="lockAndRerun(${p.id})">Lock selected, re-plan rest</button>
         <button class="ghost" onclick="discardPlan(${p.id})">Discard</button>
       </div>
     </div>`;
 }
 
-// Ticks survive the 2.5s poll.
-let picked = {};
+function drawDraft(p) {
+  const el = $(`draftcal-${p.id}`);
+  if (!el) return;
+  const moving = new Set(p.displacements.map((d) => d.appointment_id));
 
-window.tick = (box) => {
-  picked[box.dataset.key] = box.checked;
-  applyDeps(Number(box.dataset.plan));
-};
+  // What stays put, shown faintly, so the proposal reads against the calendar
+  // it would actually land in rather than floating free.
+  const staying = state.appointments
+    .filter((a) => a.status === "booked" && !moving.has(a.id))
+    .map((a) => ({id: `d${p.id}-a${a.id}`, start: a.start, end: a.end,
+                  label: a.client_id, cls: "existing", data: hoverData(a)}));
 
-function applyDeps(planId) {
-  // A part that rests on a move cannot be sent on without it: ticking the
-  // dependent forces its prerequisites on and locks them.
-  const boxes = [...document.querySelectorAll(`input[data-plan="${planId}"]`)];
-  const byKey = Object.fromEntries(boxes.map((b) => [b.dataset.key, b]));
+  const key = (k) => k.replace(":", "-");
+  const arriving = p.placements.map((x) => ({
+    id: `d${p.id}-${key(x.key)}`,
+    start: x.start, end: x.end, label: x.client_id, sub: "new",
+    cls: "proposed", data: {Client: x.client_id, Service: x.service,
+                            What: "proposed booking", Request: `#${x.request_id}`},
+  }));
+  const landing = p.displacements.map((d) => ({
+    id: `d${p.id}-${key(d.key)}-to`,
+    start: d.now, end: d.now_end, label: d.client_id, sub: "moved to",
+    cls: "proposed moved", data: {Client: d.client_id,
+                                  What: "would be moved here", From: fmt(d.was)},
+  }));
+  const leaving = p.displacements.map((d) => ({
+    id: `d${p.id}-${key(d.key)}-from`,
+    start: d.was, end: d.was_end, label: d.client_id, cls: "vacating",
+  }));
 
-  boxes.forEach((b) => { b.disabled = false; b.title = ""; });
-  for (const box of boxes) {
-    if (!box.checked) continue;
-    const needs = (box.dataset.needs || "").split(",").filter(Boolean);
-    for (const key of needs) {
-      const dep = byKey[key];
-      if (!dep) continue;
-      dep.checked = true;
-      dep.disabled = true;
-      dep.title = "needed by another item you have selected";
-      dep.closest(".item").classList.add("needs");
-      picked[key] = true;
-    }
-  }
+  renderCalendar(el, {
+    weeks: Number($("weeks").value),
+    start: new Date(state.today + "T00:00"),
+    availability: state.availability["provider-self"] || [],
+    blocks: [...staying, ...arriving, ...landing],
+    ghosts: leaving,
+    arrows: p.displacements.map((d) => ({
+      from: `d${p.id}-${key(d.key)}-from`,
+      to: `d${p.id}-${key(d.key)}-to`,
+    })),
+  });
 }
+
+// -- approvals --------------------------------------------------------
 
 function renderAlerts() {
   const mine = state.approvals.filter(
@@ -161,7 +210,7 @@ function renderAlerts() {
   $("alerts").innerHTML = mine.map((a) => {
     const isMove = a.kind === "reschedule";
     const body = isProvider()
-      ? `Waiting on <b>${a.client_id}</b> to confirm
+      ? `Waiting on <b>${esc(a.client_id)}</b> to confirm
          ${isMove ? `a move ${fmt(a.was)} → ${fmt(a.now)}` : `a booking at ${fmt(a.now)}`}.`
       : (isMove
           ? `We would like to move your appointment from <b>${fmt(a.was)}</b>
@@ -176,59 +225,10 @@ function renderAlerts() {
   }).join("");
 }
 
-function renderSchedule() {
-  const live = state.appointments.filter((a) => a.status === "booked");
-  const shown = isProvider() ? live : live.filter((a) => a.client_id === me);
-
-  const byDay = {};
-  for (const a of shown) {
-    const day = a.start.slice(0, 10);
-    (byDay[day] = byDay[day] || []).push(a);
-  }
-
-  const days = Object.keys(byDay).sort();
-  if (!days.length) {
-    $("schedule").innerHTML = `<p class="hint">Nothing booked yet.</p>`;
-  } else {
-    $("schedule").innerHTML = days.map((day) => `
-      <div class="day">
-        <h3>${new Date(day + "T00:00").toDateString()}</h3>
-        ${byDay[day].sort((x, y) => x.start < y.start ? -1 : 1).map((a) => `
-          <div class="appt${a.origin === "displaced" ? " displaced" : ""}">
-            <span class="time">${a.start.slice(11, 16)}–${a.end.slice(11, 16)}</span>
-            <span class="name">${a.client_id}</span>
-            ${a.origin === "displaced" ? `<span class="tag">moved by clinic</span>` : ""}
-            ${a.locked ? `<span class="tag">locked</span>` : ""}
-            ${isProvider() && isPast(a.end)
-              ? `<button class="link" onclick="attend(${a.id}, true)">attended</button>
-                 <button class="link" onclick="attend(${a.id}, false)">no-show</button>` : ""}
-            ${(isProvider() || a.client_id === me)
-              ? `<button class="link" onclick="cancelAppt(${a.id})">cancel</button>` : ""}
-          </div>`).join("")}
-      </div>`).join("");
-  }
-
-  if (isProvider()) renderHistory();
-}
-
-function renderHistory() {
-  const past = state.appointments.filter((a) => a.status !== "booked");
-  if (!past.length) return;
-  $("schedule").innerHTML += `
-    <div class="day history">
-      <h3>History <span class="hint">(what anchoring will learn from)</span></h3>
-      ${past.map((a) => `
-        <div class="appt muted">
-          <span class="time">${a.start.slice(5, 16).replace("T", " ")}</span>
-          <span class="name">${a.client_id}</span>
-          <span class="tag">${a.status}</span>
-          <span class="tag ${a.origin}">${a.origin}</span>
-        </div>`).join("")}
-    </div>`;
-}
+// -- side panels ------------------------------------------------------
 
 function renderGrid() {
-  const weekly = state.weekly[isProvider() ? "provider-self" : me] || [];
+  const weekly = state.weekly[whose()] || [];
   if (!pendingGrid) {
     pendingGrid = {};
     for (let d = 0; d < 7; d++) pendingGrid[d] = new Set();
@@ -238,16 +238,13 @@ function renderGrid() {
       }
     }
   }
-
   let html = `<table class="grid"><tr><th></th>`;
   for (const d of DAYS) html += `<th>${d}</th>`;
   html += `</tr>`;
   for (let i = 0; i < SLOTS; i++) {
-    const label = i % 2 === 0 ? slotLabel(i) : "";
-    html += `<tr><td class="hour">${label}</td>`;
+    html += `<tr><td class="hour">${i % 2 === 0 ? slotLabel(i) : ""}</td>`;
     for (let d = 0; d < 7; d++) {
-      const on = pendingGrid[d].has(i);
-      html += `<td class="cell${on ? " on" : ""}" data-d="${d}" data-i="${i}"></td>`;
+      html += `<td class="cell${pendingGrid[d].has(i) ? " on" : ""}" data-d="${d}" data-i="${i}"></td>`;
     }
     html += `</tr>`;
   }
@@ -261,7 +258,7 @@ function renderCatalogue() {
   const services = state.services || [];
   $("catalogue").innerHTML = services.map((s) => `
     <div class="req ${s.active ? "" : "withdrawn"}">
-      <span>${escapeHtml(s.name)}</span>
+      <span>${esc(s.name)}</span>
       <span class="tag">${s.duration}m</span>
       <span class="tag">${money(s.price)}</span>
       ${s.client_bookable ? "" : `<span class="tag">provider only</span>`}
@@ -269,45 +266,70 @@ function renderCatalogue() {
         ${s.active ? "discontinue" : "re-list"}</button>
     </div>`).join("");
 
-  // Clients may only ask for what is on sale and meant for them.
   const picker = $("service-picker");
   if (picker) {
-    const offered = services.filter((s) => s.active && s.client_bookable);
-    picker.innerHTML = offered.map((s) =>
-      `<option value="${s.id}">${escapeHtml(s.name)} · ${s.duration}m · ${money(s.price)}</option>`
-    ).join("");
+    picker.innerHTML = services.filter((s) => s.active && s.client_bookable)
+      .map((s) => `<option value="${s.id}">${esc(s.name)} · ${s.duration}m · ${money(s.price)}</option>`)
+      .join("");
   }
 }
 
 function renderRequests() {
   const mine = state.requests.filter((r) => isProvider() || r.client_id === me);
-  const open = mine.filter((r) => r.status === "pending");
+  const open = mine.filter((r) => r.status === "pending" || r.status === "on_hold");
   $("requests").innerHTML = !mine.length ? "" : `
     <div class="reqs">${mine.slice(-6).reverse().map((r) => `
       <div class="req ${r.status}">
-        <span>${serviceName(r.service_id)} · ${r.duration}m ${isProvider() ? "· " + r.client_id : ""}</span>
-        <span class="tag">${r.status}</span>
-        ${r.status === "pending"
+        <span>${esc(r.service)} ${isProvider() ? "· " + esc(r.client_id) : ""}</span>
+        <span class="tag">${r.status.replace(/_/g, " ")}</span>
+        ${r.status === "pending" || r.status === "on_hold"
           ? `<button class="link" onclick="withdraw(${r.id})">withdraw</button>` : ""}
       </div>`).join("")}</div>
-    ${open.length ? `<p class="hint">${open.length} still unplaced — the
-       scheduler will try again when something frees up.</p>` : ""}`;
+    ${open.length ? `<p class="hint">${open.length} still unplaced.</p>` : ""}`;
 }
 
-// -- actions --------------------------------------------------------
+// -- hover card -------------------------------------------------------
+
+function hoverData(a) {
+  const client = (state.clients || []).find((c) => c.id === a.client_id);
+  const data = {
+    Client: client ? client.name : a.client_id,
+    Service: a.service,
+    Price: money(a.price),
+    When: `${fmt(a.start)} – ${a.end.slice(11, 16)}`,
+    Status: a.status.replace(/_/g, " "),
+  };
+  if (a.origin === "displaced") data["Note"] = "moved by the clinic, not chosen";
+  if (a.notes) data["Notes"] = a.notes;
+  if (client) {
+    data["History"] = `${client.completed} attended · ${client.no_show} no-show `
+      + `· ${client.cancelled} cancelled · ${client.moved_by_us} moved`;
+    if (client.open_requests) data["Open requests"] = client.open_requests;
+  }
+  return data;
+}
+
+document.addEventListener("mouseover", (e) => {
+  const block = e.target.closest("[data-hover]");
+  const card = $("hover");
+  if (!block) { card.style.display = "none"; return; }
+  let data;
+  try { data = JSON.parse(block.dataset.hover); } catch { return; }
+  card.innerHTML = Object.entries(data)
+    .map(([k, v]) => `<div><span>${esc(k)}</span>${esc(v)}</div>`).join("");
+  card.style.display = "block";
+  const r = block.getBoundingClientRect();
+  card.style.left = Math.min(r.right + 10, window.innerWidth - 280) + "px";
+  card.style.top = Math.min(r.top + window.scrollY,
+                            window.scrollY + window.innerHeight - 180) + "px";
+});
+
+// -- actions ----------------------------------------------------------
 
 window.respond = async (id, accept) => { await api(`/api/approvals/${id}`, {accept}); refresh(); };
-window.cancelAppt = async (id) => {
-  // Who cancels matters: a client dropping their slot says something about
-  // that slot, the provider closing a day says nothing about the client.
-  if (confirm("Cancel this appointment?")) {
-    await api(`/api/appointments/${id}/cancel`, {by_provider: isProvider()});
-    refresh();
-  }
-};
-window.attend = async (id, attended) => {
-  await api(`/api/appointments/${id}/attendance`, {attended});
-  refresh();
+window.withdraw = async (id) => { await api(`/api/requests/${id}/withdraw`); refresh(); };
+window.setService = async (id, active) => {
+  await api(`/api/services/${id}/active?active=${active}`); refresh();
 };
 window.approvePlan = async (id) => {
   const items = [...document.querySelectorAll(`input[data-plan="${id}"]`)]
@@ -322,18 +344,33 @@ window.lockAndRerun = async (id) => {
   // Same mechanism as approving: the locked slots become holds, and the next
   // run simply sees them as taken.
   await approvePlan(id);
-  await api("/api/solve", {
-    alpha: Number($("try-alpha").value),
-    max_displacements: Number($("try-moves").value),
-  });
+  await api("/api/solve", {alpha: Number($("try-alpha").value),
+                           max_displacements: Number($("try-moves").value)});
   refresh();
 };
-window.rejectPlan = async (id) => { await api(`/api/plans/${id}/reject`); refresh(); };
-window.setService = async (id, active) => {
-  await api(`/api/services/${id}/active?active=${active}`);
-  refresh();
+window.tick = (box) => {
+  picked[box.dataset.key] = box.checked;
+  applyDeps(Number(box.dataset.plan));
 };
-window.withdraw = async (id) => { await api(`/api/requests/${id}/withdraw`); refresh(); };
+
+function applyDeps(planId) {
+  // A part that rests on a move cannot be sent on without it: ticking the
+  // dependent forces its prerequisites on and locks them.
+  const boxes = [...document.querySelectorAll(`input[data-plan="${planId}"]`)];
+  const byKey = Object.fromEntries(boxes.map((b) => [b.dataset.key, b]));
+  boxes.forEach((b) => { b.disabled = false; b.title = ""; });
+  for (const box of boxes) {
+    if (!box.checked) continue;
+    for (const key of (box.dataset.needs || "").split(",").filter(Boolean)) {
+      const dep = byKey[key];
+      if (!dep) continue;
+      dep.checked = true;
+      dep.disabled = true;
+      dep.title = "needed by another item you have selected";
+      picked[key] = true;
+    }
+  }
+}
 
 $("role").onchange = (e) => {
   me = e.target.value;
@@ -341,20 +378,18 @@ $("role").onchange = (e) => {
   history.replaceState({}, "", `?as=${me}`);
   render();
 };
+$("weeks").onchange = render;
 $("solve").onclick = async () => {
-  await api("/api/solve", {
-    alpha: Number($("try-alpha").value),
-    max_displacements: Number($("try-moves").value),
-  });
+  await api("/api/solve", {alpha: Number($("try-alpha").value),
+                           max_displacements: Number($("try-moves").value)});
   refresh();
 };
 $("save").onclick = async () => { const r = await api("/api/snapshot/save"); alert("Saved " + r.saved); };
 $("reset").onclick = async () => {
   if (confirm("Throw away this session and start again?")) {
-    await api("/api/reset"); pendingGrid = null; refresh();
+    await api("/api/reset"); pendingGrid = null; picked = {}; refresh();
   }
 };
-
 $("save-avail").onclick = async () => {
   const ranges = [];
   for (let d = 0; d < 7; d++) {
@@ -367,31 +402,25 @@ $("save-avail").onclick = async () => {
     }
     if (run) ranges.push(runToRange(d, run));
   }
-  await api("/api/availability", {
-    client_id: isProvider() ? "provider-self" : me, ranges,
-  });
+  await api("/api/availability", {client_id: whose(), ranges});
   pendingGrid = null;
   refresh();
 };
-
 $("request-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
   await api("/api/requests", {
-    client_id: me,
-    service_id: f.get("service"),
+    client_id: me, service_id: f.get("service"),
     windows: [{from: f.get("from"), to: f.get("to")}],
   });
   refresh();
 };
-
 $("service-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
   const name = f.get("name");
   await api("/api/services", {
-    id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-    name,
+    id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name,
     duration_minutes: Number(f.get("duration")),
     price_minor_units: Math.round(Number(f.get("price")) * 100),
   });
@@ -399,13 +428,12 @@ $("service-form").onsubmit = async (e) => {
   refresh();
 };
 
-// Drag-select on the availability grid.
+// Drag-select on the weekly pattern grid.
 let painting = null;
 document.addEventListener("mousedown", (e) => {
   const cell = e.target.closest(".cell");
   if (!cell) return;
-  const d = +cell.dataset.d, i = +cell.dataset.i;
-  painting = pendingGrid[d].has(i) ? "off" : "on";
+  painting = pendingGrid[+cell.dataset.d].has(+cell.dataset.i) ? "off" : "on";
   paint(cell);
   e.preventDefault();
 });
@@ -420,7 +448,7 @@ function paint(cell) {
   else { pendingGrid[d].delete(i); cell.classList.remove("on"); }
 }
 
-// -- helpers --------------------------------------------------------
+// -- helpers ----------------------------------------------------------
 
 const pad = (n) => String(n).padStart(2, "0");
 const slotIndex = (hhmm) => {
@@ -435,10 +463,7 @@ const runToRange = (d, run) => ({weekday: d, from: slotLabel(run.start), to: slo
 const fmt = (iso) => new Date(iso).toLocaleString([], {
   weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
 });
-const serviceName = (id) =>
-  (state.services || []).find((s) => s.id === id)?.name || id || "session";
-const isPast = (iso) => new Date(iso) < new Date();
-const escapeHtml = (s) => s.replace(/[&<>]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
 
 refresh();
 setInterval(refresh, 2500);

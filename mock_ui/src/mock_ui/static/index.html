@@ -10,9 +10,10 @@
 <header>
   <strong id="who">…</strong>
   <span class="sep">·</span>
-  <label>view as
-    <select id="role"></select>
-  </label>
+  <label>view as <select id="role"></select></label>
+  <label>weeks <select id="weeks">
+    <option>1</option><option selected>2</option><option>3</option><option>4</option>
+  </select></label>
   <span class="grow"></span>
   <span id="settings" class="settings"></span>
   <span id="try" class="try">
@@ -26,30 +27,36 @@
 
 <main>
   <section id="alerts"></section>
-
   <section id="proposal"></section>
 
   <div class="columns">
-    <section class="panel" id="panel-schedule">
-      <h2>Schedule</h2>
-      <div id="schedule"></div>
-    </section>
+    <div class="main-col">
+      <section class="panel">
+        <h2>Schedule
+          <span class="legend">
+            <i class="k-avail"></i>available
+            <i class="k-book"></i>booked
+            <i class="k-moved"></i>moved by clinic
+            <i class="k-past"></i>past
+          </span>
+        </h2>
+        <div id="calendar"></div>
+      </section>
+    </div>
 
     <div class="side">
       <section class="panel" id="panel-availability">
-        <h2>Weekly availability <span class="hint" id="avail-for"></span></h2>
-        <p class="hint">Click and drag to select. This is where a booking of
-          yours may be <em>moved to</em> — it does not restrict what you ask for.</p>
+        <h2>Weekly pattern <span class="hint" id="avail-for"></span></h2>
+        <p class="hint">The normal week. Drag on the calendar to override a
+          single date — shift-drag there marks time <em>away</em>.</p>
         <div id="grid"></div>
-        <button id="save-avail">Save availability</button>
+        <button id="save-avail">Save weekly pattern</button>
       </section>
 
       <section class="panel" id="panel-request">
         <h2>Ask for a booking</h2>
         <form id="request-form">
-          <label>Service
-            <select name="service" id="service-picker"></select>
-          </label>
+          <label>Service <select name="service" id="service-picker"></select></label>
           <label>Earliest <input type="datetime-local" name="from" required></label>
           <label>Latest <input type="datetime-local" name="to" required></label>
           <button type="submit">Request</button>
@@ -63,7 +70,7 @@
           bookings and their invoices keep working.</p>
         <div id="catalogue"></div>
         <form id="service-form">
-          <label>Name <input name="name" required size="14"></label>
+          <label>Name <input name="name" required size="12"></label>
           <label>Min <input name="duration" type="number" value="60" min="5" step="5" size="3"></label>
           <label>Price <input name="price" type="number" value="80" min="0" step="1" size="4"></label>
           <button type="submit">Add</button>
@@ -78,6 +85,9 @@
   </div>
 </main>
 
+<div id="hover" class="hovercard"></div>
+
+<script src="/static/calendar.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

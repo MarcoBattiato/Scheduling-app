@@ -31,7 +31,17 @@ Layers, and the rule that keeps them apart:
   yet and rebuilding through the public API would issue fresh appointment ids,
   breaking the `supersedes` chain. Confined to this one file so it is obvious
   what to delete later.
-- `static/` — one page, no build step, no framework.
+- `static/calendar.js` — a week-column calendar drawn from a plain
+  description: availability to tint, blocks to place, ghosts for where
+  something used to be, arrows between them. The same component renders the
+  real schedule and a proposed one, which is the point — a proposal is only
+  legible against the calendar it would land in.
+- `static/app.js` — state, panels, actions. No build step, no framework.
+
+Availability is edited in two places on purpose. The weekly grid is the
+*pattern*; dragging on the calendar overrides a *single date* (shift-drag marks
+time away). That mirrors calendar_store's own split between recurring rules and
+exceptions.
 
 ## The thing most worth not breaking
 

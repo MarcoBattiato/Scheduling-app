@@ -46,6 +46,14 @@ class RequestIn(BaseModel):
     windows: List[dict]
 
 
+class ExceptionIn(BaseModel):
+    client_id: str
+    date: str
+    from_time: str
+    to_time: str
+    available: bool = True
+
+
 class ServiceIn(BaseModel):
     id: str
     name: str
@@ -111,6 +119,20 @@ def add_client(payload: ClientIn):
 @app.post("/api/availability")
 def set_availability(payload: WeeklyIn):
     world.set_weekly_availability(payload.client_id, payload.ranges)
+    return {"ok": True}
+
+
+@app.post("/api/exceptions")
+def set_exception(payload: ExceptionIn):
+    """One date only — the week that is not normal."""
+    try:
+        world.set_exception(
+            payload.client_id, date.fromisoformat(payload.date),
+            time.fromisoformat(payload.from_time),
+            time.fromisoformat(payload.to_time), payload.available,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     return {"ok": True}
 
 

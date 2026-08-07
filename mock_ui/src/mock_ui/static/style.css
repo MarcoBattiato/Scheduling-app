@@ -105,3 +105,58 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
 .item { display: flex; align-items: center; gap: 7px; font-size: 13px; padding: 2px 0; }
 .item input { margin: 0; }
 .item.needs { color: var(--muted); }
+
+/* -- calendar ------------------------------------------------------- */
+.main-col { min-width: 0; }
+.legend { float: right; font-size: 11px; color: var(--muted); font-weight: 400;
+  display: flex; gap: 10px; align-items: center; }
+.legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block;
+  margin-right: 3px; vertical-align: -1px; }
+.legend .k-avail { background: var(--avail); }
+.legend .k-book { background: var(--accent); }
+.legend .k-moved { background: var(--displaced); }
+.legend .k-past { background: var(--line); }
+
+.cal { position: relative; display: grid; gap: 18px; }
+.cal-week { display: grid; grid-template-columns: 46px repeat(7, 1fr);
+  grid-template-rows: auto 1fr; column-gap: 2px; }
+.cal-corner { font-size: 10px; color: var(--muted); align-self: end; padding-bottom: 3px; }
+.cal-dayhead { font-size: 11px; color: var(--muted); text-align: center;
+  padding-bottom: 3px; }
+.cal-dayhead span { display: block; font-size: 13px; color: var(--fg); font-weight: 600; }
+.cal-dayhead.today span { color: var(--accent); }
+.cal-times { position: relative; height: calc(var(--rows) * 21px); }
+.cal-hour { height: 21px; font-size: 9px; color: var(--muted); text-align: right;
+  padding-right: 4px; transform: translateY(-5px); font-variant-numeric: tabular-nums; }
+.cal-day { position: relative; height: calc(var(--rows) * 21px);
+  border-left: 1px solid var(--line); background: repeating-linear-gradient(
+    var(--bg) 0 20px, var(--line) 20px 21px); border-radius: 3px; cursor: crosshair; }
+.cal-avail { position: absolute; left: 0; right: 0; background: var(--avail);
+  opacity: .55; }
+.cal-block { position: absolute; left: 2px; right: 2px; border-radius: 4px;
+  background: var(--accent); color: #fff; font-size: 10px; line-height: 1.15;
+  padding: 2px 4px; overflow: hidden; cursor: default; }
+.cal-block b { font-weight: 600; display: block; }
+.cal-block i { font-style: normal; opacity: .8; }
+.cal-block.moved { background: var(--displaced); }
+.cal-block.past { background: var(--line); color: var(--muted); }
+.cal-block.existing { background: var(--line); color: var(--muted); }
+.cal-block.proposed { outline: 2px solid var(--ok); }
+.cal-block.vacating, .cal-block.ghost { background: transparent; color: var(--muted);
+  border: 1px dashed var(--muted); }
+.cal-arrows { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.cal-arrow { fill: none; stroke: var(--displaced); stroke-width: 1.6; }
+.cal-arrows marker path { fill: var(--displaced); }
+
+.draft-cal { margin: 8px 0 10px; }
+.draft-cal .cal-day, .draft-cal .cal-times { height: calc(var(--rows) * 11px); }
+.draft-cal .cal-hour { height: 11px; font-size: 8px; }
+.draft-cal .cal-block { font-size: 8px; padding: 0 2px; }
+.draft-cal .cal-block i { display: none; }
+
+.hovercard { position: absolute; display: none; z-index: 40; width: 260px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+  padding: 10px 12px; font-size: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.hovercard div { display: grid; grid-template-columns: 74px 1fr; gap: 6px;
+  padding: 1px 0; }
+.hovercard span { color: var(--muted); }

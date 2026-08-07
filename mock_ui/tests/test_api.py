@@ -251,3 +251,27 @@ def test_duplicate_service_ids_are_refused(client):
     })
     assert response.status_code == 400
     assert "already exists" in response.json()["detail"]
+
+
+def test_exceptions_can_be_set_from_the_calendar(client):
+    from datetime import date as _d, timedelta as _td
+    day = (_d.today() + _td(days=10)).isoformat()
+
+    response = client.post("/api/exceptions", json={
+        "client_id": "alice", "date": day,
+        "from_time": "10:00", "to_time": "14:00", "available": True,
+    })
+
+    assert response.status_code == 200
+    assert any(e["date"] == day
+               for e in client.get("/api/state").json()["exceptions"]["alice"])
+
+
+def test_the_state_carries_what_the_calendar_draws(client):
+    state = client.get("/api/state").json()
+
+    assert "today" in state, "the calendar needs an anchor date"
+    assert "exceptions" in state
+    appointment = state["appointments"][0]
+    assert {"service", "price", "origin", "status"} <= set(appointment)
+    assert {"completed", "no_show", "cancelled", "moved_by_us"} <= set(state["clients"][0])

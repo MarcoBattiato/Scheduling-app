@@ -442,8 +442,9 @@ def test_the_provider_can_send_on_only_part_of_a_plan(world):
     keep = plan.item_key("booking", plan.placements[0]["request_id"])
     drop = plan.item_key("booking", plan.placements[1]["request_id"])
 
-    world.provider_approve(plan.id, items=[keep])
+    result = world.provider_approve(plan.id, items=[keep])
 
+    assert result["approved"] == [keep] and drop not in result["approved"]
     assert [a.client_id for a in world.pending_approvals()] == [
         plan.placements[0]["client_id"]
     ]
