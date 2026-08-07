@@ -109,7 +109,8 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
 
 .try { display: inline-flex; gap: 8px; align-items: center; }
 .try input { width: 52px; }
-.drafts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.drafts { display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); }
 .draft { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--panel); }
 .draft.chosen { border-color: var(--accent); }
 .draft h3 { margin-top: 0; }
@@ -173,11 +174,19 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
   paint-order: stroke; }
 .cal-arrows marker path { fill: var(--displaced); }
 
-.draft-cal { margin: 8px 0 10px; }
-.draft-cal .cal-day, .draft-cal .cal-times { height: calc(var(--rows) * 11px); }
-.draft-cal .cal-hour { height: 11px; font-size: 8px; }
-.draft-cal .cal-block { font-size: 8px; padding: 0 2px; }
+/* Big enough to read. A proposal is the thing being judged, so squeezing it to
+   a thumbnail defeats the purpose — it only needs to be smaller than the real
+   schedule, not miniature. */
+.draft-cal { margin: 10px 0 12px; }
+.draft-cal .cal { gap: 12px; }
+.draft-cal .cal-day, .draft-cal .cal-times { height: calc(var(--rows) * 17px); }
+.draft-cal .cal-hour { height: 17px; font-size: 9px; }
+.draft-cal .cal-day { background: repeating-linear-gradient(
+    var(--bg) 0 16px, var(--line) 16px 17px); }
+.draft-cal .cal-block { font-size: 9px; padding: 1px 3px; line-height: 1.1; }
 .draft-cal .cal-block i { display: none; }
+.draft-cal .cal-dayhead { font-size: 10px; }
+.draft-cal .cal-dayhead span { font-size: 11px; }
 
 .hovercard { position: absolute; display: none; z-index: 40; width: 260px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
@@ -210,7 +219,11 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
 .cal-peek { position: absolute; left: 0; right: 0; pointer-events: none;
   z-index: 1; background: var(--peek); opacity: .55;
   border-top: 1px solid var(--peek-edge); border-bottom: 1px solid var(--peek-edge); }
-.cal-day.dimmed .cal-avail { opacity: .12; }
+/* While peeking at one client's hours, everything describing *general*
+   availability gets out of the way — including the single-date override
+   outlines, which otherwise read as marks on the client being examined. */
+.cal-day.dimmed .cal-avail { opacity: .1; }
+.cal-day.dimmed .cal-exc { opacity: 0; }
 
 .cal-exc { position: absolute; left: 0; right: 0; pointer-events: none;
   border: 1.5px dashed #dc2626; border-radius: 3px; z-index: 1; }

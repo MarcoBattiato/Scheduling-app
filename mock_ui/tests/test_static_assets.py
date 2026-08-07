@@ -262,8 +262,12 @@ def test_appointments_are_stacked_above_the_override_outlines():
     import re
 
     def z(selector):
-        block = re.search(rf"{re.escape(selector)} \{{(.*?)\}}", css, re.S)
-        found = re.search(r"z-index:\s*(\d+)", block.group(1)) if block else None
+        # Anchored at line start: the same class also appears in descendant
+        # rules like ".cal-day.dimmed .cal-exc", which carry no z-index and
+        # would otherwise be read as the definition.
+        block = re.search(rf"^{re.escape(selector)} \{{(.*?)\}}", css, re.S | re.M)
+        assert block, f"no rule for {selector}"
+        found = re.search(r"z-index:\s*(\d+)", block.group(1))
         return int(found.group(1)) if found else 0
 
     assert z(".cal-avail") < z(".cal-exc") < z(".cal-block"), (
@@ -399,8 +403,12 @@ def test_arrows_are_drawn_over_the_bookings():
     css = (STATIC / "style.css").read_text()
 
     def z(selector):
-        block = re.search(rf"{re.escape(selector)} \{{(.*?)\}}", css, re.S)
-        found = re.search(r"z-index:\s*(\d+)", block.group(1)) if block else None
+        # Anchored at line start: the same class also appears in descendant
+        # rules like ".cal-day.dimmed .cal-exc", which carry no z-index and
+        # would otherwise be read as the definition.
+        block = re.search(rf"^{re.escape(selector)} \{{(.*?)\}}", css, re.S | re.M)
+        assert block, f"no rule for {selector}"
+        found = re.search(r"z-index:\s*(\d+)", block.group(1))
         return int(found.group(1)) if found else 0
 
     assert z(".cal-arrows") > z(".cal-block"), "arrows must sit above the bookings"
@@ -408,3 +416,149 @@ def test_arrows_are_drawn_over_the_bookings():
         "the hovered client's availability answers a question about a booking; "
         "it must not cover it"
     )
+
+
+def test_peeking_hides_every_general_availability_marking():
+    """While showing one client's hours, nothing else describing availability
+    should remain — an override outline would read as a mark on that client.
+    """
+    css = (STATIC / "style.css").read_text()
+
+    assert ".cal-day.dimmed .cal-exc" in css, "override outlines must fade too"
+    assert ".cal-day.dimmed .cal-avail" in css
+
+
+def test_hovering_works_on_proposals_not_only_the_schedule():
+    app = (STATIC / "app.js").read_text()
+
+    assert ".draft-cal" in app.split("const CALENDARS")[1][:80], (
+        "the peek must find a proposal calendar, not just #calendar"
+    )
+    for builder in ("proposedBookingData", "proposedMoveData"):
+        assert builder in app, f"proposals need their own hover facts: {builder}"
+    assert app.count("clientFacts(") >= 3, (
+        "client background belongs on proposals too, not only on the schedule"
+    )
+
+
+def test_a_proposal_calendar_is_readable_rather_than_a_thumbnail():
+    import re
+
+    css = (STATIC / "style.css").read_text()
+    rows = re.search(r"\.draft-cal \.cal-day[^{]*\{[^}]*var\(--rows\) \* (\d+)px", css)
+    font = re.search(r"\.draft-cal \.cal-block \{[^}]*font-size: (\d+)px", css)
+
+    assert rows and int(rows.group(1)) >= 15, "draft rows too short to read"
+    assert font and int(font.group(1)) >= 9, "draft labels too small to read"
+
+
+@node
+def test_a_proposal_hover_card_says_as_much_as_the_schedule_one():
+    """Run the real builders against a real plan that moves somebody.
+
+    Asserting on the source text would pass on a card that throws the moment a
+    field is missing from the payload; this catches the mismatch between what
+    the API sends and what the card reads.
+    """
+    from datetime import date, datetime, time, timedelta
+
+    from mock_ui.state import PROVIDER, World
+
+    monday = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7)
+    at = lambda d, h: datetime.combine(monday + timedelta(days=d), time(h))
+
+    world = World()
+    world.policy.horizon_days = 10
+    world.catalogue.add_service("s60", "Hour", 60, 8000)
+    for who, name in (("alice", "Alice"), ("bob", "Bob")):
+        world.add_client(who, name)
+    # One hour on one date is the only thing that will do for alice, and bob is
+    # sitting in it — so the only plan available is to move him.
+    world.set_weekly_availability(PROVIDER, [
+        {"weekday": 0, "from": "09:00", "to": "10:00"},
+        {"weekday": 1, "from": "09:00", "to": "17:00"},
+    ])
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday, time(9), time(10), available=True)
+    world.set_weekly_availability("bob", [
+        {"weekday": 0, "from": "09:00", "to": "17:00"},
+        {"weekday": 1, "from": "09:00", "to": "17:00"},
+    ])
+    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
+    world.submit_request("alice", "s60", at(0, 9).isoformat())
+    world.propose()
+
+    state = world.snapshot()
+    plan = next((p for p in state["plans"] if p["displacements"]), None)
+    assert plan, "the scenario stopped producing a displacement"
+
+    harness = r"""
+      const vm = require("vm"), fs = require("fs");
+      const files = process.argv.slice(1, -1);
+      const state = JSON.parse(fs.readFileSync(process.argv[process.argv.length - 1], "utf8"));
+      const noop = () => {}, els = {};
+      // Every id resolves here: this test is about what the cards say, not
+      // about which elements the page promises — that is tested above.
+      const el = () => ({innerHTML: "", style: {}, textContent: "", value: "2",
+                         options: {length: 0}, addEventListener: noop,
+                         querySelectorAll: () => [], querySelector: () => null,
+                         getBoundingClientRect: () => (
+                           {left: 0, top: 0, width: 800, height: 400,
+                            right: 800, bottom: 400})});
+      const sandbox = {
+        console, CSS: {escape: (s) => s}, setInterval: noop, setTimeout: noop,
+        document: {addEventListener: noop,
+                   getElementById: (id) => (els[id] = els[id] || el()),
+                   querySelectorAll: () => [], querySelector: () => null},
+        location: {search: "?as=provider"}, history: {replaceState: noop},
+        URLSearchParams: class { get() { return "provider"; } },
+        fetch: async () => ({ok: true, json: async () => state}),
+        alert: noop, confirm: () => false,
+      };
+      const ctx = vm.createContext(sandbox);
+      sandbox.window = sandbox;
+      for (const f of files) {
+        new vm.Script(fs.readFileSync(f, "utf8"), {filename: f}).runInContext(ctx);
+      }
+      // `state` is a `let`, so it is not reachable from outside; refresh() is
+      // how the page itself fills it in.
+      vm.runInContext("refresh()", ctx).then(() => {
+        const plan = state.plans.find((p) => p.displacements.length);
+        console.log(JSON.stringify({
+          booking: vm.runInContext("proposedBookingData", ctx)(plan.placements[0], plan),
+          leaving: vm.runInContext("proposedMoveData", ctx)(plan.displacements[0], "from", plan),
+          landing: vm.runInContext("proposedMoveData", ctx)(plan.displacements[0], "to", plan),
+          schedule: vm.runInContext("hoverData", ctx)(
+            state.appointments.find((a) => a.status === "booked")),
+        }));
+      }).catch((e) => { console.error(e.stack); process.exit(1); });
+    """
+
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(state, fh, default=str)
+        state_path = fh.name
+
+    result = subprocess.run(
+        ["node", "-e", harness, *[str(STATIC / s) for s in SCRIPTS], state_path],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    cards = json.loads(result.stdout.strip().splitlines()[-1])
+
+    for name, card in cards.items():
+        assert card["Client"] in ("Alice", "Bob"), f"{name} shows a raw id: {card}"
+        assert "History" in card, f"{name} lost the client's background"
+        assert not any(v is None or v == "" for v in card.values()), \
+            f"{name} has an empty field: {card}"
+
+    # The proposal side is the one that was thin. It should now carry at least
+    # as much as the schedule side does.
+    for side in ("booking", "leaving", "landing"):
+        assert len(cards[side]) >= len(cards["schedule"]) - 1, \
+            f"{side} says less than the schedule: {cards[side]}"
+
+    assert "Only if" in cards["booking"], "the engine's dependency went unreported"
+    assert "Bob" in cards["booking"]["Only if"]
+    assert cards["leaving"]["What"].startswith("would be moved out")
+    assert cards["landing"]["What"].startswith("would be moved here")

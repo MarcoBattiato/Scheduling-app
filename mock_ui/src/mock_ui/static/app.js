@@ -235,19 +235,19 @@ function drawDraft(p) {
     id: `d${p.id}-${key(x.key)}`,
     start: x.start, end: x.end, label: x.client_id, sub: "new",
     cls: "proposed", client: x.client_id, order: 0,
-    data: {Client: x.client_id, Service: x.service,
-           What: "proposed booking", Request: `#${x.request_id}`},
+    data: proposedBookingData(x, p),
   }));
   const landing = p.displacements.map((d) => ({
     id: `d${p.id}-${key(d.key)}-to`,
     start: d.now, end: d.now_end, label: d.client_id, sub: "moved to",
     cls: "proposed moved", client: d.client_id, order: 0,
-    data: {Client: d.client_id, What: "would be moved here", From: fmt(d.was)},
+    data: proposedMoveData(d, "to", p),
   }));
   const leaving = p.displacements.map((d) => ({
     id: `d${p.id}-${key(d.key)}-from`,
     start: d.was, end: d.was_end, label: d.client_id, cls: "vacating",
     client: d.client_id, order: 2,     // the slot being given up, on the right
+    data: proposedMoveData(d, "from", p),
   }));
 
   renderCalendar(el, {
@@ -379,41 +379,112 @@ function renderRequests() {
 
 // -- hover card -------------------------------------------------------
 
+function clientFacts(clientId) {
+  // The same background wherever a client appears — a proposal about moving
+  // someone is exactly where their history is worth seeing.
+  const client = (state.clients || []).find((c) => c.id === clientId);
+  if (!client) return {Client: clientId};
+  const facts = {Client: client.name};
+  facts["History"] = `${client.completed} attended · ${client.no_show} no-show `
+    + `· ${client.cancelled} cancelled · ${client.moved_by_us} moved`;
+  if (client.open_requests) facts["Waiting on"] = `${client.open_requests} request(s)`;
+  return facts;
+}
+
+const appointmentById = (id) => (state.appointments || []).find((a) => a.id === id);
+const requestById = (id) => (state.requests || []).find((r) => r.id === id);
+
 function hoverData(a) {
-  const client = (state.clients || []).find((c) => c.id === a.client_id);
   const data = {
-    Client: client ? client.name : a.client_id,
+    ...clientFacts(a.client_id),
     Service: a.service,
     Price: money(a.price),
     When: `${fmt(a.start)} – ${a.end.slice(11, 16)}`,
     Status: a.status.replace(/_/g, " "),
   };
+  if (a.preferred) data["Asked for"] = fmt(a.preferred);
   if (a.origin === "displaced") data["Note"] = "moved by the clinic, not chosen";
   if (a.notes) data["Notes"] = a.notes;
-  if (client) {
-    data["History"] = `${client.completed} attended · ${client.no_show} no-show `
-      + `· ${client.cancelled} cancelled · ${client.moved_by_us} moved`;
-    if (client.open_requests) data["Open requests"] = client.open_requests;
-  }
-  return data;
+  return reorder(data);
 }
+
+function proposedBookingData(x, plan) {
+  const request = requestById(x.request_id);
+  return reorder({
+    ...clientFacts(x.client_id),
+    What: "proposed booking",
+    Service: x.service,
+    When: `${fmt(x.start)} – ${x.end.slice(11, 16)}`,
+    "Asked for": request ? fmt(request.preferred) : "—",
+    ...dependency(x, plan),
+    Status: "not booked yet",
+  });
+}
+
+function dependency(item, plan) {
+  // The engine reports what has to happen first. Hiding that turns a
+  // conditional proposal into one that looks free-standing.
+  const on = (item.depends_on || []).map((key) => {
+    const d = (plan.displacements || []).find((x) => x.key === key);
+    return d ? nameOf(d.client_id) : key;
+  });
+  return on.length ? {"Only if": `${on.join(", ")} move${on.length > 1 ? "" : "s"} first`} : {};
+}
+
+function nameOf(clientId) {
+  const client = (state.clients || []).find((c) => c.id === clientId);
+  return client ? client.name : clientId;
+}
+
+function proposedMoveData(d, side, plan) {
+  const appointment = appointmentById(d.appointment_id);
+  const minutes = Math.round(
+    Math.abs(new Date(d.now) - new Date(d.was)) / 60000);
+  return reorder({
+    ...clientFacts(d.client_id),
+    What: side === "from" ? "would be moved out of here" : "would be moved here",
+    Service: appointment ? appointment.service : "—",
+    Currently: fmt(d.was),
+    Proposed: fmt(d.now),
+    Moves: `${Math.floor(minutes / 60)}h ${minutes % 60}m`,
+    "Asked for": appointment && appointment.preferred ? fmt(appointment.preferred) : "—",
+    ...dependency(d, plan),
+  });
+}
+
+function reorder(data) {
+  // Client first, background last: the answer to "who is this and when" should
+  // not be pushed below their history.
+  const {Client, History, ...rest} = data;
+  const out = {Client};
+  for (const [k, v] of Object.entries(rest)) out[k] = v;
+  if (History) out["History"] = History;
+  return out;
+}
+
+const CALENDARS = "#calendar, .draft-cal";
 
 function peekAt(block) {
   // Whose hours are these? Answering that on the calendar itself is the point:
   // "moved to Wednesday 11:00" means little without seeing when they are free.
-  const root = block && block.closest("#calendar");
+  // Works on whichever calendar the booking is in — the schedule or a proposal.
+  const root = block && block.closest(CALENDARS);
   const client = block && block.dataset.client;
   if (!root) return;
-  const segments = client ? (state.availability[client] || []) : [];
-  window.calendarOverlay(root, segments, "cal-peek");
+  clearPeek();
+  window.calendarOverlay(root, client ? (state.availability[client] || []) : [],
+                         "cal-peek");
+  // Everything that describes *general* availability gets out of the way,
+  // single-date overrides included — while peeking, the only availability on
+  // screen should be this client's.
   root.querySelectorAll(".cal-day").forEach((d) => d.classList.toggle("dimmed", !!client));
 }
 
 function clearPeek() {
-  const root = $("calendar");
-  if (!root) return;
-  window.calendarOverlay(root, [], "cal-peek");
-  root.querySelectorAll(".cal-day").forEach((d) => d.classList.remove("dimmed"));
+  for (const root of document.querySelectorAll(CALENDARS)) {
+    window.calendarOverlay(root, [], "cal-peek");
+    root.querySelectorAll(".cal-day").forEach((d) => d.classList.remove("dimmed"));
+  }
 }
 
 document.addEventListener("mouseover", (e) => {
