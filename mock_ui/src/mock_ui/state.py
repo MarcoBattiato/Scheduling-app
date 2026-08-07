@@ -136,11 +136,43 @@ class World:
 
     # -- people ------------------------------------------------------
 
-    def add_client(self, client_id: str, name: str = "") -> Client:
+    def add_client(
+        self, client_id: str, name: str = "", mirror_provider: bool = False
+    ) -> Client:
+        """Register a client.
+
+        `mirror_provider` gives them the provider's own weekly pattern, which
+        makes them immediately bookable. A client with no availability can be
+        booked (a request says what they want regardless) but can never be
+        offered a *rescheduling*, so a calendar populated with such clients
+        would quietly never exercise displacement at all.
+        """
+        if client_id in self.clients:
+            raise ValueError(f"there is already a client called {client_id!r}")
+        if not client_id.strip():
+            raise ValueError("a client needs an id")
+
         client = Client(id=client_id, name=name or client_id.title())
         self.clients[client_id] = client
         self._note(f"client {client_id} joined")
+
+        if mirror_provider:
+            self.set_weekly_availability(client_id, [
+                {"weekday": r.weekday,
+                 "from": r.start_time.strftime("%H:%M"),
+                 "to": r.end_time.strftime("%H:%M")}
+                for r in self.store.rules_for(PROVIDER)
+            ])
         return client
+
+    def clear_exception(self, client_id: str, on_date: date,
+                        start: time, end: time, was_available: bool) -> None:
+        """Undo a single-date override by applying its opposite.
+
+        calendar_store stores only the net deviation from the weekly pattern,
+        so an add and a matching remove cancel out rather than piling up.
+        """
+        self.set_exception(client_id, on_date, start, end, not was_available)
 
     # -- availability ------------------------------------------------
 

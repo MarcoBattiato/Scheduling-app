@@ -34,6 +34,7 @@ world = persistence.load(SNAPSHOT) if SNAPSHOT.exists() else World()
 class ClientIn(BaseModel):
     id: str
     name: str = ""
+    mirror_provider: bool = True
 
 
 class WeeklyIn(BaseModel):
@@ -53,6 +54,7 @@ class ExceptionIn(BaseModel):
     from_time: str
     to_time: str
     available: bool = True
+    clear: bool = False
 
 
 class ServiceIn(BaseModel):
@@ -114,7 +116,11 @@ def get_state():
 
 @app.post("/api/clients")
 def add_client(payload: ClientIn):
-    return {"client": vars(world.add_client(payload.id, payload.name))}
+    try:
+        client = world.add_client(payload.id, payload.name, payload.mirror_provider)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"client": vars(client)}
 
 
 @app.post("/api/availability")
@@ -127,11 +133,15 @@ def set_availability(payload: WeeklyIn):
 def set_exception(payload: ExceptionIn):
     """One date only — the week that is not normal."""
     try:
-        world.set_exception(
-            payload.client_id, date.fromisoformat(payload.date),
-            time.fromisoformat(payload.from_time),
-            time.fromisoformat(payload.to_time), payload.available,
-        )
+        on_date = date.fromisoformat(payload.date)
+        start = time.fromisoformat(payload.from_time)
+        end = time.fromisoformat(payload.to_time)
+        if payload.clear:
+            world.clear_exception(payload.client_id, on_date, start, end,
+                                  payload.available)
+        else:
+            world.set_exception(payload.client_id, on_date, start, end,
+                                payload.available)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     return {"ok": True}

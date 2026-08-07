@@ -275,3 +275,37 @@ def test_the_state_carries_what_the_calendar_draws(client):
     appointment = state["appointments"][0]
     assert {"service", "price", "origin", "status"} <= set(appointment)
     assert {"completed", "no_show", "cancelled", "moved_by_us"} <= set(state["clients"][0])
+
+
+def test_the_provider_can_add_a_client(client):
+    response = client.post("/api/clients", json={"id": "dana", "name": "Dana"})
+
+    assert response.status_code == 200
+    state = client.get("/api/state").json()
+    assert "dana" in {c["id"] for c in state["clients"]}
+    assert state["weekly"]["dana"], "given the provider's hours by default"
+
+
+def test_adding_a_client_twice_is_refused_with_a_reason(client):
+    client.post("/api/clients", json={"id": "dana", "name": "Dana"})
+
+    response = client.post("/api/clients", json={"id": "dana", "name": "Dana"})
+
+    assert response.status_code == 400
+    assert "already a client" in response.json()["detail"]
+
+
+def test_an_exception_can_be_cleared_through_the_api(client):
+    from datetime import date as _d, timedelta as _td
+    day = (_d.today() + _td(days=10)).isoformat()
+    # Outside alice's usual 09:00-13:00, so it is a real deviation. An
+    # exception matching the weekly pattern normalises away to nothing, which
+    # is calendar_store storing only what actually differs.
+    body = {"client_id": "alice", "date": day,
+            "from_time": "15:00", "to_time": "17:00", "available": True}
+    client.post("/api/exceptions", json=body)
+    assert client.get("/api/state").json()["exceptions"]["alice"]
+
+    client.post("/api/exceptions", json={**body, "clear": True})
+
+    assert client.get("/api/state").json()["exceptions"]["alice"] == []

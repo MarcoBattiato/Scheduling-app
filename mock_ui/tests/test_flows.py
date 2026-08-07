@@ -261,3 +261,66 @@ def test_a_summary_counts_moves_the_clinic_imposed(world):
         world.respond_to_approval(approval.id, accept=True)
 
     assert world.client_summary("bob")["moved_by_us"] == 1
+
+
+# -- adding clients ---------------------------------------------------
+
+
+def test_a_new_client_can_be_given_the_provider_hours(world):
+    """A client with no availability can be booked but never *moved*, so a
+    calendar populated with such clients would never exercise displacement.
+    """
+    world.add_client("dana", "Dana", mirror_provider=True)
+
+    weekly = world.snapshot()["weekly"]["dana"]
+    assert weekly == world.snapshot()["weekly"][PROVIDER]
+
+
+def test_a_new_client_can_be_left_without_availability(world):
+    world.add_client("dana", "Dana", mirror_provider=False)
+
+    assert world.snapshot()["weekly"]["dana"] == []
+
+
+def test_client_ids_are_not_reused(world):
+    with pytest.raises(ValueError, match="already a client"):
+        world.add_client("alice", "Another Alice")
+
+
+def test_a_client_needs_an_id(world):
+    with pytest.raises(ValueError, match="needs an id"):
+        world.add_client("  ", "Nameless")
+
+
+def test_a_new_client_can_be_scheduled_straight_away(world):
+    world.add_client("dana", "Dana", mirror_provider=True)
+
+    place(world, "dana", 60, 0, 9, 17)
+
+    assert world.store.appointments_for("dana", at(0, 0), at(1, 0))
+
+
+# -- undoing a single-date override -----------------------------------
+
+
+def test_an_exception_can_be_cleared_again(world):
+    away = monday() + timedelta(days=1)
+    world.set_exception("alice", away, time(9), time(12), available=False)
+    assert world.snapshot()["exceptions"]["alice"]
+
+    world.clear_exception("alice", away, time(9), time(12), was_available=False)
+
+    assert world.snapshot()["exceptions"]["alice"] == []
+    restored = world.availability_segments("alice", away, away + timedelta(days=1))
+    assert any(s.start.hour == 9 for s in restored), "the pattern is back"
+
+
+def test_clearing_an_added_exception_removes_it_too(world):
+    saturday = monday() + timedelta(days=5)
+    world.set_exception("alice", saturday, time(10), time(14), available=True)
+
+    world.clear_exception("alice", saturday, time(10), time(14), was_available=True)
+
+    assert world.snapshot()["exceptions"]["alice"] == []
+    assert world.availability_segments(
+        "alice", saturday, saturday + timedelta(days=1)) == []

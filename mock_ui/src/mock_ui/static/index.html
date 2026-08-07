@@ -59,7 +59,13 @@ window.addEventListener("unhandledrejection", function (e) {
             <i class="k-past"></i>past
           </span>
         </h2>
+        <p class="hint howto">
+          <b>Drag on a day</b> to make yourself available then — <b>shift-drag</b>
+          to mark that time away. Both apply to <em>that date only</em>; the
+          weekly pattern on the right is what every other week looks like.
+        </p>
         <div id="calendar"></div>
+        <div id="exceptions"></div>
       </section>
     </div>
 
@@ -81,6 +87,18 @@ window.addEventListener("unhandledrejection", function (e) {
           <button type="submit">Request</button>
         </form>
         <div id="requests"></div>
+      </section>
+
+      <section class="panel" id="panel-clients">
+        <h2>Clients</h2>
+        <div id="clients"></div>
+        <form id="client-form">
+          <label>Name <input name="name" required size="12" placeholder="Dana"></label>
+          <label title="Gives them your weekly hours so they can be booked and moved straight away">
+            <input type="checkbox" name="mirror" checked> my hours
+          </label>
+          <button type="submit">Add client</button>
+        </form>
       </section>
 
       <section class="panel" id="panel-catalogue">

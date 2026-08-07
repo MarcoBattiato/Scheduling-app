@@ -60,12 +60,15 @@ function render() {
   renderGrid();
   renderRequests();
   renderCatalogue();
+  renderClients();
+  renderExceptions();
   $("log").innerHTML = state.log.slice().reverse()
     .map((l) => `<div class="log-line">${esc(l)}</div>`).join("");
 
   $("avail-for").textContent = isProvider() ? "(provider)" : `(${me})`;
   $("panel-request").style.display = isProvider() ? "none" : "";
   $("panel-catalogue").style.display = isProvider() ? "" : "none";
+  $("panel-clients").style.display = isProvider() ? "" : "none";
   $("try").style.display = isProvider() ? "" : "none";
   $("solve").style.display = isProvider() ? "" : "none";
 }
@@ -277,6 +280,32 @@ function renderCatalogue() {
   }
 }
 
+function renderClients() {
+  if (!isProvider()) return;
+  $("clients").innerHTML = (state.clients || []).map((c) => `
+    <div class="client-row">
+      <span class="who">${esc(c.name)}</span>
+      <span class="tag">${c.booked} booked</span>
+      ${c.completed ? `<span class="tag">${c.completed} attended</span>` : ""}
+      ${c.no_show ? `<span class="tag">${c.no_show} no-show</span>` : ""}
+      ${c.moved_by_us ? `<span class="tag move">${c.moved_by_us} moved</span>` : ""}
+      ${c.open_requests ? `<span class="tag">${c.open_requests} waiting</span>` : ""}
+    </div>`).join("");
+}
+
+function renderExceptions() {
+  // Single-date overrides are otherwise invisible once made — you can see
+  // their effect on the tint but not what caused it, nor undo it.
+  const mine = (state.exceptions || {})[whose()] || [];
+  $("exceptions").innerHTML = !mine.length ? "" :
+    `<span class="hint">This date only:</span>` + mine.map((e) => `
+      <span class="exception ${e.kind === "remove" ? "away" : ""}">
+        ${new Date(e.date + "T00:00").toLocaleDateString([], {weekday: "short", day: "numeric", month: "short"})}
+        ${e.from}–${e.to} ${e.kind === "remove" ? "away" : "available"}
+        <button class="link" onclick="clearException('${e.date}','${e.from}','${e.to}',${e.kind === "add"})">clear</button>
+      </span>`).join("");
+}
+
 function renderRequests() {
   const mine = state.requests.filter((r) => isProvider() || r.client_id === me);
   const open = mine.filter((r) => r.status === "pending" || r.status === "on_hold");
@@ -340,6 +369,11 @@ window.approvePlan = async (id) => {
   if (!items.length) { alert("Nothing selected."); return; }
   await api(`/api/plans/${id}/approve`, {items});
   picked = {};
+  refresh();
+};
+window.clearException = async (date, from, to, wasAvailable) => {
+  await api("/api/exceptions", {client_id: whose(), date, from_time: from,
+                                to_time: to, available: wasAvailable, clear: true});
   refresh();
 };
 window.discardPlan = async (id) => { await api(`/api/plans/${id}/discard`); refresh(); };
@@ -416,6 +450,18 @@ $("request-form").onsubmit = async (e) => {
     client_id: me, service_id: f.get("service"),
     windows: [{from: f.get("from"), to: f.get("to")}],
   });
+  refresh();
+};
+$("client-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const name = String(f.get("name")).trim();
+  await api("/api/clients", {
+    id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    name,
+    mirror_provider: f.get("mirror") !== null,
+  });
+  e.target.reset();
   refresh();
 };
 $("service-form").onsubmit = async (e) => {

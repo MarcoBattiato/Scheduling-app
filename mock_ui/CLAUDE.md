@@ -44,10 +44,21 @@ Layers, and the rule that keeps them apart:
   legible against the calendar it would land in.
 - `static/app.js` — state, panels, actions. No build step, no framework.
 
-Availability is edited in two places on purpose. The weekly grid is the
-*pattern*; dragging on the calendar overrides a *single date* (shift-drag marks
-time away). That mirrors calendar_store's own split between recurring rules and
-exceptions.
+Availability is edited in two places on purpose, mirroring calendar_store's own
+split: the side grid is the **weekly pattern** (generic weekdays, what every
+week looks like), and dragging on the **dated calendar** overrides a *single
+date* — shift-drag marks that time away. Overrides are listed as chips under
+the calendar with a clear button, because otherwise they are invisible once
+made: you can see their effect on the tint but not what caused it.
+
+Note an exception matching the weekly pattern normalises away to nothing.
+calendar_store stores only real deviations, so "make me available when I
+already am" correctly does nothing at all.
+
+New clients get the provider's weekly hours by default. A client with no
+availability can be *booked* — a request states what they want regardless — but
+can never be offered a *rescheduling*, so a calendar populated with such clients
+would quietly never exercise displacement.
 
 ## The thing most worth not breaking
 
