@@ -6,7 +6,7 @@ resolve away into rules; appointments are a separate, non-normalized concern.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import date, datetime, time
 from enum import Enum
 from typing import Optional
 
@@ -117,6 +117,12 @@ class Appointment:
     status: AppointmentStatus = AppointmentStatus.BOOKED
     origin: Origin = Origin.CLIENT
     supersedes: Optional[int] = None  # the appointment this one replaces, if any
+    # The slot the client asked for when this was booked — a wish, not a
+    # constraint, and not necessarily where the booking ended up. Kept because
+    # a later move should be judged against what they wanted rather than
+    # against wherever they were last put; without it, being displaced once
+    # silently redefines their preference as the new position.
+    preferred_start: Optional[datetime] = None
 
     @property
     def occupies_slot(self) -> bool:

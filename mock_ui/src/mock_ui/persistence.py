@@ -25,7 +25,7 @@ from calendar_store import (
     TimeSegment,
 )
 
-from .state import Approval, Client, Plan, Request, TimeRange, World
+from .state import Approval, Client, Plan, Request, World
 
 
 def _dt(value):
@@ -60,7 +60,8 @@ def save(world: World, path: Path) -> None:
             {"id": a.id, "client_id": a.client_id, "service_type_id": a.service_type_id,
              "start": a.range.start.isoformat(), "end": a.range.end.isoformat(),
              "locked": a.locked, "notes": a.notes, "status": a.status.value,
-             "origin": a.origin.value, "supersedes": a.supersedes}
+             "origin": a.origin.value, "supersedes": a.supersedes,
+             "preferred_start": _dt(a.preferred_start)}
             for a in world.store._appointments
         ],
         "services": [
@@ -76,7 +77,7 @@ def save(world: World, path: Path) -> None:
         "requests": [
             {"id": r.id, "client_id": r.client_id, "service_id": r.service_id,
              "duration_minutes": r.duration_minutes, "status": r.status,
-             "windows": [{"from": _dt(w.start), "to": _dt(w.end)} for w in r.windows]}
+             "preferred_start": _dt(r.preferred_start)}
             for r in world.requests.values()
         ],
         "plans": [
@@ -104,6 +105,7 @@ def save(world: World, path: Path) -> None:
             "auto_run": world.policy.auto_run,
             "urgency_hours": world.policy.urgency_hours,
             "retry_after_minutes": world.policy.retry_after_minutes,
+            "horizon_days": world.policy.horizon_days,
             "last_run": _dt(world.last_run),
         },
         "log": world.log,
@@ -112,6 +114,11 @@ def save(world: World, path: Path) -> None:
 
 
 def load(path: Path) -> World:
+    """Restore a session.
+
+    Raises on anything it cannot read. The format changes as this mock does,
+    and a half-restored world is worse than a fresh one — see `load_or_new`.
+    """
     payload: Dict[str, Any] = json.loads(path.read_text())
     world = World()
 
@@ -161,6 +168,7 @@ def load(path: Path) -> World:
             locked=a["locked"], notes=a["notes"],
             status=AppointmentStatus(a["status"]), origin=Origin(a["origin"]),
             supersedes=a["supersedes"],
+            preferred_start=_back(a.get("preferred_start")),
         )
         for a in payload.get("appointments", [])
     ]
@@ -169,8 +177,7 @@ def load(path: Path) -> World:
             id=entry["id"], client_id=entry["client_id"],
             service_id=entry["service_id"],
             duration_minutes=entry["duration_minutes"], status=entry["status"],
-            windows=[TimeRange(_back(w["from"]), _back(w["to"]))
-                     for w in entry["windows"]],
+            preferred_start=_back(entry.get("preferred_start")),
         )
     for entry in payload.get("plans", []):
         world.plans[entry["id"]] = Plan(
@@ -200,6 +207,8 @@ def load(path: Path) -> World:
         "urgency_hours", world.policy.urgency_hours)
     world.policy.retry_after_minutes = scheduler.get(
         "retry_after_minutes", world.policy.retry_after_minutes)
+    world.policy.horizon_days = scheduler.get(
+        "horizon_days", world.policy.horizon_days)
     world.last_run = _back(scheduler.get("last_run"))
 
     world.log = payload.get("log", [])
@@ -219,3 +228,22 @@ def load(path: Path) -> World:
         [highest] + list(world.requests) + list(world.plans) + list(world.approvals)
     ) + 1)
     return world
+
+
+def load_or_new(path: Path) -> World:
+    """Restore if possible, otherwise start clean rather than refusing to run.
+
+    A saved session written by an older version of this mock would otherwise
+    stop the server booting, which is a poor trade for a development tool: the
+    session is disposable, the ability to start is not.
+    """
+    if not path.exists():
+        return World()
+    try:
+        return load(path)
+    except Exception as exc:
+        stale = path.with_suffix(".unreadable.json")
+        path.rename(stale)
+        world = World()
+        world._note(f"could not read the saved session ({exc}); kept it at {stale.name}")
+        return world

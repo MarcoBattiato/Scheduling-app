@@ -51,7 +51,7 @@ def test_earliness_weighting_takes_the_first_available_slot_instead():
     )
 
     assert result.placements[0].range == TimeRange(at(9, 30), at(10, 30))
-    assert result.earliness_minutes == 0
+    assert result.preference_gap_minutes == 0
 
 
 def test_touching_free_segments_count_as_one_gap():
@@ -221,3 +221,100 @@ def test_duration_off_the_grid_is_rejected():
 def test_alpha_outside_the_slider_range_is_rejected():
     with pytest.raises(ValueError, match="alpha"):
         CostConfig(alpha=1.5)
+
+
+# --------------------------------------------------------------------------
+# Preferred slots
+# --------------------------------------------------------------------------
+
+
+def wants(id_, duration, windows, preferred, client="alice"):
+    return BookingRequest(
+        id=id_, client_id=client, duration_minutes=duration,
+        desired=[TimeRange(s, e) for s, e in windows],
+        preferred_start=preferred,
+    )
+
+
+def test_a_request_lands_on_its_preferred_slot_when_it_can():
+    result = solve_placements(
+        [wants("r1", 60, [(at(9), at(17))], preferred=at(14))],
+        [free(at(9), at(17))], CostConfig(alpha=0.0),
+    )
+
+    assert result.placements[0].range.start == at(14)
+    assert result.preference_gap_minutes == 0
+
+
+def test_a_preference_is_a_wish_not_a_constraint():
+    """The whole point of the change: a client naming a slot must not become
+    unplaceable elsewhere, or a narrow ask turns into a claim on that hour.
+    """
+    result = solve_placements(
+        [wants("r1", 60, [(at(9), at(17))], preferred=at(14)),
+         wants("r2", 60, [(at(9), at(17))], preferred=at(14), client="bob")],
+        [free(at(9), at(17))], CostConfig(alpha=0.0),
+    )
+
+    assert result.all_placed, "both are placed; only one gets the hour it wanted"
+    assert result.preference_gap_minutes == 60
+
+
+def test_with_no_preference_the_earliest_slot_is_the_preference():
+    """Which is exactly the old behaviour, now as a special case."""
+    stated = solve_placements(
+        [wants("r1", 60, [(at(9), at(17))], preferred=at(9))],
+        [free(at(9), at(17))], CostConfig(alpha=0.0),
+    )
+    silent = solve_placements(
+        [request("r1", 60, [(at(9), at(17))])],
+        [free(at(9), at(17))], CostConfig(alpha=0.0),
+    )
+
+    assert stated.placements[0].range == silent.placements[0].range
+    assert stated.preference_gap_minutes == silent.preference_gap_minutes == 0
+
+
+def test_a_narrow_ask_no_longer_unseats_a_settled_booking_for_free():
+    """The case that prompted this. Both clients can be booked anywhere in the
+    day; both want 14:00. Whoever is already there should not be evicted
+    merely because the newcomer described a narrower wish.
+    """
+    from scheduling_engine import MovableAppointment
+
+    settled = MovableAppointment(
+        id="a1", client_id="alice", range=TimeRange(at(14), at(15)),
+        allowed=[TimeRange(at(9), at(17))], preferred_start=at(14),
+    )
+    newcomer = wants("r1", 60, [(at(9), at(17))], preferred=at(14), client="bob")
+
+    result = solve_placements(
+        [newcomer], [free(at(9), at(14)), free(at(15), at(17))],
+        CostConfig(alpha=0.0), movable=[settled], max_displacements=1,
+    )
+
+    assert result.all_placed
+    assert not result.displacements, "alice keeps the hour she asked for"
+
+
+def test_a_displaced_booking_can_be_moved_back_towards_its_wish_for_free():
+    """Distance is measured from what the client asked for, not from wherever
+    they were last put — so returning someone to their slot is not a cost.
+    """
+    from scheduling_engine import MovableAppointment
+
+    pushed_away = MovableAppointment(
+        id="a1", client_id="alice", range=TimeRange(at(16), at(17)),
+        allowed=[TimeRange(at(9), at(17))], preferred_start=at(9),
+    )
+
+    result = solve_placements(
+        [request("r1", 60, [(at(16), at(17))], client="bob")],
+        [free(at(9), at(10))],
+        CostConfig(alpha=0.0), movable=[pushed_away], max_displacements=1,
+    )
+
+    assert result.all_placed
+    (moved,) = result.displacements
+    assert moved.now.start == at(9), "moved back to where alice actually wanted"
+    assert result.preference_gap_minutes == 0

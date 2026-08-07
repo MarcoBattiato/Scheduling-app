@@ -412,7 +412,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     if result.displacements else "")
         print(f"alpha {alpha:g}: placed {len(result.placements)}/"
               f"{len(scenario.requests)}{rebooked} · fragmentation "
-              f"{result.fragmentation_minutes}m · earliness {result.earliness_minutes}m")
+              f"{result.fragmentation_minutes}m · off-preference {result.preference_gap_minutes}m")
         if args.text:
             print(render(scenario.provider_free, result, movable=scenario.movable))
         for note in _diagnose(scenario, result):

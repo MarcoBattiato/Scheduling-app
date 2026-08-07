@@ -84,6 +84,17 @@ displacement — the client agreed, but they did not *choose* the slot, and
 recording it as a preference is precisely the failure the field exists to
 prevent. `test_flows.py` pins this.
 
+A request names a **service** and a **wished-for time**. Where a client may
+actually be booked is their availability, resolved afresh at every solve — the
+same constraint that decides where one of their bookings may be moved to. The
+wish is only a cost, so naming a slot cannot make someone unplaceable elsewhere
+and cannot turn a narrow ask into a claim on an hour somebody else holds. The
+wish is stored on the booking, so a later reschedule is judged against what the
+client wanted rather than wherever they were last put.
+
+A consequence worth knowing: a client with no availability cannot be booked at
+all now, where previously the ask itself supplied the window.
+
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider
 says so, and the decision is a pure function so it is testable without waiting

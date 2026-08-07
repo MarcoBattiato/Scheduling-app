@@ -198,7 +198,7 @@ function draftShell(p) {
         ${m.unplaced ? `<span class="tag">${m.unplaced} unplaced</span>` : ""}
         ${m.displacements ? `<span class="tag move">${m.displacements} moved</span>` : ""}
         <span class="tag">waste ${m.fragmentation_minutes}m</span>
-        <span class="tag">delay ${m.earliness_minutes}m</span>
+        <span class="tag">off-wish ${m.preference_gap_minutes}m</span>
       </div>
       <div class="draft-cal" id="draftcal-${p.id}"></div>
       ${p.placements.map((x) => item(x, "book")).join("")}
@@ -496,7 +496,7 @@ $("request-form").onsubmit = async (e) => {
   const f = new FormData(e.target);
   await api("/api/requests", {
     client_id: me, service_id: f.get("service"),
-    windows: [{from: f.get("from"), to: f.get("to")}],
+    preferred_start: f.get("preferred"),
   });
   refresh();
 };

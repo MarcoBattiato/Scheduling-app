@@ -133,7 +133,7 @@ def _summary(result: Optional[PlacementResult]) -> str:
         f"<span class='pill {state}'>placed {ok}/{total}</span>"
         f"{rebooked}"
         f"<span class='pill'>fragmentation {result.fragmentation_minutes}m</span>"
-        f"<span class='pill'>earliness {result.earliness_minutes}m</span>"
+        f"<span class='pill'>off-preference {result.preference_gap_minutes}m</span>"
         "</div>"
     )
 

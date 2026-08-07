@@ -237,6 +237,7 @@ class AvailabilityStore:
         *,
         locked: bool = False,
         notes: Optional[str] = None,
+        preferred_start: Optional[datetime] = None,
     ) -> Appointment:
         appointment = Appointment(
             id=next(self._ids),
@@ -245,6 +246,7 @@ class AvailabilityStore:
             range=TimeSegment(start, end),
             locked=locked,
             notes=notes,
+            preferred_start=preferred_start,
         )
         self._appointments.append(appointment)
         return appointment

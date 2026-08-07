@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 ClientId = str
 RequestId = str
@@ -42,15 +42,25 @@ class RescheduleBounds:
 class BookingRequest:
     """A queued, not-yet-placed booking.
 
-    `desired` is what the client asked for in *this* request. It is not the
-    client's general availability from calendar_store — that only comes into
-    play when an existing booking has to be moved to make room, which this
-    pass never does.
+    `desired` is where this client may be booked *at all* — normally their
+    availability, cropped to the horizon. It is a hard constraint.
+
+    `preferred_start` is where they would *like* to be, and is only a cost.
+    Keeping the two apart matters: when the ask itself was the constraint, a
+    client could name a single slot and thereby become impossible to place
+    anywhere else, while an existing booking could be relocated anywhere in its
+    owner's much wider availability. Narrow asks therefore unseated settled
+    bookings almost for free. Now both sides are bounded by availability and
+    both pay for being moved away from what they wanted.
+
+    With no preference stated, the earliest feasible slot is taken as the
+    preference, which is exactly the old "book as early as possible".
     """
     id: RequestId
     client_id: ClientId
     duration_minutes: int
     desired: Sequence[TimeRange]
+    preferred_start: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +120,11 @@ class MovableAppointment:
     client_id: ClientId
     range: TimeRange
     allowed: Sequence[TimeRange] = ()
+    # What the client asked for when this was booked, carried forward so a
+    # later move is measured against their wish rather than against wherever
+    # they were last put. A booking already displaced away from its preferred
+    # slot can therefore be moved *back* towards it at no cost.
+    preferred_start: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -162,7 +177,10 @@ class PlacementResult:
     # Reported raw (unnormalised, in minutes) so the numbers stay legible when
     # tuning `alpha`.
     fragmentation_minutes: int = 0
-    earliness_minutes: int = 0
+    # Total distance between where things landed and where they were wanted —
+    # for a request, from its preferred slot (or the earliest feasible one if
+    # it named none); for a moved booking, from the slot its owner asked for.
+    preference_gap_minutes: int = 0
 
     @property
     def all_placed(self) -> bool:
@@ -179,7 +197,7 @@ class _Candidate:
     request_index: int
     start_cell: int
     cell_span: int
-    earliness_minutes: int
+    gap_minutes: int          # distance from what this client asked for
 
 
 @dataclass(frozen=True)
@@ -190,4 +208,5 @@ class _Move:
     movable_index: int
     start_cell: int
     cell_span: int
-    shift_minutes: int
+    gap_minutes: int          # distance from what this client asked for
+    shift_minutes: int        # distance actually travelled, for reporting

@@ -393,6 +393,41 @@ appointment unmovable for subsequent solves and nothing more; there is no
 per-date block of the kind §9 describes. Deliberately simpler: the alternative
 adds a second kind of history for a signal that has no consumer yet.
 
+### 10.0.2 Availability constrains, preference costs
+
+A request used to carry the window it wanted as a **hard** constraint, while an
+already-booked appointment could be relocated anywhere in its owner's much
+wider availability. The asymmetry was exploitable: naming a single slot made a
+request impossible to place elsewhere, so a newcomer with a narrow ask could
+evict a settled client almost for free, and that client would then be
+repositioned using availability the newcomer never had to offer.
+
+Both sides are now bounded by the same thing — the client's availability — and
+both pay the same cost for being moved away from what they wanted:
+
+- `BookingRequest.desired` is where the client *may* be booked, normally their
+  availability cropped to the horizon.
+- `BookingRequest.preferred_start` is where they would *like* to be, and is
+  only a cost.
+- `MovableAppointment.preferred_start` carries the slot the booking was made
+  against, so a move is judged against the client's wish rather than against
+  wherever they were last put. A booking already displaced can therefore be
+  moved *back* towards its preferred slot at no cost — the pull-back §10.1
+  wanted, falling out of the same term.
+- `calendar_store.Appointment.preferred_start` persists it, so the wish
+  survives into every later solve.
+
+The two former cost terms collapse into one. `preference_gap_minutes` is the
+total distance between where things landed and where they were wanted; with no
+stated preference the earliest feasible slot stands in, which reproduces "book
+as early as possible" exactly.
+
+**Cost note.** A request now spans its client's whole availability rather than
+a narrow ask, which makes the *horizon* the dominant expense: one request over
+30 days costs more to solve than forty over 5-day windows, because a wide
+window leaves nothing for the reachability filter to prune. Planning a week at
+a time — which is what a provider wants anyway — keeps it cheap.
+
 ### 10.1 Habitual-slot anchoring — agreed in principle, not yet implemented
 
 Clients book weekly, so the point is **predictability**: a client should be able

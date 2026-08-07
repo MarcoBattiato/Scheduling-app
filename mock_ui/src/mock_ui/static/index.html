@@ -86,10 +86,12 @@ window.addEventListener("unhandledrejection", function (e) {
         <h2>Ask for a booking</h2>
         <form id="request-form">
           <label>Service <select name="service" id="service-picker"></select></label>
-          <label>Earliest <input type="datetime-local" name="from" required></label>
-          <label>Latest <input type="datetime-local" name="to" required></label>
+          <label>Ideally at <input type="datetime-local" name="preferred" required></label>
           <button type="submit">Request</button>
         </form>
+        <p class="hint">A wish, not a demand: you can be booked anywhere in
+          your availability, and the scheduler tries to get you close to this.
+          Set your availability first, or there is nowhere to put you.</p>
         <div id="requests"></div>
       </section>
 

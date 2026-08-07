@@ -229,3 +229,45 @@ def test_cancelling_will_not_let_you_forget_whose_cancellation_it_was():
 
     with pytest.raises(TypeError):
         store.cancel_appointment(appointment.id)
+
+
+def test_a_booking_remembers_the_slot_its_client_asked_for():
+    """A wish, not a constraint, and not necessarily where it ended up — kept
+    so a later move is judged against what they wanted rather than against
+    wherever they were last put.
+    """
+    store = AvailabilityStore()
+    wanted = dt(2026, 5, 5, 15, 0)
+
+    appointment = store.book_appointment(
+        "alice", "haircut", dt(2026, 5, 5, 16, 0), dt(2026, 5, 5, 17, 0),
+        preferred_start=wanted,
+    )
+
+    assert appointment.preferred_start == wanted
+    assert appointment.range.start != wanted, "the wish is not where it landed"
+
+
+def test_the_wish_survives_a_rescheduling():
+    store = AvailabilityStore()
+    wanted = dt(2026, 5, 5, 15, 0)
+    first = store.book_appointment(
+        "alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0),
+        preferred_start=wanted,
+    )
+
+    moved = store.reschedule_appointment(
+        first.id, dt(2026, 5, 6, 9, 0), dt(2026, 5, 6, 10, 0), origin=Origin.DISPLACED,
+    )
+
+    assert moved.preferred_start == wanted, (
+        "being displaced must not redefine what the client wanted"
+    )
+
+
+def test_a_booking_without_a_stated_wish_simply_has_none():
+    store = AvailabilityStore()
+    appointment = store.book_appointment(
+        "alice", "haircut", dt(2026, 5, 5, 15, 0), dt(2026, 5, 5, 16, 0))
+
+    assert appointment.preferred_start is None

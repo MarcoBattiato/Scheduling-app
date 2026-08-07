@@ -287,5 +287,5 @@ def _summary(result: PlacementResult) -> str:
         parts.append(f"rebooked {len(result.displacements)} "
                      f"({result.shift_minutes}m shifted)")
     parts.append(f"fragmentation {result.fragmentation_minutes}m")
-    parts.append(f"earliness {result.earliness_minutes}m")
+    parts.append(f"off-preference {result.preference_gap_minutes}m")
     return " · ".join(parts)

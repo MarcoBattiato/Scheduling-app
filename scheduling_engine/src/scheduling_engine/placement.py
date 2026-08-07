@@ -11,13 +11,21 @@ the calendar packed.
 Objective, lexicographic:
 
   1. maximise the number of requests placed (partial solutions are valid, §5)
-  2. minimise  alpha * fragmentation/F  +  (1 - alpha) * earliness/E
+  2. minimise  alpha * fragmentation/F  +  (1 - alpha) * preference_gap/E
 
 Both terms are minutes, normalised by F and E so `alpha` mixes rather than
-merely ranks (see CostConfig). Earliness is measured per request from that
-request's own earliest feasible start: recurring clients should get their
-slot as early as *they* can take it, so later bookings in the series don't
-get pushed progressively further out.
+merely ranks (see CostConfig).
+
+The preference gap is how far everything ended up from what its client asked
+for. A request states a preferred slot; a booking being moved carries the one
+it was booked against. Where no preference is stated the earliest feasible
+slot stands in, which is exactly "book as early as possible".
+
+That both sides are measured the same way is the point. When the *ask* was the
+hard constraint, naming a single slot made a request impossible to place
+elsewhere while a settled booking could be relocated anywhere in its owner's
+much wider availability — so a narrow ask unseated a settled client almost for
+free. Availability now bounds both, and preference costs both.
 """
 from __future__ import annotations
 
@@ -237,11 +245,17 @@ def _moves_for(
                 high = min(want_end, block.end_cell)
                 starts.update(range(low, high - span + 1))
         starts.discard(start_cell)
+        # Measured from what the client asked for, not from wherever they were
+        # last put — so a booking already displaced can be moved back towards
+        # its preferred slot for free, rather than being charged for it.
+        wanted = (_nearest_cell(appointment.preferred_start, origin, grid)
+                  if appointment.preferred_start else start_cell)
         moves.extend(
             _Move(
                 movable_index=index,
                 start_cell=start,
                 cell_span=span,
+                gap_minutes=abs(start - wanted) * grid,
                 shift_minutes=abs(start - start_cell) * grid,
             )
             for start in sorted(starts)
@@ -350,16 +364,25 @@ def _candidates_for(
         return []
 
     starts = sorted(set(starts))
-    earliest = starts[0]
+    # With no stated preference the earliest feasible slot *is* the preference,
+    # which reproduces "book as early as possible" exactly.
+    wanted = (_nearest_cell(request.preferred_start, origin, grid)
+              if request.preferred_start else starts[0])
     return [
         _Candidate(
             request_index=index,
             start_cell=start,
             cell_span=span,
-            earliness_minutes=(start - earliest) * grid,
+            gap_minutes=abs(start - wanted) * grid,
         )
         for start in starts
     ]
+
+
+def _nearest_cell(moment: datetime, origin: datetime, grid: int) -> int:
+    """The grid cell a wished-for time falls in. Rounded rather than snapped
+    inward: a preference is a target, not a boundary."""
+    return int(round(_minutes(moment, origin) / grid))
 
 
 # --------------------------------------------------------------------------
@@ -438,16 +461,18 @@ def _solve(
 
     occupied = _occupancy(model, reachable, covering)
     fragmentation = _fragmentation_term(model, reachable, occupied, config)
-    # Both terms are minutes of inconvenience to a client — one waiting longer
-    # than they had to, the other shifted from a slot they had agreed to.
-    # Weighting them alike is provisional; SPEC.md §10 owns the real model.
-    earliness = sum(
-        candidate.earliness_minutes * chosen[i] for i, candidate in enumerate(candidates)
-    ) + sum(move.shift_minutes * moved[i] for i, move in enumerate(moves))
+    # One term, not two: how far everything ended up from what its client
+    # asked for. A request with no stated preference is measured from the
+    # earliest slot it could have had, a booking being moved from the slot its
+    # owner originally wanted. Weighting the two alike is provisional; SPEC.md
+    # §10 owns the real model.
+    preference_gap = sum(
+        candidate.gap_minutes * chosen[i] for i, candidate in enumerate(candidates)
+    ) + sum(move.gap_minutes * moved[i] for i, move in enumerate(moves))
 
     # Normalisation folded into integer weights: cost = a*frag/F + (1-a)*earli/E.
     w_frag, w_earli = _weights(config)
-    model.Minimize(w_frag * fragmentation + w_earli * earliness)
+    model.Minimize(w_frag * fragmentation + w_earli * preference_gap)
 
     solver = _solver(time_limit_seconds)
     _check(solver.Solve(model), solver)
@@ -462,10 +487,10 @@ def _solve(
     # at alpha 1, "least wasteful among equally early" at alpha 0.
     if not w_frag or not w_earli:
         model.Add(
-            w_frag * fragmentation + w_earli * earliness
+            w_frag * fragmentation + w_earli * preference_gap
             == int(round(solver.ObjectiveValue()))
         )
-        model.Minimize(earliness if not w_earli else fragmentation)
+        model.Minimize(preference_gap if not w_earli else fragmentation)
         solver = _solver(time_limit_seconds)
         _check(solver.Solve(model), solver)
 
@@ -536,7 +561,7 @@ def _solve(
         ),
         displacements=tuple(displacements),
         fragmentation_minutes=int(solver.Value(fragmentation)) + fixed_waste,
-        earliness_minutes=int(solver.Value(earliness)),
+        preference_gap_minutes=int(solver.Value(preference_gap)),
     )
 
 
@@ -753,7 +778,7 @@ def _fragmentation_term(
         cells * grid
         for cells in waste_table(longest, [d // grid for d in config.service_durations])
     ]
-    worst = max(table)
+    wasteful = [n for n in range(1, longest + 1) if table[n]]
 
     terms = []
     for block in blocks:
@@ -778,14 +803,19 @@ def _fragmentation_term(
                 model.AddBoolAnd([is_free, nxt]).OnlyEnforceIf(ends_here)
                 model.AddBoolOr([occupied[cell], nxt.Not()]).OnlyEnforceIf(ends_here.Not())
 
-            wasted = model.NewIntVar(0, worst, f"waste{cell}")
-            model.AddElement(length, table, wasted)
-
-            counted = model.NewIntVar(0, worst, f"frag{cell}")
-            model.Add(counted == wasted).OnlyEnforceIf(ends_here)
-            model.Add(counted == 0).OnlyEnforceIf(ends_here.Not())
-            terms.append(counted)
+            # Only a few run lengths waste anything — with a 60/90 catalogue
+            # on a 30-minute grid, exactly one does (a single isolated cell).
+            # Naming those directly is far cheaper to presolve than an
+            # AddElement over the whole table, and the table is mostly zeros.
+            for run_cells in wasteful:
+                exact = model.NewBoolVar(f"len{cell}_{run_cells}")
+                model.Add(length == run_cells).OnlyEnforceIf(exact)
+                model.Add(length != run_cells).OnlyEnforceIf(exact.Not())
+                both = model.NewBoolVar(f"waste{cell}_{run_cells}")
+                model.AddBoolAnd([exact, ends_here]).OnlyEnforceIf(both)
+                model.AddBoolOr([exact.Not(), ends_here.Not()]).OnlyEnforceIf(both.Not())
+                terms.append((table[run_cells], both))
 
     total = model.NewIntVar(0, sum(b.n_cells for b in blocks) * grid, "fragmentation")
-    model.Add(total == sum(terms))
+    model.Add(total == sum(cost * flag for cost, flag in terms))
     return total

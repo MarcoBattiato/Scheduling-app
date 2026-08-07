@@ -43,7 +43,7 @@ def test_submitting_a_request_queues_it_without_scheduling_anything(client):
     """A request arriving is not a reason to re-plan the week."""
     response = client.post("/api/requests", json={
         "client_id": "alice", "service_id": "session-60",
-        "windows": [{"from": at(0, 9), "to": at(0, 17)}],
+        "preferred_start": at(0, 9),
     })
 
     assert response.status_code == 200
@@ -55,7 +55,7 @@ def test_the_provider_drives_the_proposal_and_the_client_settles_it(client):
     client.post("/api/settings", json={"auto_run": False})
     client.post("/api/requests", json={
         "client_id": "alice", "service_id": "session-60",
-        "windows": [{"from": at(0, 9), "to": at(0, 17)}],
+        "preferred_start": at(0, 9),
     })
 
     ran = client.post("/api/solve").json()
@@ -79,7 +79,7 @@ def test_a_rejected_plan_is_not_left_in_front_of_the_provider(client):
     client.post("/api/settings", json={"auto_run": False})
     client.post("/api/requests", json={
         "client_id": "alice", "service_id": "session-60",
-        "windows": [{"from": at(0, 9), "to": at(0, 17)}],
+        "preferred_start": at(0, 9),
     })
     client.post("/api/solve")
     plan = client.get("/api/state").json()["plans"][0]
@@ -105,7 +105,7 @@ def test_every_tab_sees_the_same_world(client):
     """
     client.post("/api/requests", json={
         "client_id": "alice", "service_id": "session-60",
-        "windows": [{"from": at(0, 9), "to": at(0, 17)}],
+        "preferred_start": at(0, 9),
     })
 
     other_tab = TestClient(app_module.app)
@@ -182,16 +182,24 @@ def test_settings_are_clamped_to_something_sensible(client):
     assert settings["max_displacements"] == 0
 
 
-@pytest.mark.parametrize("payload,detail", [
-    ({"client_id": "alice", "service_id": "nonexistent",
-      "windows": [{"from": at(0, 9), "to": at(0, 17)}]}, "no service"),
-    ({"client_id": "alice", "service_id": "session-60", "windows": []}, "window"),
-])
-def test_nonsense_requests_are_refused_with_a_reason(client, payload, detail):
-    response = client.post("/api/requests", json=payload)
+def test_asking_for_a_service_that_does_not_exist_is_refused(client):
+    response = client.post("/api/requests", json={
+        "client_id": "alice", "service_id": "nonexistent",
+        "preferred_start": at(0, 9),
+    })
 
     assert response.status_code == 400
-    assert detail in response.json()["detail"]
+    assert "no service" in response.json()["detail"]
+
+
+def test_a_request_without_a_wished_for_time_is_refused(client):
+    """The time is the whole of what a request now says; availability supplies
+    the rest."""
+    response = client.post("/api/requests", json={
+        "client_id": "alice", "service_id": "session-60",
+    })
+
+    assert response.status_code == 422
 
 
 def test_unknown_ids_are_not_found_rather_than_crashing(client):
@@ -205,7 +213,7 @@ def test_a_session_survives_being_saved_and_reloaded(client, tmp_path):
 
     client.post("/api/requests", json={
         "client_id": "alice", "service_id": "session-60",
-        "windows": [{"from": at(0, 9), "to": at(0, 17)}],
+        "preferred_start": at(0, 9),
     })
     before = client.get("/api/state").json()
 
@@ -239,7 +247,7 @@ def test_a_discontinued_service_disappears_from_sale_but_not_from_the_record(cli
 
     booked = client.post("/api/requests", json={
         "client_id": "alice", "service_id": "session-90",
-        "windows": [{"from": at(0, 9), "to": at(0, 17)}],
+        "preferred_start": at(0, 9),
     })
     assert booked.status_code == 200, "existing ids still resolve for rescheduling"
 

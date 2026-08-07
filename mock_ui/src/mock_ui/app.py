@@ -30,7 +30,7 @@ SNAPSHOT = Path(os.environ.get(
 ))
 
 app = FastAPI(title="Scheduling mock UI")
-world = persistence.load(SNAPSHOT) if SNAPSHOT.exists() else World()
+world = persistence.load_or_new(SNAPSHOT)
 
 
 # -- payloads -------------------------------------------------------
@@ -50,7 +50,7 @@ class WeeklyIn(BaseModel):
 class RequestIn(BaseModel):
     client_id: str
     service_id: str
-    windows: List[dict]
+    preferred_start: str        # a wish; availability decides what is possible
 
 
 class ExceptionIn(BaseModel):
@@ -105,6 +105,7 @@ class SettingsIn(BaseModel):
     auto_run: Optional[bool] = None
     urgency_hours: Optional[int] = None
     retry_after_minutes: Optional[int] = None
+    horizon_days: Optional[int] = None
 
 
 # -- routes ---------------------------------------------------------
@@ -154,11 +155,9 @@ def set_exception(payload: ExceptionIn):
 
 @app.post("/api/requests")
 def submit_request(payload: RequestIn):
-    if not payload.windows:
-        raise HTTPException(400, "a request needs at least one window")
     try:
         request = world.submit_request(
-            payload.client_id, payload.service_id, payload.windows
+            payload.client_id, payload.service_id, payload.preferred_start
         )
     except KeyError as exc:
         raise HTTPException(400, str(exc.args[0])) from None
@@ -300,6 +299,8 @@ def settings(payload: SettingsIn):
         world.policy.urgency_hours = max(0, payload.urgency_hours)
     if payload.retry_after_minutes is not None:
         world.policy.retry_after_minutes = max(1, payload.retry_after_minutes)
+    if payload.horizon_days is not None:
+        world.policy.horizon_days = max(1, payload.horizon_days)
     return {"ok": True}
 
 

@@ -24,24 +24,29 @@ def at(day_offset: int, hour: int, minute: int = 0) -> datetime:
 @pytest.fixture
 def world() -> World:
     w = World()
+    # These scenarios never look beyond next week, and the horizon is the
+    # dominant cost now that a request spans its client's whole availability.
+    # Mornings only, ten days out: these scenarios need neither a full day nor
+    # three weeks, and both multiply the candidate slots for every request.
+    w.policy.horizon_days = 10
     w.catalogue.add_service("s60", "Hour", 60, 8000)
     w.catalogue.add_service("s90", "Long", 90, 11000)
     w.add_client("alice", "Alice")
     w.add_client("bob", "Bob")
     w.set_weekly_availability(
-        PROVIDER, [{"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)]
+        PROVIDER, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)]
     )
     for client in ("alice", "bob"):
         w.set_weekly_availability(
-            client, [{"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)]
+            client, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)]
         )
     return w
 
 
-def ask(world, client, duration, day, from_hour, to_hour):
-    return world.submit_request(client, f"s{duration}", [
-        {"from": at(day, from_hour).isoformat(), "to": at(day, to_hour).isoformat()}
-    ])
+def ask(world, client, duration, day, from_hour, to_hour=None):
+    """`from_hour` is now the slot they would like; availability decides what
+    is actually possible for them."""
+    return world.submit_request(client, f"s{duration}", at(day, from_hour).isoformat())
 
 
 def place(world, client, duration, day, from_hour, to_hour):
@@ -107,6 +112,11 @@ def test_locked_appointments_are_never_offered_up(world):
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
+    # One hour, on one date, is the only thing that will do for alice. A
+    # weekly rule would recur, and naming the hour as a *wish* would no longer
+    # constrain anything — that is the point of the change.
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10), locked=True)
     ask(world, "alice", 60, 0, 9, 10)
 
@@ -122,6 +132,11 @@ def test_displacement_can_be_turned_off_entirely(world):
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
+    # One hour, on one date, is the only thing that will do for alice. A
+    # weekly rule would recur, and naming the hour as a *wish* would no longer
+    # constrain anything — that is the point of the change.
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
     request = ask(world, "alice", 60, 0, 9, 10)
 
@@ -135,18 +150,14 @@ def test_displacement_can_be_turned_off_entirely(world):
 
 
 def test_duration_comes_from_the_service_not_the_asking(world):
-    requested = world.submit_request("alice", "s90", [
-        {"from": at(0, 9).isoformat(), "to": at(0, 17).isoformat()}
-    ])
+    requested = world.submit_request("alice", "s90", at(0, 9).isoformat())
 
     assert requested.duration_minutes == 90
 
 
 def test_asking_for_a_service_that_does_not_exist_is_refused(world):
     with pytest.raises(KeyError):
-        world.submit_request("alice", "nope", [
-            {"from": at(0, 9).isoformat(), "to": at(0, 17).isoformat()}
-        ])
+        world.submit_request("alice", "nope", at(0, 9).isoformat())
 
 
 def test_the_solver_measures_gaps_against_what_is_still_on_sale(world):
@@ -252,6 +263,11 @@ def test_a_summary_counts_moves_the_clinic_imposed(world):
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
+    # One hour, on one date, is the only thing that will do for alice. A
+    # weekly rule would recur, and naming the hour as a *wish* would no longer
+    # constrain anything — that is the point of the change.
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
     ask(world, "alice", 60, 0, 9, 10)
     world.propose()
@@ -382,7 +398,6 @@ def test_ids_issued_after_a_reload_do_not_collide(world, tmp_path):
     persistence.save(world, path)
 
     back = persistence.load(path)
-    fresh = back.submit_request("alice", "s60", [
-        {"from": at(1, 9).isoformat(), "to": at(1, 17).isoformat()}])
+    fresh = back.submit_request("alice", "s60", at(1, 9).isoformat())
 
     assert fresh.id not in {r.id for r in world.requests.values()} | set(world.plans)

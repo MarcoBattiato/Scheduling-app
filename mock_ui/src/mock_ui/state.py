@@ -49,7 +49,9 @@ class Request:
     client_id: str
     service_id: str
     duration_minutes: int
-    windows: List[TimeRange]
+    # The slot they would like. A wish, not a constraint — where they *may* be
+    # booked is their availability, resolved afresh at every solve.
+    preferred_start: datetime
     # awaiting_client — out with the client; not replanned while they think
     # pending  — waiting, and may trigger a run of its own
     # on_hold  — already tried and not placed; still reconsidered by runs that
@@ -244,22 +246,26 @@ class World:
     # -- bookings ----------------------------------------------------
 
     def submit_request(
-        self, client_id: str, service_id: str, windows: Sequence[dict]
+        self, client_id: str, service_id: str, preferred_start: str
     ) -> Request:
-        """Duration comes from the catalogue, not the caller: how long a
-        service takes is a property of the service, not of the asking."""
+        """A client asks for a service at a time they would like.
+
+        Duration comes from the catalogue — how long something takes is a
+        property of the service, not of the asking. *Where* they may be booked
+        comes from their availability, read afresh at each solve, so a stated
+        wish never narrows what is possible for them.
+        """
         service = self.catalogue.get_service(service_id)
         request = Request(
             id=next(self._ids),
             client_id=client_id,
             service_id=service_id,
             duration_minutes=service.duration_minutes,
-            windows=[
-                TimeRange(_parse_dt(w["from"]), _parse_dt(w["to"])) for w in windows
-            ],
+            preferred_start=_parse_dt(preferred_start),
         )
         self.requests[request.id] = request
-        self._note(f"{client_id} asked for {service.name}")
+        self._note(f"{client_id} asked for {service.name} "
+                   f"around {request.preferred_start:%a %d %b %H:%M}")
         return request
 
     def withdraw_request(self, request_id: int) -> None:
@@ -308,7 +314,7 @@ class World:
         now = now or datetime.now()
         trigger = due(
             self.policy, now, self.last_run,
-            [min(w.start for w in r.windows)
+            [r.preferred_start
              for r in self.requests.values() if r.status == "pending"],
             any(r.status in ("pending", "on_hold") for r in self.requests.values()),
         )
@@ -361,6 +367,7 @@ class World:
         what stops two plans quietly promising the same slot.
         """
         now = now or datetime.now()
+        horizon_days = horizon_days or self.policy.horizon_days
         self.last_run = now
 
         waiting = [r for r in self.requests.values()
@@ -410,10 +417,21 @@ class World:
                     client_id=appointment.client_id,
                     range=current,
                     allowed=allowed,
+                    preferred_start=appointment.preferred_start,
                 ))
 
+        # Where a client may be booked is their availability — the same
+        # constraint that governs where one of their bookings may be moved to.
+        # Their stated wish is only a cost, so naming a slot cannot make them
+        # unplaceable elsewhere, and cannot turn a narrow ask into a claim on
+        # somebody else's hour.
         result = solve_placements(
-            [BookingRequest(str(r.id), r.client_id, r.duration_minutes, r.windows)
+            [BookingRequest(
+                str(r.id), r.client_id, r.duration_minutes,
+                [TimeRange(s.start, s.end) for s in self.availability_segments(
+                    r.client_id, window_start, window_end)],
+                preferred_start=r.preferred_start,
+             )
              for r in waiting],
             provider_free, config,
             movable=movable, max_displacements=max_moves,
@@ -444,7 +462,7 @@ class World:
                 "unplaced": len(result.unplaced),
                 "displacements": len(result.displacements),
                 "fragmentation_minutes": result.fragmentation_minutes,
-                "earliness_minutes": result.earliness_minutes,
+                "preference_gap_minutes": result.preference_gap_minutes,
                 "shift_minutes": result.shift_minutes,
             },
             placements=[
@@ -741,6 +759,8 @@ class World:
                     "status": a.status.value, "origin": a.origin.value,
                     "locked": a.locked, "supersedes": a.supersedes,
                     "service": self._service_name(a.service_type_id),
+                    "preferred": (a.preferred_start.isoformat()
+                                  if a.preferred_start else None),
                     "price": self._service_price(a.service_type_id),
                     "notes": a.notes,
                 })
@@ -793,8 +813,7 @@ class World:
                 {"id": r.id, "client_id": r.client_id, "service_id": r.service_id,
                  "service": self._service_name(r.service_id),
                  "duration": r.duration_minutes, "status": r.status,
-                 "windows": [{"from": w.start.isoformat(), "to": w.end.isoformat()}
-                             for w in r.windows]}
+                 "preferred": r.preferred_start.isoformat()}
                 for r in self.requests.values()
             ],
             "approvals": [
@@ -838,6 +857,7 @@ class World:
                                 for d, t in self.policy.weekly_runs],
                 "urgency_hours": self.policy.urgency_hours,
                 "retry_after_minutes": self.policy.retry_after_minutes,
+                "horizon_days": self.policy.horizon_days,
                 "last_run": self.last_run.isoformat() if self.last_run else None,
             },
             "log": self.log[-40:],

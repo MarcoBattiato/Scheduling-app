@@ -130,7 +130,7 @@ def test_solver_matches_exhaustive_enumeration(requests, free, alpha):
     assert len(result.placements) == -placed_count
 
     w_frag, w_earli = _weights(config)
-    actual = w_frag * result.fragmentation_minutes + w_earli * result.earliness_minutes
+    actual = w_frag * result.fragmentation_minutes + w_earli * result.preference_gap_minutes
     assert actual == best_cost
 
 
@@ -167,7 +167,7 @@ def test_random_instances_match_exhaustive_enumeration(seed):
     w_frag, w_earli = _weights(config)
 
     assert len(result.placements) == -placed_count
-    assert w_frag * result.fragmentation_minutes + w_earli * result.earliness_minutes == best_cost
+    assert w_frag * result.fragmentation_minutes + w_earli * result.preference_gap_minutes == best_cost
 
 
 @pytest.mark.parametrize("seed", range(40))

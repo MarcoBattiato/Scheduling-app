@@ -24,22 +24,27 @@ def at(day_offset: int, hour: int, minute: int = 0) -> datetime:
 @pytest.fixture
 def world() -> World:
     w = World()
+    # These scenarios never look beyond next week, and the horizon is the
+    # dominant cost now that a request spans its client's whole availability.
+    # Mornings only, ten days out: these scenarios need neither a full day nor
+    # three weeks, and both multiply the candidate slots for every request.
+    w.policy.horizon_days = 10
     w.catalogue.add_service("s60", "Hour", 60, 8000)
     for who in ("alice", "bob"):
         w.add_client(who, who.title())
         w.set_weekly_availability(
-            who, [{"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)]
+            who, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)]
         )
     w.set_weekly_availability(
-        PROVIDER, [{"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)]
+        PROVIDER, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)]
     )
     return w
 
 
-def ask(world, client, day, from_hour, to_hour, service="s60"):
-    return world.submit_request(client, service, [
-        {"from": at(day, from_hour).isoformat(), "to": at(day, to_hour).isoformat()}
-    ])
+def ask(world, client, day, from_hour, to_hour=None, service="s60"):
+    """`from_hour` is now the slot they would like; availability decides what
+    is actually possible for them."""
+    return world.submit_request(client, service, at(day, from_hour).isoformat())
 
 
 def only_plan(world):
@@ -168,6 +173,11 @@ def test_a_booking_that_needed_a_move_does_not_happen_if_the_move_is_refused(wor
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
+    # One hour, on one date, is the only thing that will do for alice. A
+    # weekly rule would recur, and naming the hour as a *wish* would no longer
+    # constrain anything — that is the point of the change.
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
     ask(world, "alice", 0, 9, 10)
 
@@ -194,6 +204,11 @@ def test_a_booking_waiting_on_a_move_is_made_once_the_move_is_agreed(world):
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
+    # One hour, on one date, is the only thing that will do for alice. A
+    # weekly rule would recur, and naming the hour as a *wish* would no longer
+    # constrain anything — that is the point of the change.
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
     ask(world, "alice", 0, 9, 10)
     world.propose()
@@ -244,7 +259,7 @@ def test_a_parked_request_is_still_reconsidered_by_runs_that_happen_anyway(world
     assert world.requests[request.id].status == "on_hold"
 
     world.set_weekly_availability(
-        PROVIDER, [{"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)]
+        PROVIDER, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)]
     )
     world.propose()
 
@@ -323,7 +338,7 @@ def test_each_draft_carries_what_it_was_asked_for_and_what_it_achieved(world):
                             "allow_chains": False}
     assert draft.metrics["placed"] == 1
     assert "fragmentation_minutes" in draft.metrics
-    assert "earliness_minutes" in draft.metrics
+    assert "preference_gap_minutes" in draft.metrics
 
 
 def test_trying_settings_does_not_change_the_defaults(world):
@@ -386,6 +401,11 @@ def test_a_booking_asked_to_move_is_not_asked_about_twice(world):
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
+    # One hour, on one date, is the only thing that will do for alice. A
+    # weekly rule would recur, and naming the hour as a *wish* would no longer
+    # constrain anything — that is the point of the change.
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
     booked = world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
     ask(world, "alice", 0, 9, 10)
     world.propose()
@@ -460,6 +480,11 @@ def test_approving_a_booking_pulls_in_the_move_it_needs(world):
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
+    # One hour, on one date, is the only thing that will do for alice. A
+    # weekly rule would recur, and naming the hour as a *wish* would no longer
+    # constrain anything — that is the point of the change.
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
     ask(world, "alice", 0, 9, 10)
     world.propose()
@@ -479,6 +504,11 @@ def test_a_move_can_be_sent_on_without_the_booking_that_wanted_it(world):
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
+    # One hour, on one date, is the only thing that will do for alice. A
+    # weekly rule would recur, and naming the hour as a *wish* would no longer
+    # constrain anything — that is the point of the change.
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
     ask(world, "alice", 0, 9, 10)
     world.propose()
@@ -515,23 +545,33 @@ def test_a_chained_refusal_strands_everything_that_was_waiting_on_it(world):
     """
     world.max_displacements = 2
     world.allow_chains = True
-    world.set_weekly_availability(PROVIDER, [
-        {"weekday": 0, "from": "09:00", "to": "11:00"},
-        {"weekday": 1, "from": "09:00", "to": "10:00"},
-    ])
-    world.set_weekly_availability(
-        "bob", [{"weekday": 0, "from": "09:00", "to": "11:00"}])
     world.add_client("carol", "Carol")
-    world.set_weekly_availability(
-        "carol", [{"weekday": 1, "from": "09:00", "to": "10:00"}])
+
+    # Everyone is free on exactly one date, so the only way to seat alice is
+    # bob taking carol's hour and carol going to Tuesday. Weekly patterns would
+    # recur and offer an easier answer; a wish would constrain nothing at all.
+    world.set_weekly_availability(PROVIDER, [])
+    world.set_exception(PROVIDER, monday(), time(9), time(11), available=True)
+    world.set_exception(PROVIDER, monday() + timedelta(days=1), time(9), time(10),
+                        available=True)
+    for who, day, start, end in (
+        ("alice", 0, time(9), time(10)),      # only bob's current hour will do
+        ("bob", 0, time(9), time(11)),        # can shuffle within Monday
+        ("carol", 1, time(9), time(10)),      # only Tuesday will do
+    ):
+        world.set_weekly_availability(who, [])
+        world.set_exception(who, monday() + timedelta(days=day), start, end,
+                            available=True)
+
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
     world.store.book_appointment("carol", "s60", at(0, 10), at(0, 11))
     ask(world, "alice", 0, 9, 10)
 
     world.propose()
     plan = only_plan(world)
-    if len(plan.displacements) < 2:
-        pytest.skip("this calendar did not need a chain")
+    assert len(plan.displacements) == 2, (
+        "alice needs bob's hour, bob needs carol's, carol must go to Tuesday"
+    )
 
     world.provider_approve(plan.id)
     approvals = {a.client_id: a for a in world.pending_approvals()}
@@ -552,6 +592,11 @@ def test_dependencies_come_from_the_engine_not_from_guesswork(world):
         {"weekday": 0, "from": "09:00", "to": "10:00"},
         {"weekday": 1, "from": "09:00", "to": "17:00"},
     ])
+    # One hour, on one date, is the only thing that will do for alice. A
+    # weekly rule would recur, and naming the hour as a *wish* would no longer
+    # constrain anything — that is the point of the change.
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
     world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
     ask(world, "alice", 0, 9, 10)
     world.propose()
