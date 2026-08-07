@@ -50,6 +50,7 @@ class Request:
     service_id: str
     duration_minutes: int
     windows: List[TimeRange]
+    # awaiting_client — out with the client; not replanned while they think
     # pending  — waiting, and may trigger a run of its own
     # on_hold  — already tried and not placed; still reconsidered by runs that
     #            happen anyway, but no longer demands one, which is what stops
@@ -246,6 +247,25 @@ class World:
             return None
         return self.propose(now=now, reason=trigger.reason, detail=trigger.detail)
 
+    def pending_holds(self) -> List[TimeRange]:
+        """Time already promised to somebody, though not yet confirmed.
+
+        A re-run must plan around these or it would offer the same slot twice.
+        Only the *destination* needs blocking here: where a booking is being
+        moved from is still occupied by that booking — it does not move until
+        the client agrees — so `free_time` already excludes it. What the other
+        end needs instead is that the appointment stops being offered as
+        movable, or the same client would be asked twice about it.
+        """
+        return [
+            TimeRange(a.now_start, a.now_end)
+            for a in self.approvals.values() if a.status == "pending"
+        ]
+
+    def _asked_to_move(self) -> set:
+        return {a.appointment_id for a in self.approvals.values()
+                if a.status == "pending" and a.kind == "reschedule"}
+
     def propose(
         self,
         now: Optional[datetime] = None,
@@ -278,9 +298,6 @@ class World:
                    if r.status in ("pending", "on_hold")]
         if not waiting:
             return {"ran": False, "reason": "nothing waiting"}
-        if any(p.status == "awaiting_clients" for p in self.plans.values()):
-            return {"ran": False, "reason": "a plan is already out with the clients"}
-
         alpha = self.alpha if alpha is None else alpha
         max_moves = (self.max_displacements if max_displacements is None
                      else max_displacements)
@@ -297,12 +314,19 @@ class World:
 
         availability = self.availability_segments(PROVIDER, window_start, window_end)
         live = self._live_appointments(window_start, window_end)
-        provider_free = free_time(availability, live)
+        # Anything already promised is treated as taken. This is the whole of
+        # "lock and re-optimise": the engine is a pure function of the world it
+        # is described, so planning around a commitment is a matter of
+        # describing it, not of a reservation mechanism.
+        provider_free = free_time(availability, list(live) + self.pending_holds())
 
+        asked_to_move = self._asked_to_move()
         movable = []
         for appointment in live:
             if appointment.locked or appointment.id in self.immovable:
                 continue
+            if appointment.id in asked_to_move:
+                continue        # already being asked about; do not ask twice
             current = TimeRange(appointment.range.start, appointment.range.end)
             allowed = reschedule_windows(
                 current,
@@ -399,8 +423,6 @@ class World:
         plan = self.plans[plan_id]
         if plan.status != "draft":
             raise ValueError(f"plan {plan_id} is {plan.status}, not awaiting approval")
-        if any(p.status == "awaiting_clients" for p in self.plans.values()):
-            raise ValueError("a plan is already out with the clients")
 
         chosen = self._expand(plan, items)
         plan.status = "awaiting_clients"
@@ -411,6 +433,9 @@ class World:
                           request_id=placement["request_id"],
                           now_start=placement["start"], now_end=placement["end"],
                           depends_on=tuple(placement["depends_on"]))
+                # Out with the client — not replanned while they are thinking,
+                # or a re-run would offer the same person a second slot.
+                self.requests[placement["request_id"]].status = "awaiting_client"
             else:
                 self.requests[placement["request_id"]].status = "on_hold"
         for displacement in plan.displacements:

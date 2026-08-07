@@ -345,15 +345,90 @@ def test_approving_one_draft_discards_the_others(world):
     assert [p.status for p in world.plans.values() if p.id != chosen["plan_id"]] == ["rejected"]
 
 
-def test_only_one_plan_may_be_out_with_the_clients(world):
-    """Drafts are free; a plan being asked about is not. Two in flight could
-    quietly promise the same slot twice.
+# -- planning around what is already promised ------------------------
+
+
+def test_a_slot_out_with_a_client_is_not_offered_to_anyone_else(world):
+    """Re-planning while an answer is outstanding used to be forbidden. It is
+    allowed now because the promised slot is described to the engine as taken —
+    the engine is a pure function of the world it is given, so no reservation
+    mechanism is needed.
     """
+    world.set_weekly_availability(
+        PROVIDER, [{"weekday": 0, "from": "09:00", "to": "10:00"}])
+    ask(world, "alice", 0, 9, 10)
+    world.propose()
+    world.provider_approve(only_plan(world).id)
+    promised = world.pending_approvals()[0].now_start
+
+    ask(world, "bob", 0, 9, 10)
+    world.propose()
+
+    fresh = [p for p in world.plans.values() if p.status == "draft"]
+    offered = [x["start"] for p in fresh for x in p.placements]
+    assert promised not in offered, "the same hour was offered twice"
+
+
+def test_a_client_still_thinking_is_not_offered_a_second_slot(world):
     ask(world, "alice", 0, 9, 17)
     world.propose()
     world.provider_approve(only_plan(world).id)
 
-    assert world.propose()["ran"] is False
+    world.propose()
+
+    fresh = [p for p in world.plans.values() if p.status == "draft"]
+    assert not [x for p in fresh for x in p.placements
+                if x["client_id"] == "alice"]
+
+
+def test_a_booking_asked_to_move_is_not_asked_about_twice(world):
+    world.set_weekly_availability(PROVIDER, [
+        {"weekday": 0, "from": "09:00", "to": "10:00"},
+        {"weekday": 1, "from": "09:00", "to": "17:00"},
+    ])
+    booked = world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
+    ask(world, "alice", 0, 9, 10)
+    world.propose()
+    world.provider_approve(only_plan(world).id)
+
+    ask(world, "alice", 0, 9, 10)      # someone else wanting the same hour
+    world.propose()
+
+    fresh = [p for p in world.plans.values() if p.status == "draft"]
+    assert not [d for p in fresh for d in p.displacements
+                if d["appointment_id"] == booked.id]
+
+
+def test_a_refusal_releases_the_hold(world):
+    world.set_weekly_availability(
+        PROVIDER, [{"weekday": 0, "from": "09:00", "to": "10:00"}])
+    ask(world, "alice", 0, 9, 10)
+    world.propose()
+    world.provider_approve(only_plan(world).id)
+    (approval,) = world.pending_approvals()
+
+    world.respond_to_approval(approval.id, accept=False)
+
+    assert world.pending_holds() == [], "nothing is promised any more"
+
+
+def test_locking_part_of_a_plan_and_re_running_plans_around_it(world):
+    """Lock-and-reoptimise falls out of the same mechanism: approving part of
+    a plan makes those slots holds, and the next run works around them.
+    """
+    ask(world, "alice", 0, 9, 17)
+    ask(world, "bob", 0, 9, 17)
+    world.propose()
+    plan = only_plan(world)
+    keep = plan.item_key("booking", plan.placements[0]["request_id"])
+    locked_at = plan.placements[0]["start"]
+
+    world.provider_approve(plan.id, items=[keep])
+    world.propose(alpha=1.0)
+
+    fresh = [p for p in world.plans.values() if p.status == "draft"]
+    assert fresh, "re-running is allowed while an answer is outstanding"
+    assert locked_at not in [x["start"] for p in fresh for x in p.placements]
 
 
 # -- partial authorisation --------------------------------------------

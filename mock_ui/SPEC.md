@@ -142,6 +142,30 @@ A refused slot becomes a single-date block on that client's availability
 (engine SPEC §9): saying no to next Tuesday at three says nothing about
 Tuesdays in general.
 
+### 5.2 Planning around what is already promised
+
+A slot out with a client is neither free nor booked, and the scheduler must
+not offer it to somebody else while they think. This needs no reservation
+mechanism: `solve_placements` is a pure function of the world it is described,
+so a promised slot is simply described as taken (`World.pending_holds`).
+
+Three things follow, and they are the same mechanism seen from different
+angles:
+
+- **Re-planning while an answer is outstanding is safe**, so the earlier
+  "one plan out with the clients" rule is gone.
+- **Lock-and-reoptimise is not a separate feature.** Approving part of a plan
+  makes those slots holds; the next run works around them. Locking and
+  promising differ only in why the time is spoken for.
+- **Both ends of a pending move matter**, though only one needs work here. The
+  destination is held explicitly; the origin is still occupied by the booking
+  that has not moved yet, so `free_time` already excludes it. What the origin
+  needs instead is that the appointment stops being offered as movable, or the
+  same client would be asked twice about it.
+
+The price is that an unanswered ask sterilises capacity — which is what makes
+expiry (§7) matter rather than being a nicety.
+
 ---
 
 ## 5.1 Writing history correctly
@@ -184,15 +208,13 @@ Recorded so nobody mistakes any of it for a decision:
 - A declined *move* marks that appointment unmovable for the rest of the
   session, which is blunter than the single-date block a declined *booking*
   gets.
-- Only one plan may be **out with the clients** at a time. Drafts are free;
-  two plans being asked about at once could quietly promise the same slot,
-  which is the reservation problem engine SPEC §8 deliberately avoids by
-  recomputing from scratch. Held-back items return to the queue and are picked
-  up by the next run rather than re-optimised immediately.
-- Locking approved placements and re-running the solver *around* them is not
-  built. That needs slots that are neither free nor booked — a soft
-  reservation — and deserves deciding deliberately rather than arriving as a
-  side effect.
+- No expiry on an outstanding ask, so an unanswered one holds its slot
+  indefinitely. Defaults agreed for when real time exists: a booking within the
+  client's preferred times is accepted by default after 1 day if the
+  appointment is more than 5 days away, or 6 hours otherwise; a rescheduling
+  request defaults to **declined** after 6 hours. All provider-configurable.
+  The asymmetry is deliberate — silence should not cost somebody an
+  appointment they already hold.
 - `alpha` and `max_displacements` are global controls, not per-provider
   settings.
 - No expiry on a client's approval: a client who never answers holds their part

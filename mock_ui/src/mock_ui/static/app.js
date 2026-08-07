@@ -78,8 +78,8 @@ function renderProposal() {
                                     : `${drafts.length} arrangements to compare`}</b>
         <span class="hint">Nothing is booked yet. Approving asks each client
           to confirm their own part.</span></div>
-      ${inFlight ? `<p class="hint">A plan is already out with the clients —
-         approve nothing more until it settles.</p>` : ""}
+      ${inFlight ? `<p class="hint">Something is already out with the clients.
+         Those slots are held, so this proposal plans around them.</p>` : ""}
       <div class="drafts">${drafts.map(renderDraft).join("")}</div>
     </div>`;
 
@@ -117,6 +117,7 @@ function renderDraft(p) {
       ${p.displacements.map((x) => item(x, "move")).join("")}
       <div class="row" style="margin-top:10px">
         <button onclick="approvePlan(${p.id})">Approve selected</button>
+        <button class="ghost" onclick="lockAndRerun(${p.id})">Lock selected, re-plan the rest</button>
         <button class="ghost" onclick="discardPlan(${p.id})">Discard</button>
       </div>
     </div>`;
@@ -317,6 +318,16 @@ window.approvePlan = async (id) => {
   refresh();
 };
 window.discardPlan = async (id) => { await api(`/api/plans/${id}/discard`); refresh(); };
+window.lockAndRerun = async (id) => {
+  // Same mechanism as approving: the locked slots become holds, and the next
+  // run simply sees them as taken.
+  await approvePlan(id);
+  await api("/api/solve", {
+    alpha: Number($("try-alpha").value),
+    max_displacements: Number($("try-moves").value),
+  });
+  refresh();
+};
 window.rejectPlan = async (id) => { await api(`/api/plans/${id}/reject`); refresh(); };
 window.setService = async (id, active) => {
   await api(`/api/services/${id}/active?active=${active}`);
