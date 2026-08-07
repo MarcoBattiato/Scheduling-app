@@ -23,7 +23,7 @@ import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Iterator, List, Optional
 
 PROJECTS = Path.home() / ".claude" / "projects"
 

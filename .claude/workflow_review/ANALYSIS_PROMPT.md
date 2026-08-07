@@ -38,10 +38,6 @@ attaching.
 Budget yourself: pull perhaps fifteen or twenty turns in full, chosen from the
 table, rather than trying to read everything.
 
-The git log is a second, independent record: this project's commit messages
-carry the reasoning behind each decision, so `git log` shows what was actually
-concluded, while the transcript shows what it cost to get there.
-
 **What I want to know.**
 
 1. **Which of my prompts caused rework.** Find places where something was built,
