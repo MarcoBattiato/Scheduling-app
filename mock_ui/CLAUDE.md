@@ -125,12 +125,17 @@ blocks the slot, stays movable), *refuse* ("not at all", pins the appointment).
 Only a reschedule can be refused; an offer has nothing to refuse to move.
 Collapsing decline into refuse was the earlier behaviour and it made the
 calendar seize up, so do not reintroduce the inference: only the client knows
-which they mean. The one thing
-that cannot be independent is a booking that only exists because somebody was
-going to vacate the slot — that dependency is derived from the overlap between
-a placement and a displacement's old range, since the engine does not report
-the link. When the engine grows `AcceptedChange`, this should lose the
-responsibility rather than keep a second implementation of it.
+which they mean.
+
+The one thing that cannot be independent is a booking that only exists because
+somebody was going to vacate the slot. **The engine reports that link**
+(`depends_on`), so this follows real dependencies rather than guessing from
+overlapping times, and follows them transitively — with chains, a move can
+itself be waiting on another. When a move falls through, everything resting on
+it is withdrawn, whether or not those clients had already answered.
+
+When the engine grows `AcceptedChange`, this should lose the responsibility
+rather than keep a second implementation of it.
 
 Run tests: `../scheduling_engine/.venv/bin/pytest tests/` (this package shares
 the engine's venv — one interpreter can import all three).
