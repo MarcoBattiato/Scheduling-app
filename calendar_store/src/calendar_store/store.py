@@ -355,11 +355,18 @@ class AvailabilityStore:
             and a.range.start < window_end and window_start < a.range.end
         ]
 
-    def _get_appointment(self, appointment_id: int) -> Appointment:
+    def get_appointment(self, appointment_id: int) -> Appointment:
+        """One appointment by id, whatever its status.
+
+        Includes superseded and cancelled ones: the history is append-only, so
+        looking up an id must not depend on the record still being live.
+        """
         for a in self._appointments:
             if a.id == appointment_id:
                 return a
         raise KeyError(f"no appointment with id {appointment_id}")
+
+    _get_appointment = get_appointment      # the older, internal name
 
     # -- query --------------------------------------------------------
 

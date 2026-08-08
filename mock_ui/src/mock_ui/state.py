@@ -61,6 +61,10 @@ class Request:
     # placed / withdrawn — done with
     status: str = "pending"
     note: str = ""
+    # Set when the client asked to move a booking but would not give up the
+    # slot until they have another. The old appointment is cancelled at the
+    # moment the replacement is booked, and not before.
+    replaces_appointment_id: Optional[int] = None
 
 
 @dataclass
@@ -106,7 +110,10 @@ class Plan:
     id: int
     placements: List[dict] = field(default_factory=list)
     displacements: List[dict] = field(default_factory=list)
-    status: str = "draft"            # draft | awaiting_clients | applied | rejected
+    # draft | awaiting_clients | answered | applied | rejected
+    #   answered — every client has replied; nothing is written until the
+    #              provider says what to do with the answers
+    status: str = "draft"
     reason: str = "manual"           # why the scheduler ran
     detail: str = ""
     # What the optimiser was asked for, and what it achieved. Several drafts
@@ -296,6 +303,56 @@ class World:
         )
         return marked
 
+    def request_reschedule(
+        self, appointment_id: int, preferred_start: str, release_slot: bool
+    ) -> Request:
+        """A client asking to be moved, without naming where.
+
+        Distinct from `move_appointment`, which is a client who has found a
+        slot themselves. Here they say only "not this time, ideally around
+        then" and the scheduler looks — so it goes through the queue like any
+        other request, and comes back to them as an offer they can accept.
+
+        `release_slot` is the whole of the decision they have to make:
+
+        - **True** — give the hour up now. It frees immediately for everybody
+          else, and they take the risk of the replacement not being found.
+        - **False** — keep it until there is somewhere to go. Nobody else can
+          have it meanwhile, and the replacement must be found *elsewhere*,
+          but they cannot end up with nothing.
+
+        Either way the new booking is `Origin.CLIENT`: they asked to move, so
+        wherever they land is a choice of theirs, not one imposed on them.
+        """
+        appointment = self.store.get_appointment(appointment_id)
+        if not appointment.occupies_slot:
+            raise ValueError("that appointment is not live")
+        if any(r.replaces_appointment_id == appointment_id
+               and r.status in ("pending", "on_hold", "awaiting_client")
+               for r in self.requests.values()):
+            raise ValueError("that booking is already waiting to be moved")
+        # We are already asking them about this one. Letting both run would
+        # leave the replacement trying to cancel an appointment the accepted
+        # move had meanwhile superseded — so they answer that first.
+        if any(a.appointment_id == appointment_id and a.kind == "reschedule"
+               and self._outstanding(a) for a in self.approvals.values()):
+            raise ValueError(
+                "we have already asked about moving that one — answer that first")
+
+        request = self.submit_request(
+            appointment.client_id, appointment.service_type_id, preferred_start
+        )
+        if release_slot:
+            self.cancel_appointment(appointment_id, by=Party.CLIENT)
+            self._note(f"{appointment.client_id} gave up "
+                       f"{appointment.range.start:%a %d %b %H:%M} to be rebooked")
+        else:
+            request.replaces_appointment_id = appointment_id
+            self._note(f"{appointment.client_id} wants to move "
+                       f"{appointment.range.start:%a %d %b %H:%M}, "
+                       f"keeping it until there is somewhere to go")
+        return request
+
     def move_appointment(
         self, appointment_id: int, start: datetime, end: datetime
     ) -> Appointment:
@@ -335,15 +392,34 @@ class World:
         the client agrees — so `free_time` already excludes it. What the other
         end needs instead is that the appointment stops being offered as
         movable, or the same client would be asked twice about it.
+
+        An accepted answer counts too, until it is applied. The client has
+        agreed to that slot; handing it to somebody else while the provider
+        decides what to do with the plan would be worse than never asking.
         """
         return [
             TimeRange(a.now_start, a.now_end)
-            for a in self.approvals.values() if a.status == "pending"
+            for a in self.approvals.values() if self._outstanding(a)
         ]
 
+    @staticmethod
+    def _outstanding(approval: Approval) -> bool:
+        """Spoken for: either still with the client, or agreed but not written."""
+        return approval.status == "pending" or (
+            approval.status == "accepted" and not approval.applied)
+
     def _asked_to_move(self) -> set:
+        """Appointments nobody should be asked about twice.
+
+        Includes those whose client is already moving them of their own accord
+        and has not yet been given a replacement — they are on their way out,
+        and displacing them would be asking about a booking twice over.
+        """
         return {a.appointment_id for a in self.approvals.values()
-                if a.status == "pending" and a.kind == "reschedule"}
+                if self._outstanding(a) and a.kind == "reschedule"} | {
+            r.replaces_appointment_id for r in self.requests.values()
+            if r.replaces_appointment_id is not None
+            and r.status in ("pending", "on_hold", "awaiting_client")}
 
     def propose(
         self,
@@ -591,6 +667,102 @@ class World:
             queue.extend(needs.get(key, []))
         return chosen
 
+    # -- settling a plan the clients have answered -------------------
+
+    SETTLEMENTS = ("agreed", "agreed_only", "reoptimise")
+
+    def settle_plan(self, plan_id: int, how: str) -> dict:
+        """What the provider does once the answers start coming back.
+
+        Accepting is an answer, not an action, so a plan out with the clients
+        accumulates agreement without changing anything. This is where it turns
+        into a calendar — and the provider decides when, because a half-applied
+        rearrangement can be worse than none at all.
+
+        - *agreed* — write down what has been agreed and keep waiting for the
+          rest. Anything still outstanding stays outstanding.
+        - *agreed_only* — write down what has been agreed and stop waiting.
+          Outstanding asks are withdrawn; those requests go back in the queue.
+        - *reoptimise* — none of it. Everything is withdrawn, agreed or not,
+          and the scheduler runs again over the calendar as it now stands.
+
+        Applying respects the engine's dependencies: a booking whose slot was
+        to be vacated by somebody who has not answered stays where it is, and
+        is picked up by a later call once they do.
+        """
+        if how not in self.SETTLEMENTS:
+            raise ValueError(f"how must be one of {self.SETTLEMENTS}, not {how!r}")
+        plan = self.plans[plan_id]
+        if plan.status not in ("awaiting_clients", "answered"):
+            raise ValueError(f"plan {plan_id} is {plan.status}, not out with clients")
+
+        if how == "reoptimise":
+            dropped = self._withdraw_outstanding(plan, "the provider rejected the plan")
+            plan.status = "rejected"
+            self._note(f"plan {plan_id} rejected, {dropped} ask(s) withdrawn; re-running")
+            run = self.propose(reason="reoptimise",
+                               detail=f"after rejecting plan {plan_id}")
+            return {"applied": 0, "withdrawn": dropped, "rerun": run}
+
+        applied = self._apply_agreed(plan)
+        dropped = 0
+        if how == "agreed_only":
+            dropped = self._withdraw_outstanding(plan, "the provider stopped waiting")
+
+        still_waiting = self.pending_approvals(plan.id)
+        plan.status = "awaiting_clients" if still_waiting else "applied"
+        self._note(
+            f"plan {plan_id}: applied {applied} agreed change(s)"
+            + (f", withdrew {dropped} unanswered" if dropped else "")
+            + (f", still waiting on {len(still_waiting)}" if still_waiting else "")
+        )
+        return {"applied": applied, "withdrawn": dropped,
+                "waiting": len(still_waiting)}
+
+    def _apply_agreed(self, plan: Plan) -> int:
+        """Write down everything agreed that is not blocked, in any order.
+
+        Repeated until nothing more moves rather than sorted first: applying
+        one move can unblock another, chains included, and letting the loop
+        discover that is simpler than computing an order and being wrong about
+        it.
+        """
+        applied = 0
+        progress = True
+        while progress:
+            progress = False
+            for approval in list(self.approvals.values()):
+                if (approval.plan_id != plan.id or approval.applied
+                        or approval.status != "accepted"):
+                    continue
+                self._apply_approval(approval)
+                if approval.applied:
+                    applied += 1
+                    progress = True
+        return applied
+
+    def _withdraw_outstanding(self, plan: Plan, why: str) -> int:
+        """Take back everything still in the air, and put the work back.
+
+        A withdrawn ask must not leave its request in limbo: it goes back to
+        `on_hold`, which is reconsidered by runs that happen anyway.
+        """
+        dropped = 0
+        for approval in self.approvals.values():
+            if approval.plan_id != plan.id or approval.applied:
+                continue
+            if approval.status not in ("pending", "accepted"):
+                continue
+            approval.status = "withdrawn"
+            dropped += 1
+            if approval.kind == "booking":
+                request = self.requests.get(approval.request_id)
+                if request and request.status not in ("placed", "withdrawn"):
+                    request.status = "on_hold"
+        if dropped:
+            self._note(f"withdrew {dropped} outstanding ask(s) — {why}")
+        return dropped
+
     def discard_plan(self, plan_id: int) -> None:
         self.plans[plan_id].status = "rejected"
         self._note(f"discarded draft {plan_id}")
@@ -656,13 +828,19 @@ class World:
         plan = self.plans.get(approval.plan_id)
 
         if answer == "accept":
-            self._apply_approval(approval)
+            # Deliberately *not* applied here. An accepted move is a change the
+            # client is willing to make, not one that has happened: the
+            # provider still has to decide what to do with the answers as a
+            # whole, and half a rearrangement is often worse than none.
+            self._note(f"{approval.client_id} accepted "
+                       f"{approval.now_start:%a %d %b %H:%M} — not applied yet")
         else:
             self._record_refusal(approval, pin=answer == "refuse")
 
-        if plan and not self.pending_approvals(plan.id):
-            plan.status = "applied"
-            self._note(f"plan {plan.id} settled")
+        if plan and plan.status == "awaiting_clients" \
+                and not self.pending_approvals(plan.id):
+            plan.status = "answered"
+            self._note(f"plan {plan.id}: everyone has answered")
 
     def _apply_approval(self, approval: Approval) -> None:
         blocker = self._unmet_dependency(approval)
@@ -712,6 +890,12 @@ class World:
         approval.applied = True
         self._note(f"booked {approval.client_id} at "
                    f"{approval.now_start:%a %d %b %H:%M}")
+
+        # The old slot goes only now — the point of not releasing it was that
+        # they would never be left with neither.
+        if request.replaces_appointment_id is not None:
+            self.cancel_appointment(request.replaces_appointment_id,
+                                    by=Party.CLIENT)
 
     def _unmet_dependency(self, approval: Approval) -> Optional[Approval]:
         """A move this one needs that has not happened yet."""
@@ -805,6 +989,23 @@ class World:
         end = start + timedelta(days=horizon_days)
         window = (datetime.combine(start, time.min), datetime.combine(end, time.min))
 
+        # What is hanging over each booking, so a client can see at a glance
+        # whether their slot is settled — the question they actually have.
+        hanging = {}
+        for approval in self.approvals.values():
+            if approval.kind != "reschedule" or not self._outstanding(approval):
+                continue
+            hanging[approval.appointment_id] = {
+                "state": "agreed" if approval.status == "accepted" else "asked",
+                "now": approval.now_start.isoformat(),
+                "now_end": approval.now_end.isoformat(),
+            }
+        for request in self.requests.values():
+            if (request.replaces_appointment_id is not None
+                    and request.status in ("pending", "on_hold", "awaiting_client")):
+                hanging.setdefault(request.replaces_appointment_id,
+                                   {"state": "moving", "now": None, "now_end": None})
+
         history = []
         for client_id in list(self.clients) + [PROVIDER]:
             for a in self.store.appointment_history(client_id, *window):
@@ -819,6 +1020,12 @@ class World:
                                   if a.preferred_start else None),
                     "price": self._service_price(a.service_type_id),
                     "notes": a.notes,
+                    # asked  — we have proposed moving them, no answer yet
+                    # agreed — they said yes; not written until the provider
+                    #          settles the plan
+                    # moving — they asked to move it themselves and are
+                    #          holding the slot until there is somewhere to go
+                    "pending": hanging.get(a.id),
                 })
 
         return {
@@ -869,12 +1076,16 @@ class World:
                 {"id": r.id, "client_id": r.client_id, "service_id": r.service_id,
                  "service": self._service_name(r.service_id),
                  "duration": r.duration_minutes, "status": r.status,
-                 "preferred": r.preferred_start.isoformat()}
+                 "preferred": r.preferred_start.isoformat(),
+                 "replaces": r.replaces_appointment_id}
                 for r in self.requests.values()
             ],
             "approvals": [
                 {"id": a.id, "plan_id": a.plan_id, "kind": a.kind,
                  "client_id": a.client_id, "status": a.status,
+                 # Agreed is not the same as done: an accepted answer waits
+                 # for the provider to settle the plan.
+                 "applied": a.applied,
                  "appointment_id": a.appointment_id,
                  "was": a.was_start.isoformat() if a.was_start else None,
                  "was_end": a.was_end.isoformat() if a.was_end else None,

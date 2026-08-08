@@ -138,6 +138,32 @@ forbidden a placement can depend on at most one move — the one whose old slot
 it overlaps — so the dependency is derived rather than requiring an engine
 change.
 
+### 5.1.0 Two gates, not one
+
+A client agreeing does **not** change the calendar. Their answer is recorded;
+the provider then decides what to do with the answers as a whole, because a
+half-applied rearrangement is often worse than none — three people moved so a
+fourth could be booked, and then the fourth says no.
+
+So a plan out with the clients accumulates agreement and changes nothing, and
+the provider settles it in one of three ways (`World.settle_plan`):
+
+| how | applies | outstanding asks | plan ends |
+|---|---|---|---|
+| `agreed` | everything agreed and unblocked | left outstanding | still `awaiting_clients`, or `applied` if none remain |
+| `agreed_only` | everything agreed and unblocked | **withdrawn**; requests go back to `on_hold` | `applied` |
+| `reoptimise` | nothing | **withdrawn**, agreed ones too | `rejected`, and the scheduler runs again |
+
+`agreed` may be called repeatedly as answers trickle in. Application respects
+the engine's dependencies and is a loop rather than a sorted pass: writing one
+move down can unblock another, chains included, so it repeats until nothing
+more moves.
+
+A slot counts as spoken for from the moment it is offered until it is written
+down — `pending_holds` includes accepted-but-unapplied asks. Handing an agreed
+hour to somebody else while the provider is still deciding would be worse than
+never having asked.
+
 ### 5.1.1 Three answers, not two
 
 Being asked to **move** has three honest answers, and the difference between
@@ -167,6 +193,28 @@ clients, which are **withdrawn**. A slot that was only going to be free because
 somebody was going to vacate it is not a real question any more, and leaving it
 outstanding would both ask a client to confirm the impossible and stop the plan
 ever settling.
+
+### 5.1.2 A client asking to be moved
+
+Distinct from a client who has found a slot themselves (`move_appointment`).
+Here they say only "not this time, ideally around then" and the scheduler
+looks, so it goes through the queue as an ordinary request and comes back to
+them as an offer. Either way `Origin.CLIENT`: they asked to move, so wherever
+they land is a choice of theirs.
+
+The one decision they have to make is whether to give the slot up now:
+
+- **release it** — it frees for everybody else immediately, and they carry the
+  risk of no replacement being found.
+- **keep it** — `Request.replaces_appointment_id` links the two, and the old
+  booking is cancelled *at the moment the replacement is booked*, never before.
+  They cannot end up with neither. The hour stays blocked meanwhile, and the
+  replacement must therefore be found elsewhere.
+
+A booking on its way out is not offered up for displacement, and a booking we
+have asked about cannot be moved by its client until they have answered —
+otherwise the replacement would try to cancel an appointment the accepted move
+had already superseded.
 
 ### 5.2 Planning around what is already promised
 

@@ -57,6 +57,8 @@ def place(world, client, duration, day, from_hour, to_hour):
     world.provider_approve(plan.id)
     for approval in world.pending_approvals(plan.id):
         world.respond_to_approval(approval.id, "accept")
+    # Agreeing is an answer; the provider still has to say to write it down.
+    world.settle_plan(plan.id, "agreed")
     return request
 
 
@@ -275,6 +277,7 @@ def test_a_summary_counts_moves_the_clinic_imposed(world):
     world.provider_approve(plan.id)
     for approval in world.pending_approvals(plan.id):
         world.respond_to_approval(approval.id, "accept")
+    world.settle_plan(plan.id, "agreed")
 
     assert world.client_summary("bob")["moved_by_us"] == 1
 
@@ -385,6 +388,7 @@ def test_a_resumed_session_can_be_carried_on(world, tmp_path):
 
     (approval,) = back.pending_approvals()
     back.respond_to_approval(approval.id, "accept")
+    back.settle_plan(approval.plan_id, "agreed")
 
     assert back.store.appointments_for("alice", at(0, 0), at(1, 0))
 
@@ -401,3 +405,99 @@ def test_ids_issued_after_a_reload_do_not_collide(world, tmp_path):
     fresh = back.submit_request("alice", "s60", at(1, 9).isoformat())
 
     assert fresh.id not in {r.id for r in world.requests.values()} | set(world.plans)
+
+
+# -- a client asking to be moved --------------------------------------
+
+
+def test_a_client_can_ask_to_move_without_naming_a_slot(world):
+    """Different from moving themselves: they say only "not this time" and the
+    scheduler looks, so it comes back as an offer they can accept."""
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+
+    request = world.request_reschedule(
+        booked.id, at(2, 11).isoformat(), release_slot=False)
+
+    assert request.replaces_appointment_id == booked.id
+    assert request.preferred_start == at(2, 11)
+    assert world.store.get_appointment(booked.id).occupies_slot, (
+        "they keep the slot until there is somewhere to go"
+    )
+
+
+def test_keeping_the_slot_means_it_goes_only_when_the_new_one_is_booked(world):
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    world.request_reschedule(booked.id, at(2, 11).isoformat(), release_slot=False)
+
+    world.propose()
+    plan = next(p for p in world.plans.values() if p.status == "draft")
+    world.provider_approve(plan.id)
+    for approval in world.pending_approvals(plan.id):
+        world.respond_to_approval(approval.id, "accept")
+    world.settle_plan(plan.id, "agreed")
+
+    old = world.store.get_appointment(booked.id)
+    assert old.status is AppointmentStatus.CANCELLED_BY_CLIENT
+    live = [a for a in world.store.appointment_history("alice", at(0, 0), at(7, 0))
+            if a.occupies_slot]
+    assert len(live) == 1, "one booking throughout, never none and never two"
+    assert live[0].range.start != booked.range.start
+    assert live[0].origin is Origin.CLIENT, "they asked to move, so it is their choice"
+
+
+def test_giving_the_slot_up_frees_it_at_once(world):
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+
+    world.request_reschedule(booked.id, at(2, 11).isoformat(), release_slot=True)
+
+    assert world.store.get_appointment(booked.id).is_cancelled
+    assert not world.store.appointments_for("alice", at(0, 0), at(1, 0))
+
+
+def test_a_booking_on_its_way_out_is_not_also_offered_to_somebody_else(world):
+    """It would be absurd to ask a client to move a booking they have already
+    asked to move."""
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    world.request_reschedule(booked.id, at(2, 11).isoformat(), release_slot=False)
+
+    ask(world, "bob", 60, 0, 9, 17)
+    world.propose()
+
+    moves = [d for p in world.plans.values() if p.status == "draft"
+             for d in p.displacements]
+    assert all(d["appointment_id"] != booked.id for d in moves)
+
+
+def test_asking_twice_to_move_the_same_booking_is_refused(world):
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    world.request_reschedule(booked.id, at(2, 11).isoformat(), release_slot=False)
+
+    with pytest.raises(ValueError):
+        world.request_reschedule(booked.id, at(3, 11).isoformat(), release_slot=False)
+
+
+def test_a_cancelled_booking_cannot_be_rescheduled(world):
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    world.cancel_appointment(booked.id)
+
+    with pytest.raises(ValueError):
+        world.request_reschedule(booked.id, at(2, 11).isoformat(), release_slot=False)
+
+
+def test_a_client_can_see_whether_their_slot_is_settled(world):
+    """The question a client actually has: is this happening or not?"""
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+
+    settled = next(a for a in world.snapshot()["appointments"] if a["id"] == booked.id)
+    assert settled["pending"] is None
+
+    world.request_reschedule(booked.id, at(2, 11).isoformat(), release_slot=False)
+    moving = next(a for a in world.snapshot()["appointments"] if a["id"] == booked.id)
+    assert moving["pending"]["state"] == "moving"

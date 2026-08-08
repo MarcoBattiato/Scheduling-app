@@ -120,6 +120,13 @@ plan nobody has agreed to. The scheduler produces a draft; the provider approves
 is worth asking about); each affected client is then asked about their own part
 and **each answer is applied on its own**, per engine SPEC §7.4.
 
+**Agreeing is an answer, not an action.** A client accepting records agreement
+and writes nothing; `World.settle_plan` is where a plan becomes a calendar, and
+the provider chooses between applying what is agreed, applying it and dropping
+whoever has not answered, or rejecting the lot and re-planning. Two gates,
+because a half-applied rearrangement is often worse than none. A slot stays
+held from the moment it is offered until it is written down.
+
 Being asked to move has **three** answers — accept, *decline* ("not that time",
 blocks the slot, stays movable), *refuse* ("not at all", pins the appointment).
 Only a reschedule can be refused; an offer has nothing to refuse to move.

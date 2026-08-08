@@ -74,6 +74,11 @@ def test_the_provider_drives_the_proposal_and_the_client_settles_it(client):
     for approval in approvals:
         client.post(f"/api/approvals/{approval['id']}", json={"answer": "accept"})
 
+    assert not any(a["applied"] for a in client.get("/api/state").json()["approvals"]), (
+        "the client agreeing is not the provider deciding"
+    )
+    client.post(f"/api/plans/{plan['id']}/settle", json={"how": "agreed"})
+
     state = client.get("/api/state").json()
     assert any(r["status"] == "placed" for r in state["requests"])
 

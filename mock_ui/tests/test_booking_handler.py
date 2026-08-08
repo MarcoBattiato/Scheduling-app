@@ -83,17 +83,27 @@ def test_the_provider_approving_is_what_asks_the_clients(world):
     assert not world.store._appointments, "still nothing booked"
 
 
-def test_only_a_client_saying_yes_puts_it_in_the_calendar(world):
+def test_a_yes_is_necessary_but_not_sufficient(world):
+    """Two gates, not one. The client agreeing makes the change possible; the
+    provider settling the plan makes it happen."""
     ask(world, "alice", 0, 9, 17)
     world.propose()
-    world.provider_approve(only_plan(world).id)
+    plan = only_plan(world)
+    world.provider_approve(plan.id)
     (approval,) = world.pending_approvals()
 
     world.respond_to_approval(approval.id, "accept")
+    assert not world.store.appointments_for("alice", at(0, 0), at(1, 0)), (
+        "agreeing is an answer, not an action"
+    )
+    assert approval.status == "accepted" and not approval.applied
+
+    world.settle_plan(plan.id, "agreed")
 
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
     assert booked.origin is Origin.CLIENT
     assert world.requests[approval.request_id].status == "placed"
+    assert approval.applied
 
 
 def test_the_provider_rejecting_sends_it_back_to_the_queue(world):
@@ -160,6 +170,7 @@ def test_one_client_declining_does_not_undo_another_s_agreement(world):
 
     world.respond_to_approval(first.id, "accept")
     world.respond_to_approval(second.id, "decline")
+    world.settle_plan(only_plan(world).id, "agreed")
 
     assert world.store.appointments_for(first.client_id, at(0, 0), at(1, 0))
     assert not world.store.appointments_for(second.client_id, at(0, 0), at(1, 0))
@@ -218,6 +229,7 @@ def test_a_booking_waiting_on_a_move_is_made_once_the_move_is_agreed(world):
     move = next(a for a in world.pending_approvals() if a.kind == "reschedule")
     world.respond_to_approval(booking.id, "accept")
     world.respond_to_approval(move.id, "accept")
+    world.settle_plan(only_plan(world).id, "agreed")
 
     assert world.store.appointments_for("alice", at(0, 0), at(1, 0))
     moved = [a for a in world.store.appointment_history("bob", at(0, 0), at(5, 0))
@@ -770,3 +782,152 @@ def test_an_offer_is_taken_back_when_the_move_it_needed_falls_through(world):
     assert world.requests[offer.request_id].status == "on_hold", (
         "and the request is back in the queue rather than lost"
     )
+
+
+# -- the provider settles what the answers add up to -----------------
+
+
+def two_asks_out(world):
+    """Alice and Bob each offered a slot, neither answered yet."""
+    ask(world, "alice", 0, 9, 17)
+    ask(world, "bob", 0, 9, 17)
+    world.propose()
+    plan = only_plan(world)
+    world.provider_approve(plan.id)
+    first, second = sorted(world.pending_approvals(), key=lambda a: a.client_id)
+    return plan, first, second
+
+
+def test_applying_what_is_agreed_leaves_the_rest_outstanding(world):
+    plan, alice, bob = two_asks_out(world)
+    world.respond_to_approval(alice.id, "accept")
+
+    result = world.settle_plan(plan.id, "agreed")
+
+    assert result == {"applied": 1, "withdrawn": 0, "waiting": 1}
+    assert world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    assert bob.status == "pending", "still his to answer"
+    assert plan.status == "awaiting_clients"
+
+
+def test_a_late_yes_is_picked_up_by_a_second_settlement(world):
+    plan, alice, bob = two_asks_out(world)
+    world.respond_to_approval(alice.id, "accept")
+    world.settle_plan(plan.id, "agreed")
+
+    world.respond_to_approval(bob.id, "accept")
+    world.settle_plan(plan.id, "agreed")
+
+    assert world.store.appointments_for("bob", at(0, 0), at(1, 0))
+    assert plan.status == "applied"
+
+
+def test_the_provider_can_stop_waiting_and_take_what_there_is(world):
+    plan, alice, bob = two_asks_out(world)
+    world.respond_to_approval(alice.id, "accept")
+
+    result = world.settle_plan(plan.id, "agreed_only")
+
+    assert result["applied"] == 1 and result["withdrawn"] == 1
+    assert world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    assert bob.status == "withdrawn"
+    assert world.requests[bob.request_id].status == "on_hold", (
+        "a withdrawn ask puts the work back in the queue rather than losing it"
+    )
+    assert plan.status == "applied"
+
+
+def test_reoptimising_writes_none_of_it_down_and_runs_again(world):
+    plan, alice, bob = two_asks_out(world)
+    world.respond_to_approval(alice.id, "accept")
+
+    result = world.settle_plan(plan.id, "reoptimise")
+
+    assert result["applied"] == 0
+    assert not world.store.appointments_for("alice", at(0, 0), at(1, 0)), (
+        "an accepted answer is not a booking; rejecting the plan drops it"
+    )
+    assert alice.status == bob.status == "withdrawn"
+    assert plan.status == "rejected"
+    assert [p for p in world.plans.values() if p.status == "draft"], "ran again"
+
+
+def test_an_agreed_slot_is_not_offered_to_somebody_else_meanwhile(world):
+    """The hold has to survive the answer. Between "yes" and the provider
+    writing it down, that hour is neither free nor booked."""
+    plan, alice, bob = two_asks_out(world)
+    world.respond_to_approval(alice.id, "accept")
+    agreed = alice.now_start
+
+    ask(world, "bob", 0, 9, 17)
+    world.propose()
+
+    fresh = [p for p in world.plans.values() if p.status == "draft"]
+    assert not any(x["start"] == agreed for p in fresh for x in p.placements), (
+        "that hour is spoken for"
+    )
+
+
+def test_a_plan_nobody_has_seen_cannot_be_settled(world):
+    ask(world, "alice", 0, 9, 17)
+    world.propose()
+
+    with pytest.raises(ValueError):
+        world.settle_plan(only_plan(world).id, "agreed")
+
+
+def test_an_unknown_settlement_is_refused_rather_than_guessed(world):
+    plan, alice, _ = two_asks_out(world)
+
+    with pytest.raises(ValueError):
+        world.settle_plan(plan.id, "apply-everything")
+    assert plan.status == "awaiting_clients"
+
+
+def test_a_chain_is_applied_in_whatever_order_it_unblocks(world):
+    """Applying is a loop rather than a sort: writing one move down can free
+    the slot another was waiting for."""
+    move = a_move_is_on_the_table(world)
+    booking = next(a for a in world.pending_approvals() if a.kind == "booking")
+    assert move.appointment_id in booking.depends_on
+
+    world.respond_to_approval(booking.id, "accept")   # the dependent one first
+    world.respond_to_approval(move.id, "accept")
+    world.settle_plan(booking.plan_id, "agreed")
+
+    assert world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    assert booking.applied and move.applied
+
+
+def test_a_booking_shows_whether_it_is_settled_asked_about_or_agreed(world):
+    move = a_move_is_on_the_table(world)
+
+    def shown():
+        return next(a for a in world.snapshot()["appointments"]
+                    if a["id"] == move.appointment_id)["pending"]
+
+    assert shown()["state"] == "asked"
+
+    world.respond_to_approval(move.id, "accept")
+    assert shown()["state"] == "agreed", "yes, but not yet written down"
+
+    world.settle_plan(move.plan_id, "agreed")
+    assert next(a for a in world.snapshot()["appointments"]
+                if a["client_id"] == "bob" and a["status"] == "booked"
+                )["pending"] is None
+
+
+def test_a_client_cannot_start_their_own_move_while_answering_ours(world):
+    """Both at once would leave the replacement trying to cancel an
+    appointment the accepted move had already superseded."""
+    move = a_move_is_on_the_table(world)
+
+    with pytest.raises(ValueError):
+        world.request_reschedule(
+            move.appointment_id, at(3, 11).isoformat(), release_slot=False)
+
+    # Once they have said no, it is theirs to move again.
+    world.respond_to_approval(move.id, "decline")
+    request = world.request_reschedule(
+        move.appointment_id, at(3, 11).isoformat(), release_slot=False)
+    assert request.replaces_appointment_id == move.appointment_id

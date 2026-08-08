@@ -59,10 +59,12 @@ function render() {
   if (horizon && document.activeElement !== horizon) horizon.value = sch.horizon_days;
 
   renderProposal();
+  renderSettlement();
   renderAlerts();
   renderSchedule();
   renderGrid();
   renderRequests();
+  renderBookings();
   renderCatalogue();
   renderClients();
   renderExceptions();
@@ -71,6 +73,7 @@ function render() {
 
   $("avail-for").textContent = isProvider() ? "(provider)" : `(${me})`;
   $("panel-request").style.display = isProvider() ? "none" : "";
+  $("panel-bookings").style.display = isProvider() ? "none" : "";
   $("panel-catalogue").style.display = isProvider() ? "" : "none";
   $("panel-clients").style.display = isProvider() ? "" : "none";
   $("try").style.display = isProvider() ? "" : "none";
@@ -183,6 +186,109 @@ function renderProposal() {
   }
   drafts.forEach((p) => applyDeps(p.id));
 }
+
+// -- what the answers add up to, and what to do about them ------------
+
+function renderSettlement() {
+  const out = (state.plans || []).filter(
+    (p) => p.status === "awaiting_clients" || p.status === "answered");
+  if (!isProvider() || !out.length) { $("settlement").innerHTML = ""; return; }
+
+  $("settlement").innerHTML = out.map((plan) => {
+    const asks = (state.approvals || []).filter((a) => a.plan_id === plan.id);
+    const by = (s) => asks.filter((a) => a.status === s && !a.applied);
+    const agreed = by("accepted"), waiting = by("pending");
+    const said_no = asks.filter(
+      (a) => a.status === "declined" || a.status === "refused");
+    const done = asks.filter((a) => a.applied);
+
+    // Nothing here is written down yet, so say so plainly: the provider is
+    // reading answers, not a calendar.
+    const row = (a) => `
+      <div class="answer ${a.applied ? "applied" : a.status}">
+        <span class="tag ${a.kind === "booking" ? "ok" : "move"}">${
+          a.kind === "booking" ? "book" : "move"}</span>
+        <span>${esc(nameOf(a.client_id))}</span>
+        <span class="time">${a.was ? `${fmt(a.was)} → ` : ""}${fmt(a.now)}</span>
+        <span class="tag">${a.applied ? "booked" : a.status}</span>
+      </div>`;
+
+    return `
+      <div class="alert proposal">
+        <div><b>Plan ${plan.id}: ${agreed.length} agreed, ${waiting.length} waiting,
+          ${said_no.length} said no</b>
+          <span class="hint">Agreeing is an answer, not a booking. Nothing below
+            is in the calendar until you say so.</span></div>
+        <div class="answers">${
+          [...agreed, ...waiting, ...said_no, ...done].map(row).join("")}</div>
+        <div class="row" style="margin-top:10px">
+          <button ${agreed.length ? "" : "disabled"}
+            onclick="settle(${plan.id}, 'agreed')">Apply the ${agreed.length} agreed</button>
+          <button class="ghost" ${waiting.length ? "" : "disabled"}
+            onclick="settle(${plan.id}, 'agreed_only')">Apply agreed, drop the ${
+              waiting.length} waiting</button>
+          <button class="ghost warn"
+            onclick="settle(${plan.id}, 'reoptimise')">Reject all and re-plan</button>
+        </div>
+        <p class="hint">Dropping an unanswered ask puts that request back in the
+          queue. Rejecting discards agreed answers too — nobody has been booked.</p>
+      </div>`;
+  }).join("");
+}
+
+// -- the client's own bookings ----------------------------------------
+
+function renderBookings() {
+  if (isProvider()) return;
+  const mine = (state.appointments || []).filter(
+    (a) => a.client_id === me && a.status === "booked");
+
+  if (!mine.length) { $("bookings").innerHTML = `<p class="hint">Nothing booked.</p>`; return; }
+
+  const label = {
+    asked: ["being moved?", "We have asked you to move this. Answer above."],
+    agreed: ["move agreed", "You said yes. It changes when the clinic confirms."],
+    moving: ["you asked to move", "Kept until we find you somewhere else."],
+  };
+
+  $("bookings").innerHTML = `<div class="reqs">${mine.map((a) => {
+    const p = a.pending, tag = p ? label[p.state] : null;
+    return `
+    <div class="req ${p ? "on_hold" : ""}">
+      <span>${esc(a.service)}<br><span class="time">${fmt(a.start)}</span></span>
+      <span class="tag" title="${tag ? esc(tag[1]) : "Confirmed."}">${
+        tag ? tag[0] : "confirmed"}</span>
+      ${p ? "" : `<button class="link" onclick="askToMove(${a.id})">move</button>`}
+    </div>`;
+  }).join("")}</div>
+  <p class="hint">A booking with no tag is settled. Anything else has a question
+    hanging over it — hover the tag to see what.</p>`;
+}
+
+window.askToMove = async (appointmentId) => {
+  const appointment = appointmentById(appointmentId);
+  const when = prompt(
+    "When would you rather be seen? (YYYY-MM-DDTHH:MM)\n\n"
+    + "A wish, not a demand — we look anywhere you are available.",
+    appointment ? appointment.start.slice(0, 16) : "");
+  if (!when) return;
+  // The real decision, and the client's risk to take: give the hour up now and
+  // it frees for everybody, but there may be nothing to replace it with.
+  const release = confirm(
+    "Give up your current slot straight away?\n\n"
+    + "OK — release it now. It frees up for others, and you may end up with "
+    + "nothing if we cannot find you another.\n\n"
+    + "Cancel — keep it until we have somewhere to move you. Safer, but the "
+    + "hour stays blocked meanwhile.");
+  await api(`/api/appointments/${appointmentId}/reschedule-request`,
+            {preferred_start: when, release_slot: release});
+  refresh();
+};
+
+window.settle = async (planId, how) => {
+  await api(`/api/plans/${planId}/settle`, {how});
+  refresh();
+};
 
 function draftShell(p) {
   const m = p.metrics || {}, q = p.params || {};

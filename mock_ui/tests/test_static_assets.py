@@ -562,3 +562,117 @@ def test_a_proposal_hover_card_says_as_much_as_the_schedule_one():
     assert "Bob" in cards["booking"]["Only if"]
     assert cards["leaving"]["What"].startswith("would be moved out")
     assert cards["landing"]["What"].startswith("would be moved here")
+
+
+def _render_as(state, who):
+    """Run the page for one role and hand back what each panel drew."""
+    harness = r"""
+      const vm = require("vm"), fs = require("fs");
+      const files = process.argv.slice(1, -2);
+      const state = JSON.parse(fs.readFileSync(process.argv[process.argv.length - 2], "utf8"));
+      const who = process.argv[process.argv.length - 1];
+      const noop = () => {}, els = {};
+      const el = () => ({innerHTML: "", style: {}, textContent: "", value: "2",
+                         options: {length: 0}, addEventListener: noop,
+                         querySelectorAll: () => [], querySelector: () => null,
+                         getBoundingClientRect: () => (
+                           {left: 0, top: 0, width: 800, height: 400,
+                            right: 800, bottom: 400})});
+      const sandbox = {
+        console, CSS: {escape: (s) => s}, setInterval: noop, setTimeout: noop,
+        document: {addEventListener: noop,
+                   getElementById: (id) => (els[id] = els[id] || el()),
+                   querySelectorAll: () => [], querySelector: () => null},
+        location: {search: `?as=${who}`}, history: {replaceState: noop},
+        URLSearchParams: class { get() { return who; } },
+        fetch: async () => ({ok: true, json: async () => state}),
+        alert: noop, confirm: () => false, prompt: () => null,
+      };
+      const ctx = vm.createContext(sandbox);
+      sandbox.window = sandbox;
+      for (const f of files) {
+        new vm.Script(fs.readFileSync(f, "utf8"), {filename: f}).runInContext(ctx);
+      }
+      vm.runInContext("refresh()", ctx).then(() => {
+        const out = {};
+        for (const [id, e] of Object.entries(els)) out[id] = e.innerHTML || "";
+        console.log(JSON.stringify(out));
+      }).catch((e) => { console.error(e.stack); process.exit(1); });
+    """
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(state, fh, default=str)
+        path = fh.name
+
+    result = subprocess.run(
+        ["node", "-e", harness, *[str(STATIC / s) for s in SCRIPTS], path, who],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def _world_with_answers():
+    """Alice has agreed to her slot, Bob has not answered, and Carol has asked
+    to move a booking of her own — every state the two new panels show."""
+    from datetime import date, datetime, time, timedelta
+
+    from mock_ui.state import PROVIDER, World
+
+    monday = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7)
+    at = lambda d, h: datetime.combine(monday + timedelta(days=d), time(h))
+
+    world = World()
+    world.policy.horizon_days = 10
+    world.catalogue.add_service("s60", "Hour", 60, 8000)
+    for who in ("alice", "bob", "carol"):
+        world.add_client(who, who.title())
+        world.set_weekly_availability(
+            who, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)])
+    world.set_weekly_availability(
+        PROVIDER, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)])
+
+    booked = world.store.book_appointment("carol", "s60", at(0, 12), at(0, 13))
+    world.request_reschedule(booked.id, at(2, 10).isoformat(), release_slot=False)
+
+    world.submit_request("alice", "s60", at(0, 9).isoformat())
+    world.submit_request("bob", "s60", at(0, 10).isoformat())
+    world.propose()
+    plan = next(p for p in world.plans.values() if p.status == "draft")
+    world.provider_approve(plan.id)
+    alice = next(a for a in world.pending_approvals() if a.client_id == "alice")
+    world.respond_to_approval(alice.id, "accept")
+    return world
+
+
+@node
+def test_the_provider_is_shown_the_answers_and_the_three_ways_to_settle():
+    import re
+
+    def plan_id(html):
+        return re.search(r"settle\((\d+),", html).group(1)
+
+    panels = _render_as(_world_with_answers().snapshot(), "provider")
+    settlement = panels.get("settlement", "")
+
+    assert "agreed" in settlement and "waiting" in settlement
+    for how in ("'agreed'", "'agreed_only'", "'reoptimise'"):
+        assert f"settle({plan_id(settlement)}, {how})" in settlement, f"missing {how}"
+    assert "not a booking" in settlement, (
+        "the provider must not read agreement as a calendar"
+    )
+    assert "Alice" in settlement, "answers are shown by name, not by id"
+
+
+@node
+def test_a_client_sees_which_of_their_bookings_are_settled():
+    world = _world_with_answers()
+    carol = _render_as(world.snapshot(), "carol")["bookings"]
+
+    assert "you asked to move" in carol
+    assert "askToMove" not in carol, (
+        "no offering to move a booking that is already on its way out"
+    )
+
+    alice = _render_as(world.snapshot(), "alice")["bookings"]
+    assert "Nothing booked." in alice, "alice has agreed, but nothing is written"

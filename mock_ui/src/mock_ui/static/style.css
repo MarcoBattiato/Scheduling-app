@@ -54,6 +54,20 @@ button {
 }
 button.ghost { background: transparent; color: var(--fg); border-color: var(--line); }
 button.danger { border-color: var(--warn); color: var(--warn); }
+/* The provider reading answers: agreed, waiting and refused each need to be
+   distinguishable at a glance, since the three buttons act on them by group. */
+.answers { display: grid; gap: 4px; margin: 8px 0; }
+.answer {
+  display: grid; grid-template-columns: 42px 1fr auto auto; gap: 8px;
+  align-items: center; padding: 4px 6px; border-radius: 6px;
+  border-left: 3px solid var(--line); background: var(--bg);
+}
+.answer.accepted { border-left-color: var(--ok); }
+.answer.pending { border-left-color: var(--accent); }
+.answer.declined, .answer.refused { border-left-color: var(--warn); }
+.answer.applied { border-left-color: var(--ok); opacity: .55; }
+.answer .time { font-size: 11px; color: var(--muted); }
+
 /* "Keep my slot" is the final answer of the three, and reads as one. */
 button.ghost.warn { border-color: var(--warn); color: var(--warn); }
 button.link {

@@ -85,6 +85,18 @@ class ApprovalIn(BaseModel):
     answer: str
 
 
+class SettleIn(BaseModel):
+    # "agreed" | "agreed_only" | "reoptimise" — see World.settle_plan
+    how: str
+
+
+class RescheduleRequestIn(BaseModel):
+    preferred_start: str
+    # False keeps the old slot until a replacement is confirmed; True gives it
+    # up now. The client's risk to take, so the client is asked.
+    release_slot: bool = False
+
+
 class CancelIn(BaseModel):
     by_provider: bool = False
 
@@ -218,6 +230,21 @@ def cancel_appointment(appointment_id: int, payload: CancelIn = CancelIn()):
     return {"ok": True}
 
 
+@app.post("/api/appointments/{appointment_id}/reschedule-request")
+def request_reschedule(appointment_id: int, payload: RescheduleRequestIn):
+    """A client asking to be moved without naming where — see
+    World.request_reschedule. Distinct from /move, which is a client who has
+    already found a slot for themselves."""
+    try:
+        request = world.request_reschedule(
+            appointment_id, payload.preferred_start, payload.release_slot)
+    except KeyError:
+        raise HTTPException(404, "no such appointment") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"request_id": request.id}
+
+
 @app.post("/api/appointments/{appointment_id}/attendance")
 def mark_attendance(appointment_id: int, payload: AttendanceIn):
     try:
@@ -274,6 +301,17 @@ def approve_plan(plan_id: int, payload: ApproveIn = ApproveIn()):
         raise HTTPException(404, "no such plan")
     try:
         return world.provider_approve(plan_id, payload.items)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@app.post("/api/plans/{plan_id}/settle")
+def settle_plan(plan_id: int, payload: SettleIn):
+    """What the provider does with the answers: see World.settle_plan."""
+    if plan_id not in world.plans:
+        raise HTTPException(404, "no such plan")
+    try:
+        return world.settle_plan(plan_id, payload.how)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
 
