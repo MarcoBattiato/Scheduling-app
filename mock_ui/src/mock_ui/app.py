@@ -80,7 +80,9 @@ class MoveIn(BaseModel):
 
 
 class ApprovalIn(BaseModel):
-    accept: bool
+    # "accept" | "decline" | "refuse" — see World.respond_to_approval. Declining
+    # and refusing are different answers, and only the client knows which.
+    answer: str
 
 
 class CancelIn(BaseModel):
@@ -244,7 +246,10 @@ def move_appointment(appointment_id: int, payload: MoveIn):
 def respond(approval_id: int, payload: ApprovalIn):
     if approval_id not in world.approvals:
         raise HTTPException(404, "no such approval")
-    world.respond_to_approval(approval_id, payload.accept)
+    try:
+        world.respond_to_approval(approval_id, payload.answer)
+    except ValueError as bad:
+        raise HTTPException(400, str(bad)) from None
     return {"ok": True}
 
 

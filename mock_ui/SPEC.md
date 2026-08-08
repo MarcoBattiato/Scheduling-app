@@ -138,9 +138,35 @@ forbidden a placement can depend on at most one move — the one whose old slot
 it overlaps — so the dependency is derived rather than requiring an engine
 change.
 
-A refused slot becomes a single-date block on that client's availability
+### 5.1.1 Three answers, not two
+
+Being asked to **move** has three honest answers, and the difference between
+the last two is worth a great deal to the scheduler:
+
+| answer | what it says | what it does |
+|---|---|---|
+| accept | yes | applies the move |
+| decline | "not that time" | blocks that slot on that date; the appointment stays movable |
+| refuse | "not at all" | pins the appointment; it is never offered up again |
+
+A rejected slot becomes a single-date block on that client's availability
 (engine SPEC §9): saying no to next Tuesday at three says nothing about
-Tuesdays in general.
+Tuesdays in general. That single statement is the whole of a decline.
+
+Pinning is the extra thing a *refusal* says, and it is the client's choice
+rather than something inferred. Inferring it — the earlier behaviour — made the
+calendar seize up: every "not Tuesday at three" permanently removed an
+appointment from consideration, so the search space only ever shrank.
+
+An **offer** of a new booking has only the first two answers. There is nothing
+to refuse to move.
+
+Whichever of the two rejections is given, this move is not happening *now*, so
+everything resting on it falls through — including asks still out with other
+clients, which are **withdrawn**. A slot that was only going to be free because
+somebody was going to vacate it is not a real question any more, and leaving it
+outstanding would both ask a client to confirm the impossible and stop the plan
+ever settling.
 
 ### 5.2 Planning around what is already promised
 
@@ -205,9 +231,11 @@ what to delete later.
 
 Recorded so nobody mistakes any of it for a decision:
 
-- A declined *move* marks that appointment unmovable for the rest of the
-  session, which is blunter than the single-date block a declined *booking*
-  gets.
+- A *refused* move pins that appointment for the rest of the session: nothing
+  lifts it, not even the client later freeing up. Deliberate for now — it is
+  what the client said — but there is no way back short of a reset.
+- Nothing caps how many times a client may be asked. Each decline eats one slot
+  of their availability, so it is self-limiting, but only eventually.
 - No expiry on an outstanding ask, so an unanswered one holds its slot
   indefinitely. Defaults agreed for when real time exists: a booking within the
   client's preferred times is accepted by default after 1 day if the

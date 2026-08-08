@@ -72,7 +72,7 @@ def test_the_provider_drives_the_proposal_and_the_client_settles_it(client):
     assert approvals and all(a["status"] == "pending" for a in approvals)
 
     for approval in approvals:
-        client.post(f"/api/approvals/{approval['id']}", json={"accept": True})
+        client.post(f"/api/approvals/{approval['id']}", json={"answer": "accept"})
 
     state = client.get("/api/state").json()
     assert any(r["status"] == "placed" for r in state["requests"])
@@ -208,7 +208,7 @@ def test_a_request_without_a_wished_for_time_is_refused(client):
 def test_unknown_ids_are_not_found_rather_than_crashing(client):
     assert client.post("/api/appointments/99999/cancel").status_code == 404
     assert client.post("/api/requests/99999/withdraw").status_code == 404
-    assert client.post("/api/approvals/99999", json={"accept": True}).status_code == 404
+    assert client.post("/api/approvals/99999", json={"answer": "accept"}).status_code == 404
 
 
 def test_a_session_survives_being_saved_and_reloaded(client, tmp_path):

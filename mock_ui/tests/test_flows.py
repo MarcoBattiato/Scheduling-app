@@ -56,7 +56,7 @@ def place(world, client, duration, day, from_hour, to_hour):
     plan = next(p for p in world.plans.values() if p.status == "draft")
     world.provider_approve(plan.id)
     for approval in world.pending_approvals(plan.id):
-        world.respond_to_approval(approval.id, accept=True)
+        world.respond_to_approval(approval.id, "accept")
     return request
 
 
@@ -274,7 +274,7 @@ def test_a_summary_counts_moves_the_clinic_imposed(world):
     plan = next(p for p in world.plans.values() if p.status == "draft")
     world.provider_approve(plan.id)
     for approval in world.pending_approvals(plan.id):
-        world.respond_to_approval(approval.id, accept=True)
+        world.respond_to_approval(approval.id, "accept")
 
     assert world.client_summary("bob")["moved_by_us"] == 1
 
@@ -384,7 +384,7 @@ def test_a_resumed_session_can_be_carried_on(world, tmp_path):
     back = persistence.load(path)
 
     (approval,) = back.pending_approvals()
-    back.respond_to_approval(approval.id, accept=True)
+    back.respond_to_approval(approval.id, "accept")
 
     assert back.store.appointments_for("alice", at(0, 0), at(1, 0))
 

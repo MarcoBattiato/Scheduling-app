@@ -279,11 +279,20 @@ function renderAlerts() {
           ? `We would like to move your appointment from <b>${fmt(a.was)}</b>
              to <b>${fmt(a.now)}</b>.`
           : `Your appointment is offered at <b>${fmt(a.now)}</b>. Does that suit?`);
+    // Being asked to move has three honest answers. "Not that time" and "not
+    // at all" are worth a great deal to the scheduler and only the client can
+    // tell them apart, so the choice is put to them rather than inferred.
     const buttons = isProvider() ? "" : `
       <div class="row">
-        <button onclick="respond(${a.id}, true)">Accept</button>
-        <button class="ghost" onclick="respond(${a.id}, false)">Decline</button>
-      </div>`;
+        <button onclick="respond(${a.id}, 'accept')">Accept</button>
+        <button class="ghost" onclick="respond(${a.id}, 'decline')">${
+          isMove ? "Not that time" : "Decline"}</button>
+        ${isMove ? `<button class="ghost warn"
+          onclick="respond(${a.id}, 'refuse')">Keep my slot</button>` : ""}
+      </div>
+      ${isMove ? `<p class="hint"><b>Not that time</b> blocks that slot only —
+         we will look for another. <b>Keep my slot</b> means we stop asking.
+         Either way it helps to update your availability for that week.</p>` : ""}`;
     return `<div class="alert"><div>${body}</div>${buttons}</div>`;
   }).join("");
 }
@@ -505,7 +514,10 @@ document.addEventListener("mouseover", (e) => {
 
 // -- actions ----------------------------------------------------------
 
-window.respond = async (id, accept) => { await api(`/api/approvals/${id}`, {accept}); refresh(); };
+window.respond = async (id, answer) => {
+  await api(`/api/approvals/${id}`, {answer});
+  refresh();
+};
 window.withdraw = async (id) => { await api(`/api/requests/${id}/withdraw`); refresh(); };
 window.setService = async (id, active) => {
   await api(`/api/services/${id}/active?active=${active}`); refresh();

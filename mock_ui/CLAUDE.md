@@ -118,7 +118,14 @@ firing the urgency trigger forever.
 The engine has no negotiation lifecycle yet, so `solve_placements` returns a
 plan nobody has agreed to. The scheduler produces a draft; the provider approves it (which only means it
 is worth asking about); each affected client is then asked about their own part
-and **each answer is applied on its own**, per engine SPEC §7.4. The one thing
+and **each answer is applied on its own**, per engine SPEC §7.4.
+
+Being asked to move has **three** answers — accept, *decline* ("not that time",
+blocks the slot, stays movable), *refuse* ("not at all", pins the appointment).
+Only a reschedule can be refused; an offer has nothing to refuse to move.
+Collapsing decline into refuse was the earlier behaviour and it made the
+calendar seize up, so do not reintroduce the inference: only the client knows
+which they mean. The one thing
 that cannot be independent is a booking that only exists because somebody was
 going to vacate the slot — that dependency is derived from the overlap between
 a placement and a displacement's old range, since the engine does not report

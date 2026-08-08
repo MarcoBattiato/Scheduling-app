@@ -84,7 +84,11 @@ class Approval:
     appointment_id: Optional[int] = None  # reschedule
     was_start: Optional[datetime] = None
     was_end: Optional[datetime] = None
-    status: str = "pending"          # pending | accepted | declined
+    # pending | accepted | declined | refused | withdrawn
+    #   declined  — not that slot, but still open to another
+    #   refused   — not moving at all; only a reschedule can be refused
+    #   withdrawn — taken back by us, because what it rested on fell through
+    status: str = "pending"
     applied: bool = False
     # Appointment ids that must move before this can happen. Reported by the
     # engine rather than inferred here: guessing from overlap is only right
@@ -612,24 +616,49 @@ class World:
 
     # -- the client's decision ---------------------------------------
 
-    def respond_to_approval(self, approval_id: int, accept: bool) -> None:
-        """Apply, or refuse, one client's part of the plan.
+    ANSWERS = ("accept", "decline", "refuse")
+
+    def respond_to_approval(self, approval_id: int, answer: str) -> None:
+        """Apply, decline, or refuse one client's part of the plan.
 
         Each answer stands on its own (engine SPEC.md §7.4): one client
         declining does not undo what another has already agreed to. The single
         exception is a booking that only exists because somebody was going to
         move — if that move is refused, the slot was never free.
+
+        Being asked to move has three honest answers, not two, and the
+        difference is worth a great deal to the scheduler:
+
+        - *accept* — apply it.
+        - *decline* — "not that time." Blocks the offered slot on that date and
+          nothing more. The appointment stays movable, so the next run can look
+          for somewhere else.
+        - *refuse* — "not at all." Pins the appointment; it is never offered up
+          again.
+
+        Collapsing the middle answer into the last one was the old behaviour,
+        and it made the calendar seize up: one "not Tuesday at three" removed an
+        appointment from consideration permanently. Only the client can tell
+        those apart, so only the client is asked.
+
+        A *booking* offer has no third answer — there is nothing to refuse to
+        move — so it accepts only the first two.
         """
+        if answer not in self.ANSWERS:
+            raise ValueError(f"answer must be one of {self.ANSWERS}, not {answer!r}")
         approval = self.approvals[approval_id]
         if approval.status != "pending":
             return
-        approval.status = "accepted" if accept else "declined"
+        if answer == "refuse" and approval.kind != "reschedule":
+            raise ValueError("only a reschedule can be refused; an offer is declined")
+        approval.status = {"accept": "accepted", "decline": "declined",
+                           "refuse": "refused"}[answer]
         plan = self.plans.get(approval.plan_id)
 
-        if accept:
+        if answer == "accept":
             self._apply_approval(approval)
         else:
-            self._record_refusal(approval)
+            self._record_refusal(approval, pin=answer == "refuse")
 
         if plan and not self.pending_approvals(plan.id):
             plan.status = "applied"
@@ -704,18 +733,39 @@ class World:
                    f"{blocker.client_id} would not move")
 
     def _cascade_refusal(self, refused: Approval) -> None:
-        """Anything that had already agreed but was waiting on this."""
-        for other in self.approvals.values():
-            if (other.status == "accepted" and not other.applied
-                    and other.plan_id == refused.plan_id
-                    and refused.appointment_id in other.depends_on):
-                self._strand(other, refused)
+        """Everything that rested on this move, whether or not it had answered.
 
-    def _record_refusal(self, approval: Approval) -> None:
-        """A refused slot becomes a hole in that client's availability.
+        The pending ones matter as much as the agreed ones. A slot that was
+        only going to be free because somebody was going to vacate it is not a
+        real question any more, and leaving it out with the client is worse
+        than useless: it asks them to confirm something that cannot happen, and
+        until they answer, the plan never settles and the request is never
+        replanned.
+        """
+        for other in self.approvals.values():
+            if (other.applied or other.plan_id != refused.plan_id
+                    or refused.appointment_id not in other.depends_on):
+                continue
+            if other.status == "pending":
+                other.status = "withdrawn"
+                self._note(f"took back {other.client_id}'s offer — it needed "
+                           f"{refused.client_id} to move")
+            elif other.status != "accepted":
+                continue
+            self._strand(other, refused)
+
+    def _record_refusal(self, approval: Approval, pin: bool) -> None:
+        """A rejected slot becomes a hole in that client's availability.
 
         Only for that date (engine SPEC.md §9): a client saying no to next
-        Tuesday at three says nothing about Tuesdays in general.
+        Tuesday at three says nothing about Tuesdays in general. That single
+        statement is the whole of a *decline* — everything else about the
+        client is left alone, so the next run is free to find them somewhere
+        better.
+
+        `pin` is the extra thing a *refusal* says: not this appointment, ever.
+        It is what the client chose, not something inferred from their having
+        said no once.
         """
         self.store.remove_exception_availability(
             approval.client_id, approval.now_start.date(),
@@ -725,10 +775,13 @@ class World:
                    f"blocked that slot for them")
 
         if approval.kind == "reschedule":
-            # Blunter than the single-date block a refused booking gets, and
-            # deliberately so: a client already holding an appointment has more
-            # standing to keep it than one merely being offered a slot.
-            self.immovable.add(approval.appointment_id)
+            if pin:
+                self.immovable.add(approval.appointment_id)
+                self._note(f"{approval.client_id} will not move at all; "
+                           f"that appointment is now fixed")
+            # Either way this move is not happening *now*, so whatever was
+            # waiting on the slot falls through. A decline only leaves the door
+            # open for a future run, not for this plan.
             self._cascade_refusal(approval)
         else:
             request = self.requests.get(approval.request_id)

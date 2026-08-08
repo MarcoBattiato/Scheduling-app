@@ -89,7 +89,7 @@ def test_only_a_client_saying_yes_puts_it_in_the_calendar(world):
     world.provider_approve(only_plan(world).id)
     (approval,) = world.pending_approvals()
 
-    world.respond_to_approval(approval.id, accept=True)
+    world.respond_to_approval(approval.id, "accept")
 
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
     assert booked.origin is Origin.CLIENT
@@ -121,7 +121,7 @@ def test_a_refused_slot_becomes_a_hole_in_that_client_s_availability(world):
     (approval,) = world.pending_approvals()
     offered = approval.now_start
 
-    world.respond_to_approval(approval.id, accept=False)
+    world.respond_to_approval(approval.id, "decline")
 
     same_day = world.availability_segments(
         "alice", offered.date(), offered.date() + timedelta(days=1)
@@ -141,7 +141,7 @@ def test_a_refusal_puts_the_request_back_on_hold_rather_than_losing_it(world):
     world.provider_approve(only_plan(world).id)
     (approval,) = world.pending_approvals()
 
-    world.respond_to_approval(approval.id, accept=False)
+    world.respond_to_approval(approval.id, "decline")
 
     assert world.requests[request.id].status == "on_hold"
     assert not world.store._appointments
@@ -158,8 +158,8 @@ def test_one_client_declining_does_not_undo_another_s_agreement(world):
     world.provider_approve(only_plan(world).id)
     first, second = sorted(world.pending_approvals(), key=lambda a: a.client_id)
 
-    world.respond_to_approval(first.id, accept=True)
-    world.respond_to_approval(second.id, accept=False)
+    world.respond_to_approval(first.id, "accept")
+    world.respond_to_approval(second.id, "decline")
 
     assert world.store.appointments_for(first.client_id, at(0, 0), at(1, 0))
     assert not world.store.appointments_for(second.client_id, at(0, 0), at(1, 0))
@@ -189,12 +189,12 @@ def test_a_booking_that_needed_a_move_does_not_happen_if_the_move_is_refused(wor
     booking = next(a for a in world.pending_approvals() if a.kind == "booking")
     move = next(a for a in world.pending_approvals() if a.kind == "reschedule")
 
-    world.respond_to_approval(booking.id, accept=True)   # alice is happy
+    world.respond_to_approval(booking.id, "accept")   # alice is happy
     assert not world.store.appointments_for("alice", at(0, 0), at(1, 0)), (
         "cannot be booked while the slot is still occupied"
     )
 
-    world.respond_to_approval(move.id, accept=False)     # bob will not move
+    world.respond_to_approval(move.id, "refuse")          # bob will not move
     assert not world.store.appointments_for("alice", at(0, 0), at(1, 0))
     assert world.store.appointments_for("bob", at(0, 0), at(1, 0))[0].range.start == at(0, 9)
 
@@ -216,8 +216,8 @@ def test_a_booking_waiting_on_a_move_is_made_once_the_move_is_agreed(world):
 
     booking = next(a for a in world.pending_approvals() if a.kind == "booking")
     move = next(a for a in world.pending_approvals() if a.kind == "reschedule")
-    world.respond_to_approval(booking.id, accept=True)
-    world.respond_to_approval(move.id, accept=True)
+    world.respond_to_approval(booking.id, "accept")
+    world.respond_to_approval(move.id, "accept")
 
     assert world.store.appointments_for("alice", at(0, 0), at(1, 0))
     moved = [a for a in world.store.appointment_history("bob", at(0, 0), at(5, 0))
@@ -427,7 +427,7 @@ def test_a_refusal_releases_the_hold(world):
     world.provider_approve(only_plan(world).id)
     (approval,) = world.pending_approvals()
 
-    world.respond_to_approval(approval.id, accept=False)
+    world.respond_to_approval(approval.id, "decline")
 
     assert world.pending_holds() == [], "nothing is promised any more"
 
@@ -577,9 +577,9 @@ def test_a_chained_refusal_strands_everything_that_was_waiting_on_it(world):
     approvals = {a.client_id: a for a in world.pending_approvals()}
     for approval in approvals.values():
         if approval.client_id != "carol":
-            world.respond_to_approval(approval.id, accept=True)
+            world.respond_to_approval(approval.id, "accept")
 
-    world.respond_to_approval(approvals["carol"].id, accept=False)
+    world.respond_to_approval(approvals["carol"].id, "refuse")
 
     assert not world.store.appointments_for("alice", at(0, 0), at(1, 0)), (
         "alice's booking rested on bob moving, which rested on carol moving"
@@ -654,3 +654,119 @@ def test_an_explicit_horizon_still_overrides_the_setting(world):
     plan = next((p for p in world.plans.values() if p.status == "draft"), None)
     if plan and plan.placements:
         assert plan.placements[0]["start"] < datetime.now() + timedelta(days=5)
+
+
+# -- declining is not refusing ---------------------------------------
+
+
+def a_move_is_on_the_table(world):
+    """Bob holds the only hour alice can use, so the only plan is to move him."""
+    world.set_weekly_availability(PROVIDER, [
+        {"weekday": 0, "from": "09:00", "to": "10:00"},
+        {"weekday": 1, "from": "09:00", "to": "17:00"},
+    ])
+    world.set_weekly_availability("alice", [])
+    world.set_exception("alice", monday(), time(9), time(10), available=True)
+    world.set_weekly_availability("bob", [
+        {"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)
+    ])
+    world.store.book_appointment("bob", "s60", at(0, 9), at(0, 10))
+    ask(world, "alice", 0, 9, 10)
+    world.propose()
+    plan = only_plan(world)
+    assert plan.displacements, "this scenario needs bob moved"
+    world.provider_approve(plan.id)
+    return next(a for a in world.pending_approvals() if a.kind == "reschedule")
+
+
+def test_declining_a_move_blocks_the_slot_but_not_the_appointment(world):
+    """"Not that time" is the middle answer, and the reason it exists: the
+    scheduler may come back with somewhere else."""
+    move = a_move_is_on_the_table(world)
+    offered = move.now_start
+
+    world.respond_to_approval(move.id, "decline")
+
+    assert move.appointment_id not in world.immovable, "still movable"
+    same_day = world.availability_segments(
+        "bob", offered.date(), offered.date() + timedelta(days=1))
+    assert not any(s.start <= offered < s.end for s in same_day), (
+        "the one thing a decline does say: not that slot, that day"
+    )
+    # And it says nothing beyond that day.
+    next_week = offered + timedelta(days=7)
+    later = world.availability_segments(
+        "bob", next_week.date(), next_week.date() + timedelta(days=1))
+    assert any(s.start <= next_week < s.end for s in later)
+
+
+def test_refusing_a_move_takes_the_appointment_off_the_table_for_good(world):
+    move = a_move_is_on_the_table(world)
+
+    world.respond_to_approval(move.id, "refuse")
+
+    assert move.appointment_id in world.immovable
+
+
+def test_a_declined_move_can_be_proposed_somewhere_else(world):
+    """The failure the third answer was added to prevent: one "not Tuesday at
+    three" used to remove an appointment from consideration permanently."""
+    move = a_move_is_on_the_table(world)
+    world.respond_to_approval(move.id, "decline")
+
+    world.propose()
+    again = [p for p in world.plans.values() if p.status == "draft"]
+
+    moves = [d for p in again for d in p.displacements]
+    assert moves, "a declined client is still available to be moved elsewhere"
+    assert all(d["now_start"] != move.now_start for d in moves), (
+        "but never back to the slot they turned down"
+    )
+
+
+def test_a_refused_move_is_never_proposed_again(world):
+    move = a_move_is_on_the_table(world)
+    world.respond_to_approval(move.id, "refuse")
+
+    world.propose()
+
+    assert not [d for p in world.plans.values() if p.status == "draft"
+                for d in p.displacements], "they said not at all"
+
+
+def test_an_offer_can_be_declined_but_not_refused(world):
+    """There is nothing to refuse to move — a booking has only two answers."""
+    ask(world, "alice", 0, 9, 17)
+    world.propose()
+    world.provider_approve(only_plan(world).id)
+    (offer,) = world.pending_approvals()
+    assert offer.kind == "booking"
+
+    with pytest.raises(ValueError):
+        world.respond_to_approval(offer.id, "refuse")
+    assert offer.status == "pending", "a rejected answer must not half-apply"
+
+
+def test_an_unknown_answer_is_refused_rather_than_guessed(world):
+    ask(world, "alice", 0, 9, 17)
+    world.propose()
+    world.provider_approve(only_plan(world).id)
+    (approval,) = world.pending_approvals()
+
+    with pytest.raises(ValueError):
+        world.respond_to_approval(approval.id, "maybe")
+    assert approval.status == "pending"
+
+
+def test_an_offer_is_taken_back_when_the_move_it_needed_falls_through(world):
+    """Nobody should be asked to confirm a slot that cannot be freed."""
+    move = a_move_is_on_the_table(world)
+    offer = next(a for a in world.pending_approvals() if a.kind == "booking")
+
+    world.respond_to_approval(move.id, "decline")
+
+    assert offer.status == "withdrawn"
+    assert world.pending_approvals() == [], "nothing left hanging over the plan"
+    assert world.requests[offer.request_id].status == "on_hold", (
+        "and the request is back in the queue rather than lost"
+    )
