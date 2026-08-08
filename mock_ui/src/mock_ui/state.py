@@ -421,12 +421,44 @@ class World:
             if r.replaces_appointment_id is not None
             and r.status in ("pending", "on_hold", "awaiting_client")}
 
+    def _in_scope(
+        self,
+        open_requests: List[Request],
+        request_ids: Optional[Sequence[int]],
+        window_end: date,
+    ) -> tuple:
+        """Split the queue into what this run is about and what it is not.
+
+        Naming requests explicitly says "this run is these"; naming none falls
+        back to the provider's standing rule. Either way the ones left out are
+        returned rather than dropped, so the caller can say how many there
+        were — a plan that looks light because half the queue was not in it
+        should not read as a quiet week.
+        """
+        if request_ids is not None:
+            chosen = {int(i) for i in request_ids}
+            unknown = chosen - {r.id for r in open_requests}
+            if unknown:
+                raise ValueError(
+                    f"request(s) {sorted(unknown)} are not waiting to be placed")
+            return ([r for r in open_requests if r.id in chosen],
+                    [r for r in open_requests if r.id not in chosen])
+
+        if not self.policy.scope_to_horizon:
+            return open_requests, []
+        # Inclusive of the last day: a wish for the final afternoon of the
+        # window is inside it. Anything earlier is in scope too — an overdue
+        # request is the most in-scope thing there is.
+        return ([r for r in open_requests if r.preferred_start.date() < window_end],
+                [r for r in open_requests if r.preferred_start.date() >= window_end])
+
     def propose(
         self,
         now: Optional[datetime] = None,
         reason: str = "manual",
         detail: str = "",
         horizon_days: Optional[int] = None,   # None = the provider's setting
+        request_ids: Optional[Sequence[int]] = None,
         alpha: Optional[float] = None,
         max_displacements: Optional[int] = None,
         allow_chains: Optional[bool] = None,
@@ -445,22 +477,38 @@ class World:
         nothing is reserved until one is approved, so proposing costs nothing.
         Only one plan may be *in flight* with the clients at a time, which is
         what stops two plans quietly promising the same slot.
+
+        `request_ids` runs over a subset — the provider choosing what this run
+        is about. With nothing named, the queue is filtered by
+        `SchedulingPolicy.scope_to_horizon`: only requests wishing for a time
+        inside the window are considered, which is what makes "plan next week
+        on Monday" mean what it says. Without it, someone who asked for a date
+        a month out would be booked into next week, because the horizon has
+        cropped their availability to it and the nearest feasible slot is then
+        the only slot there is.
+
+        A request left out is left *alone*: it keeps its status rather than
+        being parked, because it was never tried.
         """
         now = now or datetime.now()
         horizon_days = horizon_days or self.policy.horizon_days
         self.last_run = now
 
-        waiting = [r for r in self.requests.values()
-                   if r.status in ("pending", "on_hold")]
+        window_start = now.date()
+        window_end = window_start + timedelta(days=horizon_days)
+
+        open_requests = [r for r in self.requests.values()
+                         if r.status in ("pending", "on_hold")]
+        waiting, skipped = self._in_scope(open_requests, request_ids, window_end)
         if not waiting:
-            return {"ran": False, "reason": "nothing waiting"}
+            return {"ran": False,
+                    "reason": "nothing in this window" if skipped else "nothing waiting",
+                    "out_of_scope": len(skipped)}
         alpha = self.alpha if alpha is None else alpha
         max_moves = (self.max_displacements if max_displacements is None
                      else max_displacements)
         chains = self.allow_chains if allow_chains is None else allow_chains
 
-        window_start = now.date()
-        window_end = window_start + timedelta(days=horizon_days)
         # Gap usability is measured against what can still be sold, so a
         # withdrawn service must stop making gaps of its length look useful.
         config = CostConfig(
@@ -528,7 +576,8 @@ class World:
         if not result.placements and not result.displacements:
             self._note(f"scheduler ran ({reason}) — nothing could be placed")
             return {"ran": True, "reason": reason, "detail": detail,
-                    "placements": 0, "displacements": 0, "on_hold": len(waiting)}
+                    "placements": 0, "displacements": 0, "on_hold": len(waiting),
+                    "out_of_scope": len(skipped)}
 
         plan = Plan(
             id=next(self._ids),
@@ -544,6 +593,9 @@ class World:
                 "fragmentation_minutes": result.fragmentation_minutes,
                 "preference_gap_minutes": result.preference_gap_minutes,
                 "shift_minutes": result.shift_minutes,
+                # Not a failure: these were never put to the solver. Shown so
+                # a light-looking plan is not mistaken for a quiet week.
+                "out_of_scope": len(skipped),
             },
             placements=[
                 {"request_id": int(p.request_id), "client_id": p.client_id,
@@ -568,7 +620,8 @@ class World:
         return {"ran": True, "reason": reason, "detail": detail,
                 "plan_id": plan.id, "placements": len(plan.placements),
                 "displacements": len(plan.displacements),
-                "on_hold": len(waiting) - len(placed_ids)}
+                "on_hold": len(waiting) - len(placed_ids),
+                "out_of_scope": len(skipped)}
 
     # -- the provider's decision -------------------------------------
 
@@ -1125,6 +1178,7 @@ class World:
                 "urgency_hours": self.policy.urgency_hours,
                 "retry_after_minutes": self.policy.retry_after_minutes,
                 "horizon_days": self.policy.horizon_days,
+                "scope_to_horizon": self.policy.scope_to_horizon,
                 "last_run": self.last_run.isoformat() if self.last_run else None,
             },
             "log": self.log[-40:],

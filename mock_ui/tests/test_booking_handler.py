@@ -624,21 +624,76 @@ def test_dependencies_come_from_the_engine_not_from_guesswork(world):
 # -- the planning horizon ---------------------------------------------
 
 
-def test_the_horizon_crops_what_can_be_booked(world):
-    """It bounds the problem, not just the answer: everyone's availability is
-    cropped, so a wish beyond the horizon is met as near to it as possible
-    rather than granted.
+def test_a_wish_beyond_the_horizon_waits_rather_than_being_booked_early(world):
+    """A week's run is about that week. Someone who asked for a date next month
+    is not in it, and must not be dragged into it."""
+    world.policy.horizon_days = 7
+    beyond = datetime.now() + timedelta(days=20)
+    request = world.submit_request("alice", "s60", beyond.isoformat())
+
+    outcome = world.propose()
+
+    assert outcome["ran"] is False and outcome["out_of_scope"] == 1
+    assert not world.plans
+    assert world.requests[request.id].status == "pending", (
+        "left alone, not parked — it was never tried"
+    )
+
+
+def test_without_scoping_that_same_wish_is_dragged_into_the_window(world):
+    """Why the scoping exists, stated as a test.
+
+    The horizon crops everyone's availability, so with the whole queue in play
+    the nearest feasible slot is the *only* slot: the wish is not merely missed
+    by a lot, it is unreachable. Turning scoping off is allowed, and this is
+    what it costs.
     """
     world.policy.horizon_days = 7
+    world.policy.scope_to_horizon = False
     beyond = datetime.now() + timedelta(days=20)
     world.submit_request("alice", "s60", beyond.isoformat())
 
     world.propose()
 
     (placed,) = only_plan(world).placements
-    assert placed["start"] < datetime.now() + timedelta(days=7), (
-        "placed outside the horizon the provider set"
+    assert placed["start"] < datetime.now() + timedelta(days=7)
+
+
+def test_the_provider_can_run_over_a_named_subset(world):
+    """Explicit selection beats the standing rule in both directions: it pulls
+    in what scoping would skip, and leaves out what scoping would take."""
+    world.policy.horizon_days = 7
+    soon = ask(world, "alice", 0, 9, 17)
+    later = world.submit_request(
+        "bob", "s60", (datetime.now() + timedelta(days=20)).isoformat())
+
+    world.propose(request_ids=[later.id])
+
+    (placed,) = only_plan(world).placements
+    assert placed["request_id"] == later.id, "the one that was named"
+    assert world.requests[soon.id].status == "pending", (
+        "the one that was not is left alone, not parked"
     )
+
+
+def test_naming_a_request_that_is_not_waiting_is_refused(world):
+    ask(world, "alice", 0, 9, 17)
+
+    with pytest.raises(ValueError):
+        world.propose(request_ids=[9999])
+
+
+def test_a_run_says_how_much_of_the_queue_it_left_out(world):
+    """A plan that looks light because half the queue was not in it should not
+    read as a quiet week."""
+    world.policy.horizon_days = 7
+    ask(world, "alice", 0, 9, 17)
+    world.submit_request(
+        "bob", "s60", (datetime.now() + timedelta(days=20)).isoformat())
+
+    world.propose()
+
+    assert only_plan(world).metrics["out_of_scope"] == 1
 
 
 def test_the_provider_setting_is_what_a_run_uses(world):

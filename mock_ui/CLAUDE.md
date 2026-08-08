@@ -105,6 +105,15 @@ queue — 7 days ~2s against 21 days ~11s at 25 clients and 20 requests.
 `World.snapshot` deliberately reaches further (four weeks) so the calendar view
 does not go blank beyond the planning window.
 
+The horizon bounds *where* an appointment may go; **`scope_to_horizon` decides
+which requests are in play at all**, and the two are not the same. Without the
+second, a client wishing for a date next month has their availability cropped
+to the coming week like everyone else, so the earliest free slot is the only
+slot and they are booked into next week — the wish was made unreachable before
+the solver saw it. `propose(request_ids=[...])` overrides both directions. A
+request left out of a run keeps its status rather than being parked: parked
+means tried and not placed.
+
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider
 says so, and the decision is a pure function so it is testable without waiting

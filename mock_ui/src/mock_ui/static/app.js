@@ -65,6 +65,7 @@ function render() {
   renderGrid();
   renderRequests();
   renderBookings();
+  renderQueue();
   renderCatalogue();
   renderClients();
   renderExceptions();
@@ -74,6 +75,7 @@ function render() {
   $("avail-for").textContent = isProvider() ? "(provider)" : `(${me})`;
   $("panel-request").style.display = isProvider() ? "none" : "";
   $("panel-bookings").style.display = isProvider() ? "none" : "";
+  $("panel-queue").style.display = isProvider() ? "" : "none";
   $("panel-catalogue").style.display = isProvider() ? "" : "none";
   $("panel-clients").style.display = isProvider() ? "" : "none";
   $("try").style.display = isProvider() ? "" : "none";
@@ -186,6 +188,99 @@ function renderProposal() {
   }
   drafts.forEach((p) => applyDeps(p.id));
 }
+
+// -- the queue, and what a run is about -------------------------------
+
+// Which requests the next run covers. Empty means "whatever the standing rule
+// says", which is the normal case — the ticks are for the exceptions.
+let runOver = null;
+
+function planningWindowEnd() {
+  const days = (state.scheduler || {}).horizon_days || 7;
+  const end = new Date(state.today + "T00:00");
+  end.setDate(end.getDate() + days);
+  return end;
+}
+
+function renderQueue() {
+  if (!isProvider()) return;
+  const open = (state.requests || []).filter(
+    (r) => r.status === "pending" || r.status === "on_hold");
+  const scoped = (state.scheduler || {}).scope_to_horizon !== false;
+  const end = planningWindowEnd();
+  const inWindow = (r) => new Date(r.preferred) < end;
+
+  if (!open.length) {
+    runOver = null;
+    $("queue").innerHTML = `<p class="hint">Nothing waiting.</p>`;
+    return;
+  }
+  // Default the ticks to what the standing rule would do, so the box shows
+  // what is about to happen rather than an empty selection.
+  if (runOver === null) {
+    runOver = new Set(open.filter((r) => !scoped || inWindow(r)).map((r) => r.id));
+  }
+
+  const later = open.filter((r) => !inWindow(r)).length;
+  $("queue").innerHTML = `
+    <div class="reqs">${open.map((r) => `
+      <label class="req ${inWindow(r) ? "" : "later"}">
+        <input type="checkbox" data-request="${r.id}" ${runOver.has(r.id) ? "checked" : ""}
+               onchange="pickRequest(this)">
+        <span>${esc(nameOf(r.client_id))} · ${esc(r.service)}<br>
+          <span class="time">wants ${fmt(r.preferred)}</span></span>
+        <span class="tag">${inWindow(r) ? r.status.replace(/_/g, " ") : "later"}</span>
+      </label>`).join("")}</div>
+    <div class="row" style="margin-top:8px">
+      <button ${runOver.size ? "" : "disabled"} onclick="runOnPicked()">Run on ${
+        runOver.size} selected</button>
+      <button class="ghost" onclick="pickWindow()">Just this window</button>
+      <button class="ghost" onclick="pickAll()">All</button>
+    </div>
+    <label class="row hint" style="margin-top:6px">
+      <input type="checkbox" ${scoped ? "checked" : ""} onchange="setScoping(this.checked)">
+      Runs cover only wishes inside the ${(state.scheduler || {}).horizon_days}-day window
+    </label>
+    <p class="hint">${later
+      ? `${later} request(s) want a time beyond the window. Including them books
+         them into it — the horizon crops their availability, so the earliest
+         free slot becomes the only slot.`
+      : "Everything waiting falls inside the planning window."}</p>`;
+}
+
+window.pickRequest = (box) => {
+  const id = Number(box.dataset.request);
+  if (box.checked) runOver.add(id); else runOver.delete(id);
+  render();
+};
+window.pickWindow = () => {
+  const end = planningWindowEnd();
+  runOver = new Set((state.requests || [])
+    .filter((r) => (r.status === "pending" || r.status === "on_hold")
+                   && new Date(r.preferred) < end)
+    .map((r) => r.id));
+  render();
+};
+window.pickAll = () => {
+  runOver = new Set((state.requests || [])
+    .filter((r) => r.status === "pending" || r.status === "on_hold")
+    .map((r) => r.id));
+  render();
+};
+window.setScoping = async (on) => {
+  runOver = null;                       // the default ticks change with the rule
+  await api("/api/settings", {scope_to_horizon: on});
+  refresh();
+};
+window.runOnPicked = async () => {
+  const picked = [...runOver];
+  runOver = null;                       // re-derive against the queue as it is now
+  const outcome = await api("/api/solve", {request_ids: picked});
+  if (outcome && outcome.ran === false) {
+    alert(`Nothing to do: ${outcome.reason}.`);
+  }
+  refresh();
+};
 
 // -- what the answers add up to, and what to do about them ------------
 

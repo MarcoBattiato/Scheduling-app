@@ -111,6 +111,9 @@ class SolveIn(BaseModel):
     alpha: Optional[float] = None
     max_displacements: Optional[int] = None
     allow_chains: Optional[bool] = None
+    # Which requests this run is about. None falls back to the standing rule
+    # (SchedulingPolicy.scope_to_horizon).
+    request_ids: Optional[List[int]] = None
 
 
 class ApproveIn(BaseModel):
@@ -124,6 +127,7 @@ class SettingsIn(BaseModel):
     urgency_hours: Optional[int] = None
     retry_after_minutes: Optional[int] = None
     horizon_days: Optional[int] = None
+    scope_to_horizon: Optional[bool] = None
 
 
 # -- routes ---------------------------------------------------------
@@ -288,11 +292,15 @@ def solve(payload: SolveIn = SolveIn()):
     until one is approved — so this is how the provider compares rather than
     being told.
     """
-    return world.propose(
-        reason="provider", alpha=payload.alpha,
-        max_displacements=payload.max_displacements,
-        allow_chains=payload.allow_chains,
-    )
+    try:
+        return world.propose(
+            reason="provider", alpha=payload.alpha,
+            request_ids=payload.request_ids,
+            max_displacements=payload.max_displacements,
+            allow_chains=payload.allow_chains,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
 
 
 @app.post("/api/plans/{plan_id}/approve")
@@ -348,6 +356,8 @@ def settings(payload: SettingsIn):
         world.policy.retry_after_minutes = max(1, payload.retry_after_minutes)
     if payload.horizon_days is not None:
         world.policy.horizon_days = max(1, payload.horizon_days)
+    if payload.scope_to_horizon is not None:
+        world.policy.scope_to_horizon = payload.scope_to_horizon
     return {"ok": True}
 
 

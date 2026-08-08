@@ -216,6 +216,34 @@ have asked about cannot be moved by its client until they have answered —
 otherwise the replacement would try to cancel an appointment the accepted move
 had already superseded.
 
+### 5.1.3 What a run is about
+
+A run has a *scope* as well as a horizon, and they are not the same thing. The
+horizon bounds where an appointment may be put; the scope decides which
+requests are in play at all.
+
+Without a scope, the horizon quietly does both jobs and does the second badly.
+A client who asked for a date next month has their availability cropped to the
+coming week like everybody else, so the earliest free slot is not merely a poor
+match for their wish — it is the only slot there is, and they get booked into
+next week. That is not the optimiser being eager; it is the wish having been
+made unreachable before the optimiser saw it.
+
+So:
+
+- `World.propose(request_ids=[...])` runs over exactly those requests. This is
+  the provider saying what this run is about.
+- With none named, `SchedulingPolicy.scope_to_horizon` (on by default) keeps
+  only requests whose wished-for time falls inside the window. Inclusive at the
+  near end — an overdue request is the most in-scope thing there is.
+- Turning it off restores the old behaviour, deliberately reachable, because a
+  provider with an empty week may well prefer to fill it early.
+
+A request left out is left **alone**: it keeps its status rather than being
+parked, because being parked means *tried and not placed* and this one was
+never tried. `metrics.out_of_scope` records how many, so a plan that looks
+light because half the queue was not in it does not read as a quiet week.
+
 ### 5.2 Planning around what is already promised
 
 A slot out with a client is neither free nor booked, and the scheduler must

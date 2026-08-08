@@ -107,6 +107,7 @@ def save(world: World, path: Path) -> None:
             "urgency_hours": world.policy.urgency_hours,
             "retry_after_minutes": world.policy.retry_after_minutes,
             "horizon_days": world.policy.horizon_days,
+            "scope_to_horizon": world.policy.scope_to_horizon,
             "last_run": _dt(world.last_run),
         },
         "log": world.log,
@@ -211,6 +212,8 @@ def load(path: Path) -> World:
         "retry_after_minutes", world.policy.retry_after_minutes)
     world.policy.horizon_days = scheduler.get(
         "horizon_days", world.policy.horizon_days)
+    world.policy.scope_to_horizon = scheduler.get(
+        "scope_to_horizon", world.policy.scope_to_horizon)
     world.last_run = _back(scheduler.get("last_run"))
 
     world.log = payload.get("log", [])

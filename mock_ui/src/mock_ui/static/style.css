@@ -121,6 +121,11 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
 .tag.ok { color: var(--ok); border-color: var(--ok); }
 .tag.move { color: var(--displaced); border-color: var(--displaced); }
 .req.on_hold { color: var(--warn); }
+/* A request wishing for a time past the planning window: present, but not what
+   this run is about. Dimmed rather than hidden — the provider should be able
+   to reach for it. */
+.req.later { opacity: .55; }
+.req input[type="checkbox"] { margin: 0; }
 #proposal:not(:empty) { margin-bottom: 16px; }
 
 .try { display: inline-flex; gap: 8px; align-items: center; }

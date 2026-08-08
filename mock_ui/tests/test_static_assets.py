@@ -676,3 +676,27 @@ def test_a_client_sees_which_of_their_bookings_are_settled():
 
     alice = _render_as(world.snapshot(), "alice")["bookings"]
     assert "Nothing booked." in alice, "alice has agreed, but nothing is written"
+
+
+@node
+def test_the_provider_can_choose_what_a_run_covers():
+    """The queue must show the whole queue, mark what falls outside the
+    planning window, and say what including it would cost."""
+    from datetime import datetime, timedelta
+
+    world = _world_with_answers()
+    world.policy.horizon_days = 7
+    world.submit_request(
+        "bob", "s60", (datetime.now() + timedelta(days=25)).isoformat())
+
+    import re
+
+    raw = _render_as(world.snapshot(), "provider")["queue"]
+    queue = re.sub(r"\s+", " ", raw)     # the markup wraps; the words matter
+
+    assert "req later" in queue, "a wish beyond the window is marked as such"
+    assert "runOnPicked" in queue and "data-request" in queue
+    assert "the earliest free slot becomes the only slot" in queue, (
+        "the cost of including it has to be stated, not implied"
+    )
+    assert "setScoping" in queue, "the standing rule is reachable from here"

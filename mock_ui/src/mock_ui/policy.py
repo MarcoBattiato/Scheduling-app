@@ -44,6 +44,17 @@ class SchedulingPolicy:
     # every request in the queue. Measured at 25 clients and 20 requests:
     # 7 days ~2s, 21 days ~11s.
     horizon_days: int = 7
+    # Whether a run also *selects* by the horizon, not merely plans within it.
+    #
+    # With this on, a run considers only requests whose wished-for time falls
+    # inside its own window, which is what "do next week on Monday" means. Off,
+    # every waiting request competes for every run: someone who asked for a
+    # date a month out gets booked into next week instead, because the horizon
+    # crops their availability to it and the nearest feasible slot is the only
+    # slot. That is not eagerness, it is the wish being unreachable.
+    #
+    # The provider can always override per run by naming the requests.
+    scope_to_horizon: bool = True
 
 
 @dataclass(frozen=True)
