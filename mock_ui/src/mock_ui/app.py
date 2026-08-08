@@ -89,9 +89,15 @@ class AwayIn(BaseModel):
     """The provider cannot work a stretch of time."""
     start: str
     end: str
-    # "reschedule" keeps each client's booking until there is somewhere to move
-    # it; "cancel" ends them outright.
-    action: str = "reschedule"
+    # "flag" (the default) marks the time off and leaves the bookings in it
+    # alone for the provider to decide about; "reschedule" and "cancel" make
+    # that decision in the same breath.
+    action: str = "flag"
+
+
+class OrphansIn(BaseModel):
+    # Which stranded bookings to act on. None means all of them.
+    appointment_ids: Optional[List[int]] = None
 
 
 class ManualPlacementIn(BaseModel):
@@ -145,6 +151,7 @@ class SettingsIn(BaseModel):
     retry_after_minutes: Optional[int] = None
     horizon_days: Optional[int] = None
     scope_to_horizon: Optional[bool] = None
+    rehouse_orphans_on_run: Optional[bool] = None
 
 
 # -- routes ---------------------------------------------------------
@@ -334,6 +341,18 @@ def provider_away(payload: AwayIn):
         raise HTTPException(409, str(exc)) from None
 
 
+@app.post("/api/orphans/rehouse")
+def rehouse_orphans(payload: OrphansIn = OrphansIn()):
+    """Queue stranded bookings to be moved. Explicit: changing availability
+    never does this by itself."""
+    return {"rehoused": world.rehouse_orphans(payload.appointment_ids)}
+
+
+@app.post("/api/orphans/cancel")
+def cancel_orphans(payload: OrphansIn = OrphansIn()):
+    return {"cancelled": world.cancel_orphans(payload.appointment_ids)}
+
+
 @app.post("/api/appointments/manual")
 def place_manually(payload: ManualPlacementIn):
     """The provider booking a waiting request themselves, before optimising."""
@@ -402,6 +421,8 @@ def settings(payload: SettingsIn):
         world.policy.horizon_days = max(1, payload.horizon_days)
     if payload.scope_to_horizon is not None:
         world.policy.scope_to_horizon = payload.scope_to_horizon
+    if payload.rehouse_orphans_on_run is not None:
+        world.policy.rehouse_orphans_on_run = payload.rehouse_orphans_on_run
     return {"ok": True}
 
 

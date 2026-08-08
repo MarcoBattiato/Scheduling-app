@@ -56,6 +56,11 @@ button.ghost { background: transparent; color: var(--fg); border-color: var(--li
 button.danger { border-color: var(--warn); color: var(--warn); }
 /* The provider reading answers: agreed, waiting and refused each need to be
    distinguishable at a glance, since the three buttons act on them by group. */
+/* Flagged, not acted on. Loud enough to be seen, not so loud it reads as an
+   error — a provider who meant to take Tuesday off has done nothing wrong. */
+.alert.stranded { border-color: var(--warn); border-left-width: 4px; }
+.cal-block.orphaned { outline: 2px dashed var(--warn); outline-offset: -2px; }
+
 /* Nobody owes an answer here — it is a statement of where things stand. */
 .alert.settled-wait { border-color: var(--ok); border-left-width: 4px; }
 

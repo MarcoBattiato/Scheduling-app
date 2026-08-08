@@ -310,28 +310,23 @@ class World:
 
     # -- the provider's own diary ------------------------------------
 
-    AWAY_ACTIONS = ("reschedule", "cancel")
+    AWAY_ACTIONS = ("flag", "reschedule", "cancel")
 
     def provider_away(
-        self, start: datetime, end: datetime, action: str = "reschedule"
+        self, start: datetime, end: datetime, action: str = "flag"
     ) -> dict:
-        """The provider cannot work a stretch of time. Deal with what is in it.
+        """The provider cannot work a stretch of time.
 
-        Two separate things happen, and both are needed: the time is marked
-        unavailable so nothing new lands there, and the appointments already in
-        it are dealt with — nothing else notices that a booking has come to sit
-        in an hour the provider no longer has.
+        Marks it unavailable. What happens to the appointments already in it is
+        a **separate decision**, and by default this does not make it: they are
+        left in place and flagged (`orphaned_appointments`), because a mistyped
+        date should not put half the week's clients through a rescheduling
+        nobody wanted.
 
-        - *reschedule* — each client gets a request raised on their behalf,
-          wishing for the time they had. **Their booking is kept** until there
-          is somewhere to move it to, exactly as when a client asks to move
-          themselves: being told "you have been cancelled, we will be in touch"
-          is a worse outcome than an hour that is still notionally yours.
-        - *cancel* — cancelled outright, by the provider, and that is the end
-          of it.
-
-        Either way the replacement is `Origin.DISPLACED`. The client will be
-        asked and will very likely say yes, but they did not choose it.
+        `action` runs the follow-up in the same breath when the provider is
+        sure — "I am ill tomorrow, cancel everything" is one decision, not two.
+        It is exactly equivalent to marking the time off and then calling
+        `rehouse_orphans` or `cancel_orphans` on what it stranded.
         """
         if action not in self.AWAY_ACTIONS:
             raise ValueError(f"action must be one of {self.AWAY_ACTIONS}, not {action!r}")
@@ -347,36 +342,87 @@ class World:
                 available=False,
             )
 
-        affected = [
-            a for a in self._live_appointments(start.date(),
-                                               end.date() + timedelta(days=1))
-            if a.range.start < end and start < a.range.end
+        stranded = [a.id for a in self.orphaned_appointments()
+                    if a.range.start < end and start < a.range.end]
+        self._note(f"provider away {start:%a %d %b %H:%M} – {end:%a %d %b %H:%M}"
+                   + (f": {len(stranded)} appointment(s) now stranded"
+                      if stranded else ""))
+
+        if action == "cancel":
+            return {"affected": len(stranded), "rehoused": [],
+                    "cancelled": self.cancel_orphans(stranded)}
+        if action == "reschedule":
+            return {"affected": len(stranded), "cancelled": 0,
+                    "rehoused": self.rehouse_orphans(stranded)}
+        return {"affected": len(stranded), "rehoused": [], "cancelled": 0,
+                "flagged": stranded}
+
+    # -- bookings the provider no longer has time for --------------------
+
+    def orphaned_appointments(self, horizon_days: int = 28) -> List[Appointment]:
+        """Live bookings sitting in time the provider is not available for.
+
+        A pure query, deliberately. Changing availability — by the weekly grid,
+        by dragging on the calendar, or by declaring a stretch off — never
+        reschedules anything on its own. It only makes this list longer, and
+        the provider decides what to do about it.
+
+        Only the *provider's* availability counts. A client narrowing theirs
+        says nothing about a booking they have already committed to; a provider
+        who cannot be there means the hour cannot happen.
+        """
+        start = date.today()
+        end = start + timedelta(days=horizon_days)
+        free = self.availability_segments(PROVIDER, start, end)
+        return [
+            a for a in self._live_appointments(start, end)
+            if not any(s.start <= a.range.start and a.range.end <= s.end
+                       for s in free)
         ]
-        rehoused = []
-        for appointment in affected:
-            if action == "cancel":
-                self.cancel_appointment(appointment.id, by=Party.PROVIDER)
+
+    def rehouse_orphans(self, appointment_ids: Optional[Sequence[int]] = None) -> List[int]:
+        """Raise a request on each stranded client's behalf.
+
+        **Their booking is kept** until there is somewhere to move it to,
+        exactly as when a client asks to move themselves: being told "you have
+        been cancelled, we will be in touch" is a worse outcome than an hour
+        that is still notionally yours. It then goes through the queue like any
+        request, so they are asked rather than told.
+
+        `Origin.DISPLACED` from the moment it is booked. They will say yes, but
+        they did not choose it.
+        """
+        wanted = None if appointment_ids is None else {int(i) for i in appointment_ids}
+        being_dealt_with = self._asked_to_move()
+        raised = []
+        for appointment in self.orphaned_appointments():
+            if wanted is not None and appointment.id not in wanted:
                 continue
-            # Somebody may already be dealing with this one — do not raise a
-            # second question about the same booking.
-            if appointment.id in self._asked_to_move():
-                continue
+            if appointment.id in being_dealt_with:
+                continue        # somebody is already moving this one
             request = self.submit_request(
                 appointment.client_id, appointment.service_type_id,
                 (appointment.preferred_start or appointment.range.start).isoformat(),
             )
             request.replaces_appointment_id = appointment.id
             request.origin = Origin.DISPLACED
-            request.note = "the provider is away"
-            rehoused.append(request.id)
+            request.note = "the provider is not available then"
+            raised.append(request.id)
+        if raised:
+            self._note(f"{len(raised)} stranded booking(s) queued to be rehoused")
+        return raised
 
-        self._note(
-            f"provider away {start:%a %d %b %H:%M} – {end:%a %d %b %H:%M}: "
-            + (f"{len(affected)} appointment(s) cancelled" if action == "cancel"
-               else f"{len(rehoused)} to rehouse")
-        )
-        return {"affected": len(affected), "rehoused": rehoused,
-                "cancelled": len(affected) if action == "cancel" else 0}
+    def cancel_orphans(self, appointment_ids: Optional[Sequence[int]] = None) -> int:
+        """End them outright instead. Nobody is offered another slot."""
+        wanted = None if appointment_ids is None else {int(i) for i in appointment_ids}
+        cancelled = 0
+        for appointment in self.orphaned_appointments():
+            if wanted is None or appointment.id in wanted:
+                self.cancel_appointment(appointment.id, by=Party.PROVIDER)
+                cancelled += 1
+        if cancelled:
+            self._note(f"{cancelled} stranded booking(s) cancelled")
+        return cancelled
 
     def place_manually(
         self, request_id: int, start: datetime, lock: bool = True
@@ -618,6 +664,22 @@ class World:
         horizon_days = horizon_days or self.policy.horizon_days
         self.last_run = now
 
+        # Bookings the provider no longer has time for. Never rescheduled as a
+        # side effect of the availability changing — either the provider has
+        # asked for that standing, or this only reports them.
+        stranded = self.orphaned_appointments()
+        warnings = []
+        if stranded and self.policy.rehouse_orphans_on_run:
+            raised = self.rehouse_orphans()
+            if raised:
+                warnings.append(
+                    f"{len(raised)} booking(s) were in time you are not "
+                    f"available for; they have been queued to be rehoused")
+        elif stranded:
+            warnings.append(
+                f"{len(stranded)} booking(s) are in time you are not available "
+                f"for, and were left alone")
+
         window_start = now.date()
         window_end = window_start + timedelta(days=horizon_days)
 
@@ -627,7 +689,7 @@ class World:
         if not waiting:
             return {"ran": False,
                     "reason": "nothing in this window" if skipped else "nothing waiting",
-                    "out_of_scope": len(skipped)}
+                    "out_of_scope": len(skipped), "warnings": warnings}
         alpha = self.alpha if alpha is None else alpha
         max_moves = (self.max_displacements if max_displacements is None
                      else max_displacements)
@@ -701,7 +763,7 @@ class World:
             self._note(f"scheduler ran ({reason}) — nothing could be placed")
             return {"ran": True, "reason": reason, "detail": detail,
                     "placements": 0, "displacements": 0, "on_hold": len(waiting),
-                    "out_of_scope": len(skipped)}
+                    "out_of_scope": len(skipped), "warnings": warnings}
 
         plan = Plan(
             id=next(self._ids),
@@ -720,6 +782,7 @@ class World:
                 # Not a failure: these were never put to the solver. Shown so
                 # a light-looking plan is not mistaken for a quiet week.
                 "out_of_scope": len(skipped),
+                "warnings": warnings,
             },
             placements=[
                 {"request_id": int(p.request_id), "client_id": p.client_id,
@@ -745,7 +808,7 @@ class World:
                 "plan_id": plan.id, "placements": len(plan.placements),
                 "displacements": len(plan.displacements),
                 "on_hold": len(waiting) - len(placed_ids),
-                "out_of_scope": len(skipped)}
+                "out_of_scope": len(skipped), "warnings": warnings}
 
     # -- the provider's decision -------------------------------------
 
@@ -1175,6 +1238,8 @@ class World:
         end = start + timedelta(days=horizon_days)
         window = (datetime.combine(start, time.min), datetime.combine(end, time.min))
 
+        stranded = {a.id for a in self.orphaned_appointments(horizon_days)}
+
         # What is hanging over each booking, so a client can see at a glance
         # whether their slot is settled — the question they actually have.
         hanging = {}
@@ -1212,6 +1277,10 @@ class World:
                     # moving — they asked to move it themselves and are
                     #          holding the slot until there is somewhere to go
                     "pending": hanging.get(a.id),
+                    # In time the provider is not available for. Flagged only —
+                    # changing availability never reschedules anything by
+                    # itself; see World.orphaned_appointments.
+                    "orphaned": a.id in stranded,
                 })
 
         return {
@@ -1316,6 +1385,7 @@ class World:
                 "retry_after_minutes": self.policy.retry_after_minutes,
                 "horizon_days": self.policy.horizon_days,
                 "scope_to_horizon": self.policy.scope_to_horizon,
+                "rehouse_orphans_on_run": self.policy.rehouse_orphans_on_run,
                 "last_run": self.last_run.isoformat() if self.last_run else None,
             },
             "log": self.log[-40:],

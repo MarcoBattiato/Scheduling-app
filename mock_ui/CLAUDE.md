@@ -79,7 +79,15 @@ against, so **`origin` has to be right**:
 - a move the scheduler imposed and the client merely accepted →
   `Origin.DISPLACED`
 
-`provider_away` is the newest way to get this wrong. A client rehoused because
+**Changing availability never reschedules anybody.** Stranding is a query
+(`orphaned_appointments`), not an event: bookings left in time the provider no
+longer has are flagged and stay put, and acting on them is always explicit —
+either the provider asks (`rehouse_orphans` / `cancel_orphans`) or they have
+turned on `SchedulingPolicy.rehouse_orphans_on_run`. A run reports them either
+way. One mistyped date must not put half the week through a rescheduling
+nobody asked for.
+
+`provider_away` is the newest way to get the *origin* wrong. A client rehoused because
 the provider fell ill will accept the slot they are offered, and the booking is
 `Origin.DISPLACED` from the moment it is made (`Request.origin` carries it
 through the queue) — the old slot is cancelled by the *provider* too, since

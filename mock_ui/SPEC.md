@@ -254,23 +254,44 @@ light because half the queue was not in it does not read as a quiet week.
 
 Two things the provider can do that no amount of optimising covers.
 
-**Being away** (`World.provider_away`). Marking time off is only half of it —
-nothing else notices that a booking has come to sit in an hour the provider no
-longer has. So it marks the time unavailable *and* deals with what is in it:
+**Changing availability never reschedules anybody.** Not by the weekly grid,
+not by dragging on the calendar, not by declaring a stretch off. A mistyped
+date would otherwise put half the week's clients through a rescheduling nobody
+asked for, and by the time it is noticed they have been told.
 
-- *reschedule* — a request is raised on each client's behalf, wishing for the
-  time they had, and **their booking is kept** until there is somewhere to move
-  it to, exactly as when a client asks to move themselves. "You have been
-  cancelled, we will be in touch" is a worse outcome than an hour that is still
-  notionally theirs. It then goes through the queue like any request, so they
-  are asked rather than told.
-- *cancel* — ended outright, `CANCELLED_BY_PROVIDER`, and that is the end of it.
+So stranding is a **query**, not an event: `orphaned_appointments()` returns
+live bookings sitting in time the provider is not available for, computed
+afresh from current state. They stay exactly where they are, flagged in the
+snapshot (`appointment.orphaned`) and outlined on the calendar.
 
-The replacement is `Origin.DISPLACED` **from the moment it is booked**, and the
-old slot is cancelled by the *provider*, not the client. They will say yes, but
-they did not choose it, and recording that as a preference is exactly the
-failure `origin` exists to prevent. A booking somebody is already dealing with
-is left alone rather than asked about twice.
+Only the *provider's* availability counts. A client narrowing theirs says
+nothing about an hour they have already committed to.
+
+Two ways to act, deliberately redundant — a provider who edits their hours and
+then forgets is exactly who the second is for:
+
+1. **Explicitly.** `rehouse_orphans()` or `cancel_orphans()`, optionally on
+   named bookings. The banner offers both, because only the provider knows
+   which is right.
+2. **At the next run.** `SchedulingPolicy.rehouse_orphans_on_run`, off by
+   default. When on, a run raises the rehousing requests itself and says so.
+
+A run **always reports** stranded bookings in `warnings`, whichever setting is
+in force. Doing nothing about them is a decision; being quiet about them is
+not.
+
+Rehousing keeps each client's hour until there is somewhere to move it to,
+exactly as when a client asks to move themselves — "you have been cancelled, we
+will be in touch" is a worse outcome than an hour that is still notionally
+theirs — and goes through the queue like any request, so they are asked rather
+than told. The replacement is `Origin.DISPLACED` from the moment it is booked
+and the old slot is cancelled by the *provider*: they will say yes, but they did
+not choose it. A booking somebody is already dealing with is left alone rather
+than asked about twice.
+
+`provider_away(start, end, action)` marks the time off; `action` defaults to
+`"flag"` and can run the follow-up in the same breath when the provider is sure
+("I am ill tomorrow, cancel everything" is one decision, not two).
 
 **Placing by hand** (`World.place_manually`). The provider booking a waiting
 request themselves, before optimising, so the run plans around it rather than

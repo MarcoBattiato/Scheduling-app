@@ -797,3 +797,94 @@ def test_the_queue_offers_placing_a_request_by_hand():
 
     assert "placeByHand" in queue
     assert "/api/appointments/manual" in (STATIC / "app.js").read_text()
+
+
+def _world_with_stranded():
+    from datetime import date, datetime, time, timedelta
+
+    from mock_ui.state import PROVIDER, World
+
+    monday = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7)
+    at = lambda d, h: datetime.combine(monday + timedelta(days=d), time(h))
+
+    world = World()
+    world.policy.horizon_days = 10
+    world.catalogue.add_service("s60", "Hour", 60, 8000)
+    world.add_client("alice", "Alice")
+    for who in ("alice", PROVIDER):
+        world.set_weekly_availability(
+            who, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)])
+    world.store.book_appointment("alice", "s60", at(0, 9), at(0, 10))
+    world.provider_away(at(0, 0), at(0, 23))         # flag only
+    return world
+
+
+@node
+def test_stranded_bookings_are_flagged_and_nothing_is_done_about_them():
+    """The rule this exists to enforce: changing availability must never
+    reschedule anybody. The page has to say so, not merely act on it."""
+    import re
+
+    world = _world_with_stranded()
+    assert world.orphaned_appointments(), "the scenario must strand something"
+    assert not [r for r in world.requests.values()], "and must not have acted"
+
+    panel = re.sub(r"\s+", " ", _render_as(world.snapshot(), "provider")["stranded"])
+
+    assert "not available for" in panel
+    assert "Nothing has been done about them" in panel
+    assert "fixStranded('rehouse')" in panel and "fixStranded('cancel')" in panel, (
+        "both explicit triggers, since only the provider knows which is right"
+    )
+    assert "setRehouseOnRun" in panel, "and the standing alternative"
+
+
+def _scheduleLayers(state, who):
+    """The calendar layers the page would draw, for one role."""
+    harness = r"""
+      const vm = require("vm"), fs = require("fs");
+      const files = process.argv.slice(1, -2);
+      const state = JSON.parse(fs.readFileSync(process.argv[process.argv.length - 2], "utf8"));
+      const who = process.argv[process.argv.length - 1];
+      const noop = () => {}, els = {};
+      const el = () => ({innerHTML: "", style: {}, textContent: "", value: "2",
+                         options: {length: 0}, addEventListener: noop,
+                         querySelectorAll: () => [], querySelector: () => null});
+      const sandbox = {console, setInterval: noop, setTimeout: noop,
+        CSS: {escape: (s) => s},
+        document: {addEventListener: noop,
+                   getElementById: (id) => (els[id] = els[id] || el()),
+                   querySelectorAll: () => [], querySelector: () => null},
+        location: {search: `?as=${who}`}, history: {replaceState: noop},
+        URLSearchParams: class { get() { return who; } },
+        fetch: async () => ({ok: true, json: async () => state}),
+        alert: noop, confirm: () => false};
+      const ctx = vm.createContext(sandbox);
+      sandbox.window = sandbox;
+      for (const f of files) {
+        new vm.Script(fs.readFileSync(f, "utf8"), {filename: f}).runInContext(ctx);
+      }
+      console.log(JSON.stringify(sandbox.window.scheduleLayers(state, who, null)));
+    """
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(state, fh, default=str)
+        path = fh.name
+    result = subprocess.run(
+        ["node", "-e", harness, *[str(STATIC / s) for s in SCRIPTS], path, who],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+@node
+def test_a_stranded_booking_is_marked_on_the_calendar_too():
+    world = _world_with_stranded()
+    stranded = next(a for a in world.snapshot()["appointments"] if a["orphaned"])
+
+    layers = _scheduleLayers(world.snapshot(), "provider")
+    block = next(b for b in layers["blocks"] if b["id"] == f"a{stranded['id']}")
+
+    assert "orphaned" in block["cls"]
+    assert ".cal-block.orphaned" in (STATIC / "style.css").read_text()

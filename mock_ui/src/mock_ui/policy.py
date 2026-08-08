@@ -55,6 +55,17 @@ class SchedulingPolicy:
     #
     # The provider can always override per run by naming the requests.
     scope_to_horizon: bool = True
+    # What a run does about bookings the provider is no longer available for.
+    #
+    # Off (the default): nothing. They stay flagged and the provider decides,
+    # so a mistyped date cannot put half the week through a rescheduling nobody
+    # asked for. The run still *says* they are there — being quiet about it
+    # would be the same failure in a different place.
+    #
+    # On: the run raises the rehousing requests itself and warns that it did.
+    # Redundant with the explicit button on purpose: a provider who edits their
+    # hours and then forgets is exactly who this is for.
+    rehouse_orphans_on_run: bool = False
 
 
 @dataclass(frozen=True)

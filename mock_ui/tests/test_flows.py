@@ -506,9 +506,111 @@ def test_a_client_can_see_whether_their_slot_is_settled(world):
 # -- the provider's own diary -----------------------------------------
 
 
-def test_being_away_frees_the_time_and_deals_with_what_was_in_it(world):
-    """Marking time off is only half of it. Nothing else notices that a
-    booking has come to sit in an hour the provider no longer has."""
+def test_changing_availability_never_reschedules_anybody(world):
+    """The rule: a mistyped date must not put half the week's clients through
+    a rescheduling nobody asked for. Stranded bookings are flagged and stay
+    exactly where they are until the provider says otherwise."""
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+
+    outcome = world.provider_away(at(0, 0), at(0, 23))      # the default
+
+    assert outcome["flagged"] == [booked.id]
+    assert outcome["rehoused"] == [] and outcome["cancelled"] == 0
+    assert not [r for r in world.requests.values() if r.status == "pending"]
+    assert world.store.get_appointment(booked.id).occupies_slot
+    assert [a.id for a in world.orphaned_appointments()] == [booked.id]
+
+
+def test_the_weekly_pattern_strands_bookings_just_as_loudly(world):
+    """Not only the away button. Editing the grid or dragging on the calendar
+    can leave a booking in time the provider no longer has, and did not used
+    to be noticed at all."""
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+
+    world.set_weekly_availability(PROVIDER, [])
+
+    assert booked.id in {a.id for a in world.orphaned_appointments()}
+    flagged = next(a for a in world.snapshot()["appointments"] if a["id"] == booked.id)
+    assert flagged["orphaned"] is True
+
+
+def test_a_client_narrowing_their_own_hours_strands_nothing(world):
+    """They committed to that hour. Only the provider being unable to be there
+    means it cannot happen."""
+    place(world, "alice", 60, 0, 9, 17)
+
+    world.set_weekly_availability("alice", [])
+
+    assert world.orphaned_appointments() == []
+
+
+def test_the_provider_can_then_ask_for_them_to_be_rehoused(world):
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    world.provider_away(at(0, 0), at(0, 23))
+
+    raised = world.rehouse_orphans()
+
+    assert len(raised) == 1
+    request = world.requests[raised[0]]
+    assert request.replaces_appointment_id == booked.id
+    assert request.origin is Origin.DISPLACED
+    assert world.store.get_appointment(booked.id).occupies_slot, (
+        "kept until there is somewhere to go"
+    )
+
+
+def test_rehousing_can_be_asked_for_one_at_a_time(world):
+    for day in (0, 1):
+        place(world, "alice", 60, day, 9, 17)
+    world.provider_away(at(0, 0), at(1, 23))
+    stranded = sorted(a.id for a in world.orphaned_appointments())
+    assert len(stranded) == 2
+
+    raised = world.rehouse_orphans([stranded[0]])
+
+    assert len(raised) == 1
+    assert world.requests[raised[0]].replaces_appointment_id == stranded[0]
+
+
+def test_asking_twice_does_not_raise_the_same_request_twice(world):
+    place(world, "alice", 60, 0, 9, 17)
+    world.provider_away(at(0, 0), at(0, 23))
+    world.rehouse_orphans()
+
+    assert world.rehouse_orphans() == [], "already being dealt with"
+
+
+def test_a_run_says_so_when_bookings_are_stranded_and_leaves_them(world):
+    """Quiet is the one thing it must not be — but silence is not the same as
+    action, and the default is to report only."""
+    place(world, "alice", 60, 0, 9, 17)
+    world.provider_away(at(0, 0), at(0, 23))
+    ask(world, "bob", 60, 1, 9, 17)
+
+    outcome = world.propose()
+
+    assert any("not available for" in w for w in outcome["warnings"])
+    assert any("left alone" in w for w in outcome["warnings"])
+    assert not [r for r in world.requests.values()
+                if r.origin is Origin.DISPLACED]
+
+
+def test_a_run_can_be_told_to_deal_with_them_and_says_that_it_did(world):
+    place(world, "alice", 60, 0, 9, 17)
+    world.provider_away(at(0, 0), at(0, 23))
+    world.policy.rehouse_orphans_on_run = True
+
+    outcome = world.propose()
+
+    assert any("queued to be rehoused" in w for w in outcome["warnings"])
+    assert [r for r in world.requests.values() if r.origin is Origin.DISPLACED]
+
+
+def test_being_away_can_still_do_it_all_in_one_breath(world):
+    """"I am ill tomorrow, cancel everything" is one decision, not two."""
     place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
 
@@ -663,4 +765,4 @@ def test_the_queue_can_tell_a_rehousing_from_a_request(world):
     shown = [r for r in world.snapshot()["requests"] if r["status"] == "pending"]
 
     assert shown and shown[0]["origin"] == "displaced"
-    assert shown[0]["note"] == "the provider is away"
+    assert shown[0]["note"] == "the provider is not available then"

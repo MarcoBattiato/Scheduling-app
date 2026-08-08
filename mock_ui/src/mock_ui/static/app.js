@@ -58,6 +58,7 @@ function render() {
   const horizon = $("horizon");
   if (horizon && document.activeElement !== horizon) horizon.value = sch.horizon_days;
 
+  renderStranded();
   renderProposal();
   renderSettlement();
   renderAlerts();
@@ -123,6 +124,7 @@ function scheduleLayers(state, me, hover) {
       label: isProv ? a.client_id : a.service,
       sub: `${a.start.slice(11, 16)}–${a.end.slice(11, 16)}`,
       cls: [movingIds.has(a.id) || leaving.has(a.id) ? "moving" : "",
+            a.orphaned ? "orphaned" : "",
             a.origin === "displaced" ? "moved" : "",
             new Date(a.end) < new Date() ? "past" : ""].filter(Boolean).join(" "),
       client: a.client_id, order: 1,
@@ -211,6 +213,58 @@ function renderProposal() {
   }
   drafts.forEach((p) => applyDeps(p.id));
 }
+
+// -- bookings the provider no longer has time for ---------------------
+
+function renderStranded() {
+  const stranded = (state.appointments || []).filter(
+    (a) => a.orphaned && a.status === "booked");
+  if (!isProvider() || !stranded.length) { $("stranded").innerHTML = ""; return; }
+
+  const onRun = (state.scheduler || {}).rehouse_orphans_on_run;
+  const dealtWith = stranded.filter((a) => a.pending).length;
+  const idle = stranded.filter((a) => !a.pending);
+
+  // Flagged, not acted on. Changing availability never reschedules anybody:
+  // one mistyped date would otherwise put half the week through a rescheduling
+  // nobody asked for.
+  $("stranded").innerHTML = `
+    <div class="alert stranded">
+      <div><b>${stranded.length} booking(s) are in time you are not available for</b>
+        <span class="hint">Nothing has been done about them. They are still in
+          the calendar and still the clients'.</span></div>
+      <div class="answers">${stranded.map((a) => `
+        <div class="answer ${a.pending ? "applied" : "declined"}">
+          <span class="tag move">${a.pending ? "moving" : "stuck"}</span>
+          <span>${esc(nameOf(a.client_id))} · ${esc(a.service)}</span>
+          <span class="time">${fmt(a.start)}</span>
+        </div>`).join("")}</div>
+      ${dealtWith ? `<p class="hint">${dealtWith} already being dealt with.</p>` : ""}
+      <div class="row" style="margin-top:10px">
+        <button ${idle.length ? "" : "disabled"}
+          onclick="fixStranded('rehouse')">Find the ${idle.length} a new slot</button>
+        <button class="ghost warn" ${idle.length ? "" : "disabled"}
+          onclick="fixStranded('cancel')">Cancel them</button>
+      </div>
+      <label class="row hint" style="margin-top:6px">
+        <input type="checkbox" ${onRun ? "checked" : ""}
+               onchange="setRehouseOnRun(this.checked)">
+        Or let the next scheduler run queue them itself, and warn me it did
+      </label>
+    </div>`;
+}
+
+window.fixStranded = async (what) => {
+  if (what === "cancel" && !confirm(
+      "Cancel every stranded booking outright?\n\n"
+      + "Nobody is offered another slot.")) return;
+  await api(`/api/orphans/${what}`, {});
+  refresh();
+};
+window.setRehouseOnRun = async (on) => {
+  await api("/api/settings", {rehouse_orphans_on_run: on});
+  refresh();
+};
 
 // -- the queue, and what a run is about -------------------------------
 
@@ -313,11 +367,16 @@ window.runOnPicked = async () => {
   const picked = [...runOver];
   runOver = null;                       // re-derive against the queue as it is now
   const outcome = await api("/api/solve", {request_ids: picked});
-  if (outcome && outcome.ran === false) {
-    alert(`Nothing to do: ${outcome.reason}.`);
-  }
+  reportRun(outcome);
   refresh();
 };
+
+function reportRun(outcome) {
+  if (!outcome) return;
+  const notes = outcome.warnings || [];
+  if (outcome.ran === false) notes.unshift(`Nothing to do: ${outcome.reason}.`);
+  if (notes.length) alert(notes.join("\n\n"));
+}
 
 // -- what the answers add up to, and what to do about them ------------
 
@@ -832,8 +891,9 @@ $("horizon").onchange = async (e) => {
   refresh();
 };
 $("solve").onclick = async () => {
-  await api("/api/solve", {alpha: Number($("try-alpha").value),
-                           max_displacements: Number($("try-moves").value)});
+  reportRun(await api("/api/solve", {
+    alpha: Number($("try-alpha").value),
+    max_displacements: Number($("try-moves").value)}));
   refresh();
 };
 $("save").onclick = async () => { const r = await api("/api/snapshot/save"); alert("Saved " + r.saved); };

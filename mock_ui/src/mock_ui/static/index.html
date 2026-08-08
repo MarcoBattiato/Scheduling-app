@@ -50,6 +50,7 @@ window.addEventListener("unhandledrejection", function (e) {
 
 <main>
   <section id="alerts"></section>
+  <section id="stranded"></section>
   <section id="proposal"></section>
   <section id="settlement"></section>
 
@@ -117,15 +118,18 @@ window.addEventListener("unhandledrejection", function (e) {
           <label>From <input type="datetime-local" name="start" required></label>
           <label>To <input type="datetime-local" name="end" required></label>
           <label>Then <select name="action">
+            <option value="flag">just flag what is in it</option>
             <option value="reschedule">rehouse everyone in it</option>
             <option value="cancel">cancel everyone in it</option>
           </select></label>
           <button type="submit">Mark me away</button>
         </form>
-        <p class="hint">Marks the time off <em>and</em> deals with what is
-          already booked in it. Rehousing keeps each client's hour until there
-          is somewhere to move it, and goes through the queue like any request
-          — so they are asked, not told.</p>
+        <p class="hint">Marks the time off. By default nothing else happens:
+          whatever was booked in it is <em>flagged</em> and stays put, so a
+          mistyped date cannot put half the week through a rescheduling nobody
+          wanted. Rehousing keeps each client's hour until there is somewhere
+          to move it, and goes through the queue like any request — so they are
+          asked, not told.</p>
       </section>
 
       <section class="panel" id="panel-clients">
