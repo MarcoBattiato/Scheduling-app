@@ -76,6 +76,7 @@ function render() {
   $("panel-request").style.display = isProvider() ? "none" : "";
   $("panel-bookings").style.display = isProvider() ? "none" : "";
   $("panel-queue").style.display = isProvider() ? "" : "none";
+  $("panel-away").style.display = isProvider() ? "" : "none";
   $("panel-catalogue").style.display = isProvider() ? "" : "none";
   $("panel-clients").style.display = isProvider() ? "" : "none";
   $("try").style.display = isProvider() ? "" : "none";
@@ -250,8 +251,10 @@ function renderQueue() {
         <input type="checkbox" data-request="${r.id}" ${runOver.has(r.id) ? "checked" : ""}
                onchange="pickRequest(this)">
         <span>${esc(nameOf(r.client_id))} · ${esc(r.service)}<br>
-          <span class="time">wants ${fmt(r.preferred)}</span></span>
+          <span class="time">wants ${fmt(r.preferred)}${
+            r.note ? ` · ${esc(r.note)}` : ""}</span></span>
         <span class="tag">${inWindow(r) ? r.status.replace(/_/g, " ") : "later"}</span>
+        <button class="link" onclick="placeByHand(event, ${r.id})">place</button>
       </label>`).join("")}</div>
     <div class="row" style="margin-top:8px">
       <button ${runOver.size ? "" : "disabled"} onclick="runOnPicked()">Run on ${
@@ -289,6 +292,18 @@ window.pickAll = () => {
     .map((r) => r.id));
   render();
 };
+window.placeByHand = async (event, requestId) => {
+  event.preventDefault();               // the row is a label; do not toggle it
+  const request = requestById(requestId);
+  const when = prompt(
+    "Book this one yourself, at what time? (YYYY-MM-DDTHH:MM)\n\n"
+    + "It is locked, so the next run plans around it rather than proposing it.",
+    request ? request.preferred.slice(0, 16) : "");
+  if (!when) return;
+  await api("/api/appointments/manual", {request_id: requestId, start: when});
+  refresh();
+};
+
 window.setScoping = async (on) => {
   runOver = null;                       // the default ticks change with the rule
   await api("/api/settings", {scope_to_horizon: on});
@@ -850,6 +865,21 @@ $("request-form").onsubmit = async (e) => {
     client_id: me, service_id: f.get("service"),
     preferred_start: f.get("preferred"),
   });
+  refresh();
+};
+$("away-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const cancelling = f.get("action") === "cancel";
+  if (cancelling && !confirm(
+      "Cancel every appointment in that stretch outright?\n\n"
+      + "Nobody is offered another slot. Choose \"rehouse\" instead if they "
+      + "should be found one.")) return;
+  const outcome = await api("/api/provider/away", {
+    start: f.get("start"), end: f.get("end"), action: f.get("action"),
+  });
+  if (outcome && outcome.affected === 0) alert("Nothing was booked in that time.");
+  e.target.reset();
   refresh();
 };
 $("client-form").onsubmit = async (e) => {

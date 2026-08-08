@@ -501,3 +501,166 @@ def test_a_client_can_see_whether_their_slot_is_settled(world):
     world.request_reschedule(booked.id, at(2, 11).isoformat(), release_slot=False)
     moving = next(a for a in world.snapshot()["appointments"] if a["id"] == booked.id)
     assert moving["pending"]["state"] == "moving"
+
+
+# -- the provider's own diary -----------------------------------------
+
+
+def test_being_away_frees_the_time_and_deals_with_what_was_in_it(world):
+    """Marking time off is only half of it. Nothing else notices that a
+    booking has come to sit in an hour the provider no longer has."""
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+
+    outcome = world.provider_away(at(0, 0), at(0, 23), "reschedule")
+
+    assert outcome["affected"] == 1 and len(outcome["rehoused"]) == 1
+    assert not world.availability_segments(
+        PROVIDER, booked.range.start.date(), booked.range.start.date() + timedelta(days=1)
+    ), "the day is off"
+    assert world.store.get_appointment(booked.id).occupies_slot, (
+        "their hour is kept until there is somewhere to move it to"
+    )
+    (request,) = [r for r in world.requests.values() if r.id in outcome["rehoused"]]
+    assert request.replaces_appointment_id == booked.id
+    assert request.origin is Origin.DISPLACED
+
+
+def test_a_rehousing_the_clinic_forced_is_never_recorded_as_a_preference(world):
+    """The thing most worth not breaking: the client will say yes, but they did
+    not choose it, and `origin` is what stops that becoming apparent taste."""
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    world.provider_away(at(0, 0), at(0, 23), "reschedule")
+
+    world.propose()
+    plan = next(p for p in world.plans.values() if p.status == "draft")
+    world.provider_approve(plan.id)
+    for approval in world.pending_approvals(plan.id):
+        world.respond_to_approval(approval.id, "accept")
+    world.settle_plan(plan.id, "agreed")
+
+    live = [a for a in world.store.appointment_history("alice", at(0, 0), at(9, 0))
+            if a.occupies_slot]
+    assert len(live) == 1, "one booking throughout"
+    assert live[0].origin is Origin.DISPLACED
+    old = world.store.get_appointment(booked.id)
+    assert old.status is AppointmentStatus.CANCELLED_BY_PROVIDER, (
+        "they did not give their hour up; the clinic took it"
+    )
+
+
+def test_being_away_can_cancel_outright_instead(world):
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+
+    outcome = world.provider_away(at(0, 0), at(0, 23), "cancel")
+
+    assert outcome["cancelled"] == 1 and outcome["rehoused"] == []
+    assert world.store.get_appointment(booked.id).status \
+        is AppointmentStatus.CANCELLED_BY_PROVIDER
+    assert not [r for r in world.requests.values() if r.status == "pending"]
+
+
+def test_being_away_over_several_days_takes_all_of_them(world):
+    for day in (0, 1, 2):
+        place(world, "alice", 60, day, 9, 17)
+
+    outcome = world.provider_away(at(0, 0), at(2, 23), "cancel")
+
+    assert outcome["cancelled"] == 3
+
+
+def test_being_away_does_not_ask_twice_about_the_same_booking(world):
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    world.request_reschedule(booked.id, at(3, 10).isoformat(), release_slot=False)
+
+    outcome = world.provider_away(at(0, 0), at(0, 23), "reschedule")
+
+    assert outcome["rehoused"] == [], "alice is already moving it herself"
+
+
+def test_an_unknown_away_action_is_refused_rather_than_guessed(world):
+    with pytest.raises(ValueError):
+        world.provider_away(at(0, 0), at(0, 23), "delete")
+    with pytest.raises(ValueError):
+        world.provider_away(at(1, 0), at(0, 23), "cancel")
+
+
+# -- placing by hand ---------------------------------------------------
+
+
+def test_the_provider_can_book_a_waiting_request_themselves(world):
+    request = ask(world, "alice", 60, 0, 9, 17)
+
+    booked = world.place_manually(request.id, at(0, 11))
+
+    assert booked.range.start == at(0, 11)
+    assert booked.locked, "a decision already made is not a candidate to undo"
+    assert world.requests[request.id].status == "placed"
+
+
+def test_a_hand_placed_booking_is_what_the_optimiser_plans_around(world):
+    """The stated purpose: decide something first, then optimise the rest."""
+    first = ask(world, "alice", 60, 0, 9, 17)
+    world.place_manually(first.id, at(0, 9))
+    ask(world, "bob", 60, 0, 9, 17)
+
+    world.propose()
+
+    (placed,) = next(iter(world.plans.values())).placements
+    assert placed["client_id"] == "bob"
+    assert placed["start"] != at(0, 9), "alice's hour is taken"
+
+
+def test_placing_by_hand_refuses_a_clash(world):
+    place(world, "alice", 60, 0, 9, 17)
+    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    request = ask(world, "bob", 60, 0, 9, 17)
+
+    with pytest.raises(ValueError):
+        world.place_manually(request.id, booked.range.start)
+    assert world.requests[request.id].status == "pending", "nothing half-done"
+
+
+def test_placing_by_hand_refuses_a_slot_already_promised(world):
+    """A hold is a promise to somebody. Booking over it would break it
+    silently, which is the one thing holds exist to prevent."""
+    ask(world, "alice", 60, 0, 9, 17)
+    world.propose()
+    plan = next(p for p in world.plans.values() if p.status == "draft")
+    world.provider_approve(plan.id)
+    (promised,) = world.pending_approvals(plan.id)
+    later = ask(world, "bob", 60, 0, 9, 17)
+
+    with pytest.raises(ValueError):
+        world.place_manually(later.id, promised.now_start)
+
+
+def test_placing_by_hand_can_leave_it_movable(world):
+    request = ask(world, "alice", 60, 0, 9, 17)
+
+    booked = world.place_manually(request.id, at(0, 11), lock=False)
+
+    assert not booked.locked
+
+
+def test_a_request_already_dealt_with_cannot_be_placed_again(world):
+    request = ask(world, "alice", 60, 0, 9, 17)
+    world.place_manually(request.id, at(0, 11))
+
+    with pytest.raises(ValueError):
+        world.place_manually(request.id, at(1, 11))
+
+
+def test_the_queue_can_tell_a_rehousing_from_a_request(world):
+    """A request the clinic raised on somebody's behalf must not look like one
+    they asked for — the provider is reading that list to decide."""
+    place(world, "alice", 60, 0, 9, 17)
+    world.provider_away(at(0, 0), at(0, 23), "reschedule")
+
+    shown = [r for r in world.snapshot()["requests"] if r["status"] == "pending"]
+
+    assert shown and shown[0]["origin"] == "displaced"
+    assert shown[0]["note"] == "the provider is away"

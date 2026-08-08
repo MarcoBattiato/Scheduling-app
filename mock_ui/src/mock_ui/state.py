@@ -61,10 +61,15 @@ class Request:
     # placed / withdrawn — done with
     status: str = "pending"
     note: str = ""
-    # Set when the client asked to move a booking but would not give up the
-    # slot until they have another. The old appointment is cancelled at the
-    # moment the replacement is booked, and not before.
+    # Set when a booking is being moved but its slot is held until there is
+    # somewhere to go. The old appointment is cancelled at the moment the
+    # replacement is booked, and not before.
     replaces_appointment_id: Optional[int] = None
+    # Who wanted this. A client asking is CLIENT; the clinic rehousing somebody
+    # because the provider is away is DISPLACED, even though the client will be
+    # asked and will say yes. Recording that as a preference is precisely the
+    # failure `origin` exists to prevent — see calendar_store's CLAUDE.md.
+    origin: Origin = Origin.CLIENT
 
 
 @dataclass
@@ -302,6 +307,125 @@ class World:
             f"{marked.range.start:%a %d %b %H:%M}"
         )
         return marked
+
+    # -- the provider's own diary ------------------------------------
+
+    AWAY_ACTIONS = ("reschedule", "cancel")
+
+    def provider_away(
+        self, start: datetime, end: datetime, action: str = "reschedule"
+    ) -> dict:
+        """The provider cannot work a stretch of time. Deal with what is in it.
+
+        Two separate things happen, and both are needed: the time is marked
+        unavailable so nothing new lands there, and the appointments already in
+        it are dealt with — nothing else notices that a booking has come to sit
+        in an hour the provider no longer has.
+
+        - *reschedule* — each client gets a request raised on their behalf,
+          wishing for the time they had. **Their booking is kept** until there
+          is somewhere to move it to, exactly as when a client asks to move
+          themselves: being told "you have been cancelled, we will be in touch"
+          is a worse outcome than an hour that is still notionally yours.
+        - *cancel* — cancelled outright, by the provider, and that is the end
+          of it.
+
+        Either way the replacement is `Origin.DISPLACED`. The client will be
+        asked and will very likely say yes, but they did not choose it.
+        """
+        if action not in self.AWAY_ACTIONS:
+            raise ValueError(f"action must be one of {self.AWAY_ACTIONS}, not {action!r}")
+        if end <= start:
+            raise ValueError("that is not a stretch of time")
+
+        for day in range((end.date() - start.date()).days + 1):
+            on = start.date() + timedelta(days=day)
+            self.set_exception(
+                PROVIDER, on,
+                start.time() if on == start.date() else time.min,
+                end.time() if on == end.date() else time.max,
+                available=False,
+            )
+
+        affected = [
+            a for a in self._live_appointments(start.date(),
+                                               end.date() + timedelta(days=1))
+            if a.range.start < end and start < a.range.end
+        ]
+        rehoused = []
+        for appointment in affected:
+            if action == "cancel":
+                self.cancel_appointment(appointment.id, by=Party.PROVIDER)
+                continue
+            # Somebody may already be dealing with this one — do not raise a
+            # second question about the same booking.
+            if appointment.id in self._asked_to_move():
+                continue
+            request = self.submit_request(
+                appointment.client_id, appointment.service_type_id,
+                (appointment.preferred_start or appointment.range.start).isoformat(),
+            )
+            request.replaces_appointment_id = appointment.id
+            request.origin = Origin.DISPLACED
+            request.note = "the provider is away"
+            rehoused.append(request.id)
+
+        self._note(
+            f"provider away {start:%a %d %b %H:%M} – {end:%a %d %b %H:%M}: "
+            + (f"{len(affected)} appointment(s) cancelled" if action == "cancel"
+               else f"{len(rehoused)} to rehouse")
+        )
+        return {"affected": len(affected), "rehoused": rehoused,
+                "cancelled": len(affected) if action == "cancel" else 0}
+
+    def place_manually(
+        self, request_id: int, start: datetime, lock: bool = True
+    ) -> Appointment:
+        """The provider booking a waiting request themselves.
+
+        The point is to decide something *before* optimising, so the run plans
+        around it rather than proposing it. Locked by default for that reason:
+        a decision the provider has already made should not come back as a
+        candidate for displacement.
+
+        Refuses a clash with anything live or already promised — that is a bug,
+        not a judgement call. Outside the provider's own hours is allowed and
+        merely noted: they are the authority on their own time.
+        """
+        request = self.requests[request_id]
+        if request.status not in ("pending", "on_hold"):
+            raise ValueError(f"request {request_id} is {request.status}, not waiting")
+
+        service = self.catalogue.get_service(request.service_id)
+        end = start + timedelta(minutes=service.duration_minutes)
+        clash = [
+            a for a in self._live_appointments(start.date(),
+                                               end.date() + timedelta(days=1))
+            if a.range.start < end and start < a.range.end
+        ]
+        if clash:
+            raise ValueError(
+                f"that overlaps {clash[0].client_id}'s "
+                f"{clash[0].range.start:%a %d %b %H:%M}")
+        held = [h for h in self.pending_holds()
+                if h.start < end and start < h.end]
+        if held:
+            raise ValueError("that time is already promised to somebody")
+
+        booked = self.store.book_appointment(
+            request.client_id, request.service_id, start, end,
+            locked=lock, preferred_start=request.preferred_start,
+        )
+        request.status = "placed"
+        free = self.availability_segments(PROVIDER, start.date(),
+                                          end.date() + timedelta(days=1))
+        outside = not any(s.start <= start and end <= s.end for s in free)
+        self._note(
+            f"provider booked {request.client_id} at {start:%a %d %b %H:%M}"
+            + (" (locked)" if lock else "")
+            + (" — outside the usual hours" if outside else "")
+        )
+        return booked
 
     def request_reschedule(
         self, appointment_id: int, preferred_start: str, release_slot: bool
@@ -938,6 +1062,8 @@ class World:
         self.store.book_appointment(
             approval.client_id, request.service_id,
             approval.now_start, approval.now_end,
+            origin=request.origin,
+            preferred_start=request.preferred_start,
         )
         request.status = "placed"
         approval.applied = True
@@ -945,10 +1071,17 @@ class World:
                    f"{approval.now_start:%a %d %b %H:%M}")
 
         # The old slot goes only now — the point of not releasing it was that
-        # they would never be left with neither.
+        # they would never be left with neither. Who cancelled it follows who
+        # wanted the move: a client rehoused because the provider is away did
+        # not give their hour up.
         if request.replaces_appointment_id is not None:
-            self.cancel_appointment(request.replaces_appointment_id,
-                                    by=Party.CLIENT)
+            old = self.store.get_appointment(request.replaces_appointment_id)
+            if old.occupies_slot:
+                self.cancel_appointment(
+                    request.replaces_appointment_id,
+                    by=Party.PROVIDER if request.origin is Origin.DISPLACED
+                    else Party.CLIENT,
+                )
 
     def _unmet_dependency(self, approval: Approval) -> Optional[Approval]:
         """A move this one needs that has not happened yet."""
@@ -1130,7 +1263,11 @@ class World:
                  "service": self._service_name(r.service_id),
                  "duration": r.duration_minutes, "status": r.status,
                  "preferred": r.preferred_start.isoformat(),
-                 "replaces": r.replaces_appointment_id}
+                 "replaces": r.replaces_appointment_id,
+                 # Why this exists. A request the clinic raised on somebody's
+                 # behalf should not be indistinguishable from one they asked
+                 # for — in the queue least of all.
+                 "origin": r.origin.value, "note": r.note}
                 for r in self.requests.values()
             ],
             "approvals": [

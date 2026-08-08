@@ -85,6 +85,23 @@ class ApprovalIn(BaseModel):
     answer: str
 
 
+class AwayIn(BaseModel):
+    """The provider cannot work a stretch of time."""
+    start: str
+    end: str
+    # "reschedule" keeps each client's booking until there is somewhere to move
+    # it; "cancel" ends them outright.
+    action: str = "reschedule"
+
+
+class ManualPlacementIn(BaseModel):
+    request_id: int
+    start: str
+    # Locked by default: the point of placing by hand is to decide something
+    # before optimising, and a decision should not come back as a candidate.
+    lock: bool = True
+
+
 class SettleIn(BaseModel):
     # "agreed" | "agreed_only" | "reoptimise" — see World.settle_plan
     how: str
@@ -301,6 +318,33 @@ def solve(payload: SolveIn = SolveIn()):
         )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
+
+
+@app.post("/api/provider/away")
+def provider_away(payload: AwayIn):
+    """See World.provider_away — marks the time off *and* deals with what is
+    already booked in it, which nothing else notices."""
+    try:
+        return world.provider_away(
+            datetime.fromisoformat(payload.start),
+            datetime.fromisoformat(payload.end),
+            payload.action,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@app.post("/api/appointments/manual")
+def place_manually(payload: ManualPlacementIn):
+    """The provider booking a waiting request themselves, before optimising."""
+    if payload.request_id not in world.requests:
+        raise HTTPException(404, "no such request")
+    try:
+        booked = world.place_manually(
+            payload.request_id, datetime.fromisoformat(payload.start), payload.lock)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"appointment_id": booked.id}
 
 
 @app.post("/api/plans/{plan_id}/approve")

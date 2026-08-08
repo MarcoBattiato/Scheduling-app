@@ -238,7 +238,16 @@ class AvailabilityStore:
         locked: bool = False,
         notes: Optional[str] = None,
         preferred_start: Optional[datetime] = None,
+        origin: Origin = Origin.CLIENT,
     ) -> Appointment:
+        """`origin` defaults to CLIENT because most bookings are asked for.
+
+        It is not always so. A booking that only exists because the clinic had
+        to rehouse somebody is DISPLACED from the moment it is made — the
+        client will have agreed to the slot, but they did not choose it, and
+        recording that as a preference is the failure this field exists to
+        prevent.
+        """
         appointment = Appointment(
             id=next(self._ids),
             client_id=client_id,
@@ -247,6 +256,7 @@ class AvailabilityStore:
             locked=locked,
             notes=notes,
             preferred_start=preferred_start,
+            origin=origin,
         )
         self._appointments.append(appointment)
         return appointment

@@ -111,6 +111,23 @@ window.addEventListener("unhandledrejection", function (e) {
         <div id="queue"></div>
       </section>
 
+      <section class="panel" id="panel-away">
+        <h2>I cannot work</h2>
+        <form id="away-form">
+          <label>From <input type="datetime-local" name="start" required></label>
+          <label>To <input type="datetime-local" name="end" required></label>
+          <label>Then <select name="action">
+            <option value="reschedule">rehouse everyone in it</option>
+            <option value="cancel">cancel everyone in it</option>
+          </select></label>
+          <button type="submit">Mark me away</button>
+        </form>
+        <p class="hint">Marks the time off <em>and</em> deals with what is
+          already booked in it. Rehousing keeps each client's hour until there
+          is somewhere to move it, and goes through the queue like any request
+          — so they are asked, not told.</p>
+      </section>
+
       <section class="panel" id="panel-clients">
         <h2>Clients</h2>
         <div id="clients"></div>

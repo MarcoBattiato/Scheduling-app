@@ -250,6 +250,38 @@ parked, because being parked means *tried and not placed* and this one was
 never tried. `metrics.out_of_scope` records how many, so a plan that looks
 light because half the queue was not in it does not read as a quiet week.
 
+### 5.1.4 The provider's own diary
+
+Two things the provider can do that no amount of optimising covers.
+
+**Being away** (`World.provider_away`). Marking time off is only half of it —
+nothing else notices that a booking has come to sit in an hour the provider no
+longer has. So it marks the time unavailable *and* deals with what is in it:
+
+- *reschedule* — a request is raised on each client's behalf, wishing for the
+  time they had, and **their booking is kept** until there is somewhere to move
+  it to, exactly as when a client asks to move themselves. "You have been
+  cancelled, we will be in touch" is a worse outcome than an hour that is still
+  notionally theirs. It then goes through the queue like any request, so they
+  are asked rather than told.
+- *cancel* — ended outright, `CANCELLED_BY_PROVIDER`, and that is the end of it.
+
+The replacement is `Origin.DISPLACED` **from the moment it is booked**, and the
+old slot is cancelled by the *provider*, not the client. They will say yes, but
+they did not choose it, and recording that as a preference is exactly the
+failure `origin` exists to prevent. A booking somebody is already dealing with
+is left alone rather than asked about twice.
+
+**Placing by hand** (`World.place_manually`). The provider booking a waiting
+request themselves, before optimising, so the run plans around it rather than
+proposing it. Locked by default for that reason: a decision already made should
+not come back as a candidate for displacement.
+
+It refuses a clash with anything live or already promised — that is a bug, not
+a judgement call, and booking over a hold would silently break a promise.
+Outside the provider's own hours is allowed and merely noted: they are the
+authority on their own time.
+
 ### 5.2 Planning around what is already promised
 
 A slot out with a client is neither free nor booked, and the scheduler must

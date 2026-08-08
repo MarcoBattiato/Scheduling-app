@@ -79,6 +79,14 @@ against, so **`origin` has to be right**:
 - a move the scheduler imposed and the client merely accepted →
   `Origin.DISPLACED`
 
+`provider_away` is the newest way to get this wrong. A client rehoused because
+the provider fell ill will accept the slot they are offered, and the booking is
+`Origin.DISPLACED` from the moment it is made (`Request.origin` carries it
+through the queue) — the old slot is cancelled by the *provider* too, since
+they did not give their hour up. `place_manually` is the opposite case and
+stays `CLIENT`: the request was theirs, and the provider choosing the hour is
+no different from the solver choosing it.
+
 The second is easy to get wrong. An accepted displacement is still a
 displacement — the client agreed, but they did not *choose* the slot, and
 recording it as a preference is precisely the failure the field exists to

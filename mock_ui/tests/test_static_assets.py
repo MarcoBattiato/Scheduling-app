@@ -768,3 +768,32 @@ def test_a_booking_its_own_client_is_moving_reads_as_provisional():
         "a booking on its way out is provisional even though nobody was asked"
     )
     assert "you asked to move" in panels["bookings"]
+
+
+@node
+def test_the_provider_is_offered_both_ways_of_being_away():
+    """Rehousing and cancelling are very different things to do to somebody,
+    so the page must not quietly pick one."""
+    page = (STATIC / "index.html").read_text()
+    app = (STATIC / "app.js").read_text()
+
+    assert 'value="reschedule"' in page and 'value="cancel"' in page
+    assert "/api/provider/away" in app
+    assert "Nobody is offered another slot" in app, (
+        "cancelling everybody outright has to be confirmed, not merely clicked"
+    )
+
+
+@node
+def test_the_queue_offers_placing_a_request_by_hand():
+    from datetime import datetime, timedelta
+
+    world = _world_with_answers()
+    # The others are already out with their clients; the queue shows what is
+    # still waiting, which is what can be placed by hand.
+    world.submit_request(
+        "alice", "s60", (datetime.now() + timedelta(days=3)).isoformat())
+    queue = _render_as(world.snapshot(), "provider")["queue"]
+
+    assert "placeByHand" in queue
+    assert "/api/appointments/manual" in (STATIC / "app.js").read_text()

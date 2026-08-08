@@ -78,6 +78,7 @@ def save(world: World, path: Path) -> None:
             {"id": r.id, "client_id": r.client_id, "service_id": r.service_id,
              "duration_minutes": r.duration_minutes, "status": r.status,
              "replaces_appointment_id": r.replaces_appointment_id,
+             "origin": r.origin.value, "note": r.note,
              "preferred_start": _dt(r.preferred_start)}
             for r in world.requests.values()
         ],
@@ -180,6 +181,8 @@ def load(path: Path) -> World:
             service_id=entry["service_id"],
             duration_minutes=entry["duration_minutes"], status=entry["status"],
             replaces_appointment_id=entry.get("replaces_appointment_id"),
+            origin=Origin(entry.get("origin", "client")),
+            note=entry.get("note", ""),
             preferred_start=_back(entry.get("preferred_start")),
         )
     for entry in payload.get("plans", []):
