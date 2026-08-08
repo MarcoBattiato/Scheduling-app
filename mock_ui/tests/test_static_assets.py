@@ -700,3 +700,71 @@ def test_the_provider_can_choose_what_a_run_covers():
         "the cost of including it has to be stated, not implied"
     )
     assert "setScoping" in queue, "the standing rule is reachable from here"
+
+
+@node
+def test_agreeing_does_not_make_the_change_vanish_from_the_calendar():
+    """The bug: `scheduleLayers` kept only `pending` approvals, so the moment a
+    client said yes their proposed slot disappeared. Nothing then distinguished
+    "it went through" from "it was dropped" until the provider settled.
+    """
+    world = _world_with_answers()
+    alice = next(a for a in world.approvals.values()
+                 if a.client_id == "alice" and a.status == "accepted")
+    assert not alice.applied, "the scenario must leave it agreed but unwritten"
+
+    harness = r"""
+      const vm = require("vm"), fs = require("fs");
+      const files = process.argv.slice(1, -1);
+      const state = JSON.parse(fs.readFileSync(process.argv[process.argv.length - 1], "utf8"));
+      const noop = () => {}, els = {};
+      const el = () => ({innerHTML: "", style: {}, textContent: "", value: "2",
+                         options: {length: 0}, addEventListener: noop,
+                         querySelectorAll: () => [], querySelector: () => null});
+      const sandbox = {console, setInterval: noop, setTimeout: noop,
+        CSS: {escape: (s) => s},
+        document: {addEventListener: noop,
+                   getElementById: (id) => (els[id] = els[id] || el()),
+                   querySelectorAll: () => [], querySelector: () => null},
+        location: {search: "?as=alice"}, history: {replaceState: noop},
+        URLSearchParams: class { get() { return "alice"; } },
+        fetch: async () => ({ok: true, json: async () => state}),
+        alert: noop, confirm: () => false};
+      const ctx = vm.createContext(sandbox);
+      sandbox.window = sandbox;
+      for (const f of files) {
+        new vm.Script(fs.readFileSync(f, "utf8"), {filename: f}).runInContext(ctx);
+      }
+      console.log(JSON.stringify(sandbox.window.scheduleLayers(state, "alice", null)));
+    """
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(world.snapshot(), fh, default=str)
+        path = fh.name
+
+    result = subprocess.run(
+        ["node", "-e", harness, *[str(STATIC / s) for s in SCRIPTS], path],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    layers = json.loads(result.stdout.strip().splitlines()[-1])
+
+    shown = [b for b in layers["blocks"] if b["id"] == f"p{alice.id}"]
+    assert shown, "an agreed slot must stay on the client's calendar"
+    (block,) = shown
+    assert "agreed" in block["cls"], "and be distinguishable from an open question"
+    assert "clinic" in block["data"]["Status"], (
+        "it should say whose wait it now is"
+    )
+
+
+@node
+def test_a_booking_its_own_client_is_moving_reads_as_provisional():
+    world = _world_with_answers()
+    panels = _render_as(world.snapshot(), "carol")
+    layers_source = (STATIC / "app.js").read_text()
+
+    assert "leaving.has(a.id)" in layers_source, (
+        "a booking on its way out is provisional even though nobody was asked"
+    )
+    assert "you asked to move" in panels["bookings"]

@@ -90,16 +90,25 @@ function scheduleLayers(state, me, hover) {
   const isProv = me === "provider";
   const mine = (a) => isProv || a.client_id === me;
 
-  // Anyone the clinic has asked to move: their current slot is provisional, so
-  // it reads as at-risk rather than settled, with the slot it would go to
-  // drawn alongside and an arrow between the two.
+  // Still in the air: either the client has not answered, or they have and the
+  // provider has not yet written it down. Both are unsettled, and a client who
+  // has said yes needs to see that as much as one who has not — otherwise
+  // agreeing makes the whole thing vanish from their calendar.
+  const unsettled = (a) => mine(a) && !a.applied
+    && (a.status === "pending" || a.status === "accepted");
+
+  // Anyone whose current slot is provisional: it reads as at-risk rather than
+  // settled, with the slot it would go to drawn alongside and an arrow between.
   const asked = (state.approvals || []).filter(
-    (a) => a.status === "pending" && a.kind === "reschedule" && mine(a));
+    (a) => unsettled(a) && a.kind === "reschedule");
   const movingIds = new Set(asked.map((a) => a.appointment_id));
-  const pending = (state.approvals || []).filter(
-    (a) => a.status === "pending" && mine(a));
+  const pending = (state.approvals || []).filter(unsettled);
 
   const appts = state.appointments || [];
+  // A booking whose own client has asked to move it is provisional too, even
+  // though nobody has been asked anything.
+  const leaving = new Set(appts.filter(
+    (a) => a.pending && a.pending.state === "moving").map((a) => a.id));
   const blocks = [
     // Cancelled first: same stacking level, so anything live paints over it.
     ...appts.filter((a) => a.status.startsWith("cancelled") && mine(a)).map((a) => ({
@@ -112,22 +121,35 @@ function scheduleLayers(state, me, hover) {
       id: `a${a.id}`, start: a.start, end: a.end,
       label: isProv ? a.client_id : a.service,
       sub: `${a.start.slice(11, 16)}–${a.end.slice(11, 16)}`,
-      cls: [movingIds.has(a.id) ? "moving" : "",
+      cls: [movingIds.has(a.id) || leaving.has(a.id) ? "moving" : "",
             a.origin === "displaced" ? "moved" : "",
             new Date(a.end) < new Date() ? "past" : ""].filter(Boolean).join(" "),
       client: a.client_id, order: 1,
       data: hover ? hover(a) : null,
     })),
-    ...pending.map((a) => ({
-      id: `p${a.id}`, start: a.now, end: a.now_end,
-      label: a.client_id,
-      sub: a.kind === "reschedule" ? "would move here" : "offered",
-      cls: "proposed-slot", client: a.client_id, order: 0,   // new work on the left
-      data: {Client: a.client_id,
-             What: a.kind === "reschedule" ? "proposed new slot" : "offered booking",
-             From: a.was ? a.was.slice(5, 16).replace("T", " ") : "—",
-             Status: "waiting on the client"},
-    })),
+    ...pending.map((a) => {
+      const agreed = a.status === "accepted";
+      const move = a.kind === "reschedule";
+      return {
+        id: `p${a.id}`, start: a.now, end: a.now_end,
+        label: a.client_id,
+        sub: agreed ? (move ? "moving here" : "agreed")
+                    : (move ? "would move here" : "offered"),
+        // Two different waits, and they are not the client's to confuse: one
+        // is a question they owe an answer to, the other is a change they have
+        // already agreed to that the clinic has not confirmed.
+        cls: `proposed-slot${agreed ? " agreed" : ""}`,
+        client: a.client_id, order: 0,             // new work on the left
+        data: {
+          Client: a.client_id,
+          What: move ? (agreed ? "agreed new slot" : "proposed new slot")
+                     : (agreed ? "agreed booking" : "offered booking"),
+          From: a.was ? a.was.slice(5, 16).replace("T", " ") : "—",
+          Status: agreed ? "agreed — waiting for the clinic to confirm"
+                         : "waiting on the client",
+        },
+      };
+    }),
   ];
 
   return {
@@ -467,12 +489,26 @@ function drawDraft(p) {
 // -- approvals --------------------------------------------------------
 
 function renderAlerts() {
+  // Answered but not written down still belongs here. A client who agreed and
+  // then saw the whole thing disappear has no way to tell "it went through"
+  // from "it was dropped" — so the wait is shown, and whose it is.
   const mine = state.approvals.filter(
-    (a) => a.status === "pending" && (isProvider() || a.client_id === me));
+    (a) => !a.applied && (a.status === "pending" || a.status === "accepted")
+           && (isProvider() || a.client_id === me));
   if (!mine.length) { $("alerts").innerHTML = ""; return; }
 
   $("alerts").innerHTML = mine.map((a) => {
     const isMove = a.kind === "reschedule";
+    if (a.status === "accepted") {
+      const what = isMove
+        ? `moving from <b>${fmt(a.was)}</b> to <b>${fmt(a.now)}</b>`
+        : `a booking at <b>${fmt(a.now)}</b>`;
+      return `<div class="alert settled-wait"><div>${isProvider()
+        ? `<b>${esc(a.client_id)}</b> agreed to ${what}. Not in the calendar
+           until you apply it.`
+        : `You agreed to ${what}. The slot is held for you; it is not confirmed
+           until the clinic applies it.`}</div></div>`;
+    }
     const body = isProvider()
       ? `Waiting on <b>${esc(a.client_id)}</b> to confirm
          ${isMove ? `a move ${fmt(a.was)} → ${fmt(a.now)}` : `a booking at ${fmt(a.now)}`}.`

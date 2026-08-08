@@ -159,6 +159,12 @@ the engine's dependencies and is a loop rather than a sorted pass: writing one
 move down can unblock another, chains included, so it repeats until nothing
 more moves.
 
+An agreed change stays **on the calendar** until it is written down, drawn in
+the proposed colour with a solid outline rather than the dashed one an
+unanswered question gets, and the alert stays up saying whose wait it now is.
+Dropping it from view the moment a client says yes would leave them unable to
+tell "it went through" from "it was dropped".
+
 A slot counts as spoken for from the moment it is offered until it is written
 down — `pending_holds` includes accepted-but-unapplied asks. Handing an agreed
 hour to somebody else while the provider is still deciding would be worse than

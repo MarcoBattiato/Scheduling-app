@@ -56,6 +56,9 @@ button.ghost { background: transparent; color: var(--fg); border-color: var(--li
 button.danger { border-color: var(--warn); color: var(--warn); }
 /* The provider reading answers: agreed, waiting and refused each need to be
    distinguishable at a glance, since the three buttons act on them by group. */
+/* Nobody owes an answer here — it is a statement of where things stand. */
+.alert.settled-wait { border-color: var(--ok); border-left-width: 4px; }
+
 .answers { display: grid; gap: 4px; margin: 8px 0; }
 .answer {
   display: grid; grid-template-columns: 42px 1fr auto auto; gap: 8px;
@@ -182,6 +185,13 @@ td.cell.on { background: var(--accent); border-color: var(--accent); }
   text-decoration: line-through; }
 .cal-block.moving { background: var(--moving); }
 .cal-block.proposed-slot { background: var(--proposed); border: 1px dashed #fff6; }
+/* Agreed but not written down. Solid outline rather than dashed: the question
+   has been answered, so it is no longer a dotted maybe — but it is still not
+   the calendar, so it keeps the proposed colour rather than turning green. */
+.cal-block.proposed-slot.agreed {
+  border: 2px solid var(--ok); border-style: solid;
+}
+.legend .k-agreed { background: var(--proposed); border: 2px solid var(--ok); }
 .cal-block.past { background: var(--line); color: var(--muted); }
 .cal-block.existing { background: var(--line); color: var(--muted); }
 .cal-block.proposed { outline: 2px solid var(--ok); }
