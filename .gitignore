@@ -1,4 +1,6 @@
-.claude/settings.local.json
+# Personal editor / agent tooling — not part of the product
+.claude/
+.vscode/
 
 .venv/
 __pycache__/
@@ -14,6 +16,3 @@ __pycache__/
 # mock_ui session snapshots — regenerate by using the app
 mock_ui_session.json
 **/mock_ui_session.json
-
-# Regenerable, and it embeds full prompt text
-.claude/workflow_review/turns.csv
