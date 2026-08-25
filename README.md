@@ -121,7 +121,7 @@ about the client.
 
 ## Architecture
 
-Three independent Python packages, each with its own `pyproject.toml`, tests, and
+Four Python packages, each with its own `pyproject.toml`, tests, and
 specification documents.
 
 ```
@@ -137,6 +137,9 @@ specification documents.
 Arrows are dependencies. The two lower packages know nothing of each other or of
 `mock_ui`, so either can be rewritten — real persistence for the store, a
 different objective or solver for the engine — without opening the other.
+
+A fourth package, `scheduling_contracts`, declares the interface layer the others
+are being migrated onto. It is deliberately not wired in yet — see below.
 
 ### `calendar_store` — what is true about the calendar
 
@@ -172,6 +175,24 @@ what the solver did to it — its gap report is built from the solver's own
 grid-snapped blocks, so the chart can never disagree with the numbers.
 
 Design and open questions: [`scheduling_engine/SPEC.md`](scheduling_engine/SPEC.md).
+
+### `scheduling_contracts` — the interface layer
+
+Declarations only: the 40 typed commands that can be triggered from outside, the
+permission matrix that says who may issue each one, and the ports the domain
+asks of storage, of a solver, and of an audit log. It has **no dependencies at
+all**, which is enforced by a test — it is the fixed point the other packages
+conform to, so anything imported here would be inherited by all of them.
+
+Two properties are machine-checked rather than asserted: the permission table is
+*total* (every role has an explicit entry for every command, so there is no
+fallback for an accidental grant to hide in), and delegation to an AI assistant
+can only ever *narrow* what its human already holds.
+
+**Nothing imports it yet.** It exists so that the store and the solver can be
+conformed to it one at a time; until adapters are written it changes no
+behaviour. See [docs/CONTROL_SURFACE.md](docs/CONTROL_SURFACE.md) for the map and
+[docs/INTERFACE_PLAN.md](docs/INTERFACE_PLAN.md) for the sequence.
 
 ### `mock_ui` — a way to drive it by hand
 
@@ -332,6 +353,7 @@ not currently flag that it did so.
 ## Repository layout
 
 ```
+scheduling_contracts/ commands, permissions, ports  (no dependencies, not yet wired in)
 calendar_store/      availability + appointments  (INTERFACE.md is the public contract)
 scheduling_engine/   CP-SAT placement solver      (SPEC.md is the design)
   examples/          worked scenario files for the playground
