@@ -34,7 +34,6 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from calendar_store import TimeSegment
 from ortools.sat.python import cp_model
 
 from .fragmentation import waste_minutes, waste_table
@@ -46,6 +45,7 @@ from .models import (
     Placement,
     PlacementResult,
     TimeRange,
+    TimeSegment,
     _Candidate,
     _Move,
 )

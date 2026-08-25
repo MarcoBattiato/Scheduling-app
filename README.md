@@ -125,9 +125,18 @@ Three independent Python packages, each with its own `pyproject.toml`, tests, an
 specification documents.
 
 ```
-calendar_store  ──▶  scheduling_engine  ──▶  mock_ui
-   (state)              (decisions)          (interface)
+                     mock_ui  (interface)
+                    ╱        ╲
+                   ▼          ▼
+      calendar_store          scheduling_engine
+          (state)                 (decisions)
+
+        └─── no dependency between these two ───┘
 ```
+
+Arrows are dependencies. The two lower packages know nothing of each other or of
+`mock_ui`, so either can be rewritten — real persistence for the store, a
+different objective or solver for the engine — without opening the other.
 
 ### `calendar_store` — what is true about the calendar
 
@@ -151,7 +160,11 @@ Internals and rationale: [`calendar_store/SPEC.md`](calendar_store/SPEC.md).
 
 ### `scheduling_engine` — what should happen
 
-Pure functions over `TimeSegment`s; no store, no I/O, no database.
+Pure functions over availability segments; no store, no I/O, no database — and
+**no dependency on the other two packages**, so the solver can be tuned or
+replaced without opening either of them. It declares the segment shape it needs
+rather than importing one, and reads spans structurally, so a store's own type
+is passed straight in.
 `availability.free_time` performs the netting step the store declines to do, and
 `solve_placements` is the CP-SAT model described above. `fragmentation.py` derives
 gap waste from the service catalogue, and `visualize.py` renders a calendar and

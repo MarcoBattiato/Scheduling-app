@@ -1,9 +1,8 @@
 from datetime import date, datetime, time
 
 import pytest
-from calendar_store import TimeSegment
 
-from scheduling_engine import BookingRequest, CostConfig, TimeRange, solve_placements
+from scheduling_engine import BookingRequest, CostConfig, TimeRange, TimeSegment, solve_placements
 
 DAY = date(2026, 5, 5)
 

@@ -83,17 +83,32 @@ seam SPEC.md §3 assigns to the repository adapter. It is a pure function over
 `TimeSegment`s rather than something holding a store, which keeps `portion` on
 calendar_store's side of the boundary.
 
-`visualize.py` renders a calendar and what the solver did to it — run
-`.venv/bin/python examples/manual_check.py` to see it, and edit that file's
-`SCENARIOS` to try your own. Its gap report is built from the solver's own
+`visualize.py` renders a calendar and what the solver did to it — reach it
+through the playground (`python -m scheduling_engine.playground my.json --text`),
+which is the single way in described above. Its gap report is built from the solver's own
 grid-snapped blocks rather than from the raw segments, so
 `sum(gap.wasted_minutes)` always equals `PlacementResult.fragmentation_minutes`
 — `test_visualize.py` pins that, because a chart that disagrees with the solver
 is worse than no chart.
 
+**This package depends on nothing else in the repo.** It takes availability
+segments and returns a plan, so it has no business knowing what stores the
+calendar; `TimeSegment` is declared in `models.py` rather than imported. The
+shape is the contract — functions that only read a span go through
+`availability._span`, which accepts any object carrying `.start`/`.end` (or a
+`.range`), so a store's own segment type goes in unconverted and nothing has to
+be translated at the boundary. Keep it that way: an import of `calendar_store`
+anywhere outside `playground.py` is the coupling coming back.
+
+`playground.py` is the exception, and deliberately so — it plays the repository
+adapter's part in order to drive a scenario through the real pipeline, so it is
+a **dev extra** rather than a runtime dependency. `tests/test_playground.py` and
+the two boundary tests in `tests/test_free_time.py` skip when it is absent.
+
 Run tests: `.venv/bin/pytest tests/` (venv via `python3 -m venv .venv &&
-.venv/bin/pip install ortools pytest -e ../calendar_store -e .` — calendar_store
-is a local path dependency, not on PyPI).
+.venv/bin/pip install ortools pytest -e . -e ../calendar_store` — the last is
+optional, and only the playground needs it; without it the suite runs 197 of
+239 and skips the rest).
 
 `tests/test_placement_reference.py` cross-checks the solver against exhaustive
 enumeration; it's the guard on the run-length gap encoding, which is the one

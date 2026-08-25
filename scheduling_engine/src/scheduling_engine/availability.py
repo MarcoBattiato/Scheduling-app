@@ -6,25 +6,28 @@ because "availability" and "not double-booked" are separate constraints (its
 INTERFACE.md, "Guarantees"). Netting them is the caller's job, and this is
 that job — the seam SPEC.md §3 assigns to the repository adapter.
 
-Kept as a pure function over `TimeSegment`s rather than something that reaches
-into an `AvailabilityStore`. calendar_store's interval algebra runs on
-`portion.Interval`, and its INTERFACE.md is explicit that depending on that
-outside the package means depending on `portion` too — so the subtraction is
-done on the flat segment representation that crosses the boundary.
+Kept as a pure function over segments rather than something that reaches into a
+store. A store's interval algebra tends to run on a richer representation
+(`portion.Interval` in calendar_store's case), and depending on that outside its
+package would mean depending on that library too — so the subtraction is done on
+the flat segment representation that crosses the boundary.
+
+Inputs are duck-typed through `_span`, so segments from any store go in
+unconverted. The return type is this package's own `TimeSegment`, because
+constructing a value requires naming a class in a way that reading one does not.
 """
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 from typing import List, Sequence
 
-from calendar_store import TimeSegment
-
-from .models import RescheduleBounds, TimeRange
+from .models import RescheduleBounds, TimeRange, TimeSegment
 
 
 def _span(item):
-    """Accept a `TimeSegment`/`TimeRange` directly, or an `Appointment` (which
-    carries its span on `.range`).
+    """Accept a segment or range directly — this package's or a store's, the
+    shape is what matters — or an appointment, which carries its span on
+    `.range`.
     """
     inner = getattr(item, "range", item)
     return inner.start, inner.end

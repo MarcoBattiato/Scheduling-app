@@ -10,6 +10,7 @@ from .models import (
     PlacementResult,
     RescheduleBounds,
     TimeRange,
+    TimeSegment,
 )
 from .placement import solve_placements
 from .visualize import Gap, Track, gaps_left, render
@@ -25,6 +26,7 @@ __all__ = [
     "PlacementResult",
     "RescheduleBounds",
     "TimeRange",
+    "TimeSegment",
     "Track",
     "free_time",
     "gaps_left",

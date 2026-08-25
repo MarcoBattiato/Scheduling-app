@@ -1,9 +1,17 @@
 """Placement-side types. See SPEC.md §2 for the wider domain model; this module
 carries only what the batch placement solver (§7) reads and returns.
 
-`TimeRange` is deliberately not `calendar_store.TimeSegment` despite the
-identical shape — see SPEC.md §2. Availability flows *in* as `TimeSegment`;
-request windows and resulting placements are this package's own concern.
+Two value types of identical shape, kept apart because they mark opposite sides
+of a boundary. `TimeSegment` is availability arriving from whatever holds the
+calendar; `TimeRange` is this package's own — request windows, accepted-change
+windows, appointment ranges — none of which a store has any business naming.
+
+Both are declared *here* rather than imported. This package deliberately depends
+on no other package in the system: it takes segments, returns a plan, and cannot
+leak what it never receives. Functions that only read a span accept anything
+carrying `.start`/`.end` (or an `.range` attribute), so a caller may pass a
+store's own segment type straight in without converting — see
+`availability._span`.
 """
 from __future__ import annotations
 
@@ -18,6 +26,19 @@ RequestId = str
 # against this (see fragmentation.py): a leftover gap is only worth keeping if
 # some combination of real services still fits in it.
 DEFAULT_SERVICE_DURATIONS = (60, 90)
+
+
+@dataclass(frozen=True)
+class TimeSegment:
+    """A span of availability crossing into this package from outside.
+
+    Structurally identical to a calendar store's own segment type, and
+    deliberately so: the shape *is* the contract, so a caller can hand one
+    straight over. What matters is the direction of the dependency — the engine
+    states the shape it needs rather than importing someone else's.
+    """
+    start: datetime
+    end: datetime
 
 
 @dataclass(frozen=True)

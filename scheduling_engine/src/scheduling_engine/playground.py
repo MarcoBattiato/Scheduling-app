@@ -8,6 +8,11 @@ availability, bookings are subtracted from it, and the solver sees only what a
 repository adapter would hand it — so what you look at is what the engine
 actually did, not a mock-up of it.
 
+**This is the one part of the package that depends on calendar_store**, and the
+reason it is a dev extra rather than a runtime requirement. Being a harness, it
+plays the repository adapter's part itself; the solver it drives has no such
+dependency and never imports this module.
+
 See `examples/scenario.json` for the format; `SCENARIO_HELP` below documents
 every field.
 """
@@ -22,7 +27,16 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from calendar_store import Appointment, AvailabilityStore, TimeSegment
+try:
+    from calendar_store import Appointment, AvailabilityStore, TimeSegment
+except ImportError as exc:  # pragma: no cover - depends on how you installed
+    # Deliberately an ImportError and not a SystemExit: this module is imported
+    # by the test suite as well as run as a script, and exiting during
+    # collection aborts the whole run instead of skipping one file.
+    raise ImportError(
+        "The playground needs calendar_store, which the engine itself does not. "
+        "Install it with:  pip install -e '.[dev]' -e ../calendar_store"
+    ) from exc
 
 from . import report
 from .availability import free_time, reschedule_windows
