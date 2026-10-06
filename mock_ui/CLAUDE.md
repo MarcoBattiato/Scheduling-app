@@ -142,6 +142,27 @@ the solver saw it. `propose(request_ids=[...])` overrides both directions. A
 request left out of a run keeps its status rather than being parked: parked
 means tried and not placed.
 
+**Repeating bookings** (`Series`, `start_series`) are standing *requests*, not
+block bookings. Each session is raised as an ordinary request once it comes
+inside the planning window — on every `tick`, idempotently, tracked in
+`Series.raised` — and goes through the scheduler and the client's agreement
+like any other. Booking a year of Tuesdays up front would hold those hours
+against everyone else without the scheduler ever weighing them. A withdrawn
+session stays withdrawn (it is in `raised`, so it is not raised again);
+stopping a series withdraws what is not yet booked and leaves what is. The
+series' slot is a real client preference — `Origin.CLIENT`, and exactly the
+habitual slot SPEC §10.1 wants to learn.
+
+**How often a client may be booked** is per client (`Client.per_day`, default
+1; `Client.per_week`, default none), set by the provider and enforced by the
+engine as a hard constraint (`ClientLimit`). The engine sees fixed bookings
+only as time subtracted from the provider's day, with no name on them, so
+`_client_limits` has to hand it every session it cannot move: bookings, offers
+still out, and the earlier part of the week the planning window does not
+reach. A booking being asked to move counts where it is going, not where it
+is. A day already over the limit is left alone — nobody is moved to satisfy
+it — and a repeating session is skipped, not raised, in a week already full.
+
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider
 says so, and the decision is a pure function so it is testable without waiting

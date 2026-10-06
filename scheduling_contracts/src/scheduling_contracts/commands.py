@@ -30,6 +30,7 @@ from .values import (
     ClientId,
     PlanId,
     RequestId,
+    SeriesId,
     ServiceId,
     Target,
     TargetKind,
@@ -136,6 +137,17 @@ class ReadClientSummary:
     client_id: ClientId
 
 
+@command("client.set_limits", Tier.CONSEQUENTIAL, TargetKind.CLIENT, "client_id")
+@dataclass(frozen=True)
+class SetClientLimits:
+    """How many sessions this client may have in a day and in a week; None
+    is no limit. The provider's call, not the client's: it bounds what the
+    scheduler may do on everyone else's behalf too."""
+    client_id: ClientId
+    per_day: Optional[int] = 1
+    per_week: Optional[int] = None
+
+
 @command("service.add", Tier.ROUTINE)
 @dataclass(frozen=True)
 class AddService:
@@ -215,6 +227,31 @@ class WithdrawRequest:
 class ListRequests:
     # None means "the whole queue", which only a practice-wide role may ask for.
     client_id: Optional[ClientId] = None
+
+
+@command("series.start", Tier.ROUTINE, TargetKind.CLIENT, "client_id")
+@dataclass(frozen=True)
+class StartSeries:
+    """The same service at the same time every few weeks, without asking each time.
+
+    Not a block of appointments booked in advance. Each session is raised as
+    an ordinary `request.submit` once it comes inside the planning window, so
+    it goes through the scheduler and the client's agreement like any other —
+    a standing request rather than a standing claim on an hour.
+    """
+    client_id: ClientId
+    service_id: ServiceId
+    first_start: datetime          # the first session, and the anchor for the rest
+    every_weeks: int = 1
+    until: Optional[date] = None   # last date a session may fall on; None = until stopped
+
+
+@command("series.stop", Tier.ROUTINE, TargetKind.SERIES, "series_id")
+@dataclass(frozen=True)
+class StopSeries:
+    """No more sessions raised. Sessions already booked stay booked; ones
+    still being placed are withdrawn."""
+    series_id: SeriesId
 
 
 # ------------------------------------------------------------- D. appointments

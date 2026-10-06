@@ -109,11 +109,18 @@ window.addEventListener("unhandledrejection", function (e) {
         <form id="request-form">
           <label>Service <select name="service" id="service-picker"></select></label>
           <label>Ideally at <input type="datetime-local" name="preferred" required></label>
+          <label>Repeat <select name="every">
+            <option value="0">once</option>
+            <option value="1">every week</option>
+            <option value="2">every 2 weeks</option>
+            <option value="4">every 4 weeks</option>
+          </select></label>
           <button type="submit">Request</button>
         </form>
         <p class="hint">A wish, not a demand: you can be booked anywhere in
           your availability, and the scheduler tries to get you close to this.
           Set your availability first, or there is nowhere to put you.</p>
+        <div id="series"></div>
         <div id="requests"></div>
       </section>
 

@@ -61,6 +61,20 @@ class RequestIn(BaseModel):
     preferred_start: str        # a wish; availability decides what is possible
 
 
+class LimitsIn(BaseModel):
+    # None means no limit.
+    per_day: Optional[int] = 1
+    per_week: Optional[int] = None
+
+
+class SeriesIn(BaseModel):
+    client_id: str
+    service_id: str
+    first_start: str            # the first session; the rest follow at the same time
+    every_weeks: int = 1
+    until: Optional[str] = None  # last date a session may fall on
+
+
 class ExceptionIn(BaseModel):
     client_id: str
     date: str
@@ -214,6 +228,42 @@ def submit_request(payload: RequestIn):
     # Deliberately does NOT run the scheduler. A request arriving is not a
     # reason to re-plan the week — see policy.py.
     return {"request_id": request.id}
+
+
+@app.post("/api/clients/{client_id}/limits")
+def set_client_limits(client_id: str, payload: LimitsIn):
+    """How often this client may be booked — see World.set_client_limits."""
+    if client_id not in world.clients:
+        raise HTTPException(404, "no such client")
+    try:
+        client = world.set_client_limits(client_id, payload.per_day, payload.per_week)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"per_day": client.per_day, "per_week": client.per_week}
+
+
+@app.post("/api/series")
+def start_series(payload: SeriesIn):
+    """A booking that repeats — see World.start_series. Each session is raised
+    as an ordinary request when it comes into the planning window; like any
+    request, none of them runs the scheduler by arriving."""
+    try:
+        series = world.start_series(payload.client_id, payload.service_id,
+                                    payload.first_start, payload.every_weeks,
+                                    payload.until)
+    except KeyError as exc:
+        raise HTTPException(400, str(exc.args[0])) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    raised = sum(1 for r in world.requests.values() if r.series_id == series.id)
+    return {"series_id": series.id, "raised": raised}
+
+
+@app.post("/api/series/{series_id}/stop")
+def stop_series(series_id: int):
+    if series_id not in world.series:
+        raise HTTPException(404, "no such series")
+    return {"withdrawn": world.stop_series(series_id)}
 
 
 @app.post("/api/services")

@@ -110,22 +110,26 @@ def simple(world: World) -> None:
                             ("carol", "Carol"), ("dan", "Dan")):
         world.add_client(client_id, name)
 
-    # Alice and Bob are flexible; Dan has two days; Carol has one morning.
+    # Alice and Bob are flexible; Dan has three days; Carol has one morning.
     world.set_weekly_availability("alice", _hours((0, 2, 4), "09:00", "13:00"))
     world.set_weekly_availability("bob", _hours((0, 2, 4), "09:00", "13:00"))
-    world.set_weekly_availability("dan", _hours((1, 3), "09:00", "13:00"))
+    world.set_weekly_availability("dan", _hours((0, 1, 3), "09:00", "13:00"))
     world.set_weekly_availability("carol", _hours((1,), "09:00", "11:00"))
 
     monday = next_monday()
     world.policy.horizon_days = _horizon_reaching(monday)
     world.policy.auto_run = False        # the demonstrator decides when it runs
     _close_the_run_up(world, monday)
+    # Nobody twice on one day: clients may be booked once a day by default,
+    # and an example that starts out breaking that would demonstrate the
+    # opposite of what the app does.
     _book(world, monday, [
-        ("alice", 0, 9), ("bob", 0, 10), ("alice", 0, 11),
+        ("alice", 0, 9), ("dan", 0, 11),
         ("dan", 1, 9), ("alice", 1, 10),        # both of Carol's slots, taken
         ("dan", 3, 10),
         ("bob", 4, 9), ("alice", 4, 10),
     ])
+    _book(world, monday, [(PROVIDER, 0, 10)], service="admin")
     # Wednesday is the day with the choice in it, and it is built to the scale
     # the cost model actually works at. A ninety-minute session to 10:30 and an
     # admin hour from 12:00 leave a ninety-minute stretch: any one-hour booking

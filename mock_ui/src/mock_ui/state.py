@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Sequence
 
 from calendar_store import (
     Appointment,
+    AppointmentStatus,
     AvailabilityStore,
     Origin,
     Party,
@@ -23,6 +24,7 @@ from .policy import SchedulingPolicy, due
 
 from scheduling_engine import (
     BookingRequest,
+    ClientLimit,
     CostConfig,
     MovableAppointment,
     RescheduleBounds,
@@ -40,6 +42,12 @@ _EPOCH = date(2000, 1, 1)
 class Client:
     id: str
     name: str
+    # How many sessions they may have in a day and in a week. Set by the
+    # provider per client: once a day by default, since two sessions on one
+    # day is almost never what anybody wants, and no weekly cap, since an
+    # intensive week is a clinical decision. None means no limit.
+    per_day: Optional[int] = 1
+    per_week: Optional[int] = None
 
 
 @dataclass
@@ -70,6 +78,52 @@ class Request:
     # asked and will say yes. Recording that as a preference is precisely the
     # failure `origin` exists to prevent — see calendar_store's CLAUDE.md.
     origin: Origin = Origin.CLIENT
+    # The repeating booking this session belongs to, if any.
+    series_id: Optional[int] = None
+
+
+def every(weeks: int) -> str:
+    return "every week" if weeks == 1 else f"every {weeks} weeks"
+
+
+@dataclass
+class Series:
+    """The same service at the same time every few weeks — weekly therapy,
+    say — so the client does not have to ask for each session.
+
+    A standing *request*, not a block of appointments. Each session is raised
+    as an ordinary request once it comes inside the planning window, and goes
+    through the scheduler and the client's agreement like any other. Booking a
+    year of Tuesdays up front would hold those hours against everyone else
+    without the scheduler ever weighing them, and would leave nothing to do
+    when a Tuesday turns out to be impossible.
+
+    The wished-for time is the series' own slot, so where a session lands is
+    judged against when this client actually likes to come — which is the
+    habitual-slot anchoring of engine SPEC §10.1, stated by the client rather
+    than inferred.
+    """
+    id: int
+    client_id: str
+    service_id: str
+    first_start: datetime          # the first session, and the anchor for the rest
+    every_weeks: int = 1
+    until: Optional[date] = None   # last date a session may fall on; None = until stopped
+    # active   — raising sessions as they come into the window
+    # finished — reached `until`; nothing more to raise
+    # stopped  — called off
+    status: str = "active"
+    # Session dates already raised, whatever became of them. A session the
+    # client withdrew, or one that could not be placed, is not raised again
+    # on the next tick.
+    raised: set = field(default_factory=set)
+
+    def sessions(self):
+        """Every session start, in order, forever (or until `until`)."""
+        start = self.first_start
+        while self.until is None or start.date() <= self.until:
+            yield start
+            start += timedelta(weeks=self.every_weeks)
 
 
 @dataclass
@@ -138,6 +192,7 @@ class World:
         self.catalogue = ServiceCatalogue()
         self.clients: Dict[str, Client] = {}
         self.requests: Dict[int, Request] = {}
+        self.series: Dict[int, Series] = {}
         self.approvals: Dict[int, Approval] = {}
         self.plans: Dict[int, Plan] = {}
         self.log: List[str] = []
@@ -303,6 +358,165 @@ class World:
                            f"{approval.now_start:%a %d %b %H:%M} — the request was withdrawn")
                 self._drop_moves_nobody_needs(approval.plan_id)
                 self._settle_if_answered(approval.plan_id)
+
+    def set_client_limits(self, client_id: str, per_day: Optional[int],
+                          per_week: Optional[int]) -> Client:
+        """How often this client may be booked. Applies to every later run and
+        to repeating bookings; nothing already booked is moved because of it."""
+        client = self.clients[client_id]
+        for name, value in (("per_day", per_day), ("per_week", per_week)):
+            if value is not None and value < 1:
+                raise ValueError(f"{name} must be at least 1, or no limit")
+        client.per_day, client.per_week = per_day, per_week
+        describe = lambda v, unit: f"{v} a {unit}" if v else f"any number a {unit}"
+        self._note(f"{client_id} may now be booked {describe(per_day, 'day')}, "
+                   f"{describe(per_week, 'week')}")
+        return client
+
+    def _client_limits(self, clients, window_start: date, window_end: date,
+                       movable_ids: set) -> Dict[str, ClientLimit]:
+        """Each client's limit, with every session the solver cannot move.
+
+        Gathered over whole weeks, not just the planning window: a weekly
+        limit has to count Monday's session when the run happens on Wednesday.
+        A booking somebody is being asked to move counts where it is going,
+        not where it is, since it will not be in both.
+        """
+        week_start = window_start - timedelta(days=window_start.weekday())
+        week_end = window_end + timedelta(days=7 - window_end.weekday())
+        span = (datetime.combine(week_start, time.min), datetime.combine(week_end, time.min))
+        leaving = {a.appointment_id for a in self.approvals.values()
+                   if a.kind == "reschedule" and self._outstanding(a)}
+        limits = {}
+        for client_id in clients:
+            client = self.clients.get(client_id)
+            if client is None or (client.per_day is None and client.per_week is None):
+                continue
+            fixed = [a.range.start for a in self.store.appointment_history(client_id, *span)
+                     if a.status in (AppointmentStatus.BOOKED, AppointmentStatus.COMPLETED,
+                                     AppointmentStatus.NO_SHOW)
+                     and str(a.id) not in movable_ids and a.id not in leaving]
+            fixed += [a.now_start for a in self.approvals.values()
+                      if a.client_id == client_id and self._outstanding(a)]
+            limits[client_id] = ClientLimit(per_day=client.per_day,
+                                            per_week=client.per_week, fixed=fixed)
+        return limits
+
+    def _week_is_full(self, client_id: str, moment: datetime) -> bool:
+        """Has this client already reached their weekly limit in that week?"""
+        client = self.clients.get(client_id)
+        if client is None or client.per_week is None:
+            return False
+        monday = moment.date() - timedelta(days=moment.weekday())
+        span = (datetime.combine(monday, time.min),
+                datetime.combine(monday + timedelta(days=7), time.min))
+        booked = [a for a in self.store.appointment_history(client_id, *span)
+                  if a.status in (AppointmentStatus.BOOKED, AppointmentStatus.COMPLETED)]
+        waiting = [r for r in self.requests.values()
+                   if r.client_id == client_id and span[0] <= r.preferred_start < span[1]
+                   and r.status in ("pending", "on_hold", "awaiting_client")]
+        return len(booked) + len(waiting) >= client.per_week
+
+    # -- repeating bookings --------------------------------------------
+
+    MAX_EVERY_WEEKS = 12
+
+    def start_series(
+        self, client_id: str, service_id: str, first_start: str,
+        every_weeks: int = 1, until: Optional[str] = None,
+    ) -> Series:
+        """Book the same thing every `every_weeks` weeks, from `first_start`.
+
+        Sessions are raised as requests straight away for as far as the
+        planning window reaches, and the rest as the window moves forward.
+        """
+        if client_id not in self.clients:
+            raise KeyError(f"no client called {client_id!r}")
+        service = self.catalogue.get_service(service_id)       # KeyError if unknown
+        if not 1 <= int(every_weeks) <= self.MAX_EVERY_WEEKS:
+            raise ValueError(f"every_weeks must be 1 to {self.MAX_EVERY_WEEKS}")
+        start = _parse_dt(first_start)
+        last = date.fromisoformat(until) if until else None
+        if last is not None and last < start.date():
+            raise ValueError("the last session cannot be before the first")
+
+        series = Series(id=next(self._ids), client_id=client_id,
+                        service_id=service_id, first_start=start,
+                        every_weeks=int(every_weeks), until=last)
+        self.series[series.id] = series
+        self._note(f"{client_id} set up {service.name} {every(series.every_weeks)} "
+                   f"from {start:%a %d %b %H:%M}"
+                   + (f" until {last:%d %b}" if last else ""))
+        self.raise_due_sessions()
+        return series
+
+    def stop_series(self, series_id: int) -> int:
+        """No more sessions. Booked ones stay booked — each is cancelled on its
+        own if wanted — and ones still being placed are withdrawn, offers
+        included. Returns how many were withdrawn."""
+        series = self.series[series_id]
+        if series.status == "stopped":
+            return 0
+        series.status = "stopped"
+        open_ones = [r for r in self.requests.values()
+                     if r.series_id == series_id
+                     and r.status in ("pending", "on_hold", "awaiting_client")]
+        for request in open_ones:
+            self.withdraw_request(request.id)
+        self._note(f"{series.client_id} stopped their {every(series.every_weeks)} "
+                   f"{self._service_name(series.service_id)}"
+                   + (f"; withdrew {len(open_ones)} not yet booked" if open_ones else ""))
+        return len(open_ones)
+
+    def raise_due_sessions(self, now: Optional[datetime] = None) -> List[Request]:
+        """Turn every series session now inside the planning window into a
+        request. Idempotent: called on every tick, raises each session once.
+
+        The window is the scheduler's own (`horizon_days` from today), so a
+        session becomes a request exactly when a run could place it, and never
+        sooner — a request raised months early would sit in the queue looking
+        like work.
+        """
+        now = now or datetime.now()
+        window_end = now.date() + timedelta(days=self.policy.horizon_days)
+        raised = []
+        for series in self.series.values():
+            if series.status != "active":
+                continue
+            exhausted = True
+            for start in series.sessions():
+                if start.date() >= window_end:
+                    exhausted = False
+                    break
+                if start <= now or start.date() in series.raised:
+                    continue
+                if self._week_is_full(series.client_id, start):
+                    # Already as many sessions that week as they may have, so
+                    # this one is skipped rather than raised to sit unplaceable
+                    # in the queue. Recorded, so it is not tried again.
+                    series.raised.add(start.date())
+                    self._note(f"skipped {series.client_id}'s "
+                               f"{start:%a %d %b} session — the week is already full")
+                    continue
+                request = self.submit_request(
+                    series.client_id, series.service_id, start.isoformat())
+                request.series_id = series.id
+                request.note = every(series.every_weeks)
+                series.raised.add(start.date())
+                raised.append(request)
+            if exhausted:          # ran past `until` inside the window
+                series.status = "finished"
+                self._note(f"{series.client_id}'s {every(series.every_weeks)} "
+                           f"{self._service_name(series.service_id)} has had its last session")
+        return raised
+
+    def _next_session(self, series: Series) -> Optional[datetime]:
+        """The next session not yet raised, for showing what happens next."""
+        if series.status != "active":
+            return None
+        now = datetime.now()
+        return next((s for s in series.sessions()
+                     if s > now and s.date() not in series.raised), None)
 
     def cancel_appointment(
         self, appointment_id: int, *, by: Party = Party.CLIENT
@@ -558,6 +772,9 @@ class World:
         policy.due(), so it can be tested without waiting for a clock.
         """
         now = now or datetime.now()
+        # Repeating bookings first, so a session that just came into the window
+        # is in the queue the policy is about to look at.
+        self.raise_due_sessions(now)
         trigger = due(
             self.policy, now, self.last_run,
             [r.preferred_start
@@ -765,6 +982,9 @@ class World:
             provider_free, config,
             movable=movable, max_displacements=max_moves,
             allow_chains=chains,
+            client_limits=self._client_limits(
+                {r.client_id for r in waiting} | {m.client_id for m in movable},
+                window_start, window_end, {m.id for m in movable}),
         )
 
         # Anything the engine could not place is parked, so its approaching
@@ -1362,7 +1582,8 @@ class World:
             "today": start.isoformat(),
             "horizon": end.isoformat(),
             "clients": [
-                {"id": c.id, "name": c.name, **self.client_summary(c.id)}
+                {"id": c.id, "name": c.name, "per_day": c.per_day,
+                 "per_week": c.per_week, **self.client_summary(c.id)}
                 for c in self.clients.values()
             ],
             "services": [
@@ -1411,8 +1632,19 @@ class World:
                  # Why this exists. A request the clinic raised on somebody's
                  # behalf should not be indistinguishable from one they asked
                  # for — in the queue least of all.
-                 "origin": r.origin.value, "note": r.note}
+                 "origin": r.origin.value, "note": r.note,
+                 "series_id": r.series_id}
                 for r in self.requests.values()
+            ],
+            "series": [
+                {"id": x.id, "client_id": x.client_id, "service_id": x.service_id,
+                 "service": self._service_name(x.service_id),
+                 "first_start": x.first_start.isoformat(),
+                 "every_weeks": x.every_weeks,
+                 "until": x.until.isoformat() if x.until else None,
+                 "status": x.status,
+                 "next": (lambda n: n.isoformat() if n else None)(self._next_session(x))}
+                for x in self.series.values()
             ],
             "approvals": [
                 {"id": a.id, "plan_id": a.plan_id, "kind": a.kind,

@@ -22,6 +22,7 @@ from typing import Optional
 ClientId = str
 AppointmentId = int
 RequestId = int
+SeriesId = int
 ApprovalId = int
 PlanId = int
 ServiceId = str
@@ -75,6 +76,7 @@ class TargetKind(Enum):
     REQUEST = "request"
     APPROVAL = "approval"
     PLAN = "plan"
+    SERIES = "series"
 
 
 class Access(Enum):

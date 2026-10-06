@@ -65,6 +65,7 @@ function render() {
   renderAlerts();
   renderSchedule();
   renderGrid();
+  renderSeries();
   renderRequests();
   renderBookings();
   renderQueue();
@@ -684,6 +685,25 @@ function renderExceptions() {
       </span>`).join("");
 }
 
+function renderSeries() {
+  const mine = (state.series || []).filter(
+    (x) => x.status === "active" && (isProvider() || x.client_id === me));
+  $("series").innerHTML = !mine.length ? "" : `<div class="reqs">${mine.map((x) => `
+    <div class="req">
+      <span>${esc(x.service)} · ${x.every_weeks === 1 ? "every week" : `every ${x.every_weeks} weeks`},
+        ${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(x.first_start).getDay()]}s
+        ${x.first_start.slice(11, 16)}${x.next ? `<br><span class="time">next ${fmt(x.next)}</span>` : ""}</span>
+      <span class="tag">repeating</span>
+      <button class="link" onclick="stopSeries(${x.id})">stop</button>
+    </div>`).join("")}</div>`;
+}
+
+window.stopSeries = async (id) => {
+  if (!confirm("Stop this repeating booking?\n\nBooked sessions stay; ones not yet booked are withdrawn.")) return;
+  await api(`/api/series/${id}/stop`);
+  refresh();
+};
+
 function renderRequests() {
   const mine = state.requests.filter((r) => isProvider() || r.client_id === me);
   const open = mine.filter((r) => r.status === "pending" || r.status === "on_hold");
@@ -925,10 +945,20 @@ $("save-avail").onclick = async () => {
 $("request-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
-  await api("/api/requests", {
-    client_id: me, service_id: f.get("service"),
-    preferred_start: f.get("preferred"),
-  });
+  const every = Number(f.get("every") || 0);
+  // Repeating: each session is raised as a request when it comes into the
+  // planning window, so the client never has to ask again.
+  if (every) {
+    await api("/api/series", {
+      client_id: me, service_id: f.get("service"),
+      first_start: f.get("preferred"), every_weeks: every,
+    });
+  } else {
+    await api("/api/requests", {
+      client_id: me, service_id: f.get("service"),
+      preferred_start: f.get("preferred"),
+    });
+  }
   refresh();
 };
 $("away-form").onsubmit = async (e) => {

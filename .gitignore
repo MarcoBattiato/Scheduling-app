@@ -16,5 +16,5 @@ dist/
 **/examples/*.html
 
 # mock_ui session snapshots — regenerate by using the app
-mock_ui_session.json
-**/mock_ui_session.json
+mock_ui_session*.json
+**/mock_ui_session*.json

@@ -139,6 +139,7 @@ deciding this.
 |---|---|---|---|---|---|---|
 | `client.add` | Register a client | W | ● | ○ | ✎ | live |
 | `client.summary` | Counts, history at a glance | R,P | ● | ◐ | ◐ | live |
+| `client.set_limits` | At most N sessions a day / a week for this client | W | ● | ○ | ✎ | gap |
 | `service.add` | Add a bookable service | W | ● | ○ | ✎ | live |
 | `service.set_active` | Withdraw/restore a service | C | ● | ○ | ✎ | live |
 | `service.list` | Catalogue | R | ● | ● | ● | live |
@@ -163,6 +164,12 @@ deciding this.
 | `request.submit` | Ask for a service at a wished time | W | ● | ◐ | ✎ | gap |
 | `request.withdraw` | Take the ask back | W | ● | ◐ | ✎ | gap |
 | `request.list` | The queue | R | ● | ◐ | ◐ | live |
+| `series.start` | Same service every N weeks, each session raised as a request when it comes into the planning window | W | ● | ◐ | ✎ | gap |
+| `series.stop` | No more sessions; ones still being placed are withdrawn | W | ● | ◐ | ✎ | gap |
+
+> A series is a **standing request, not a block booking**. Each session still
+> goes through the scheduler and the client's agreement, so a repeating client
+> cannot hold an hour against everyone else just by having asked once.
 
 ### D. Appointments
 

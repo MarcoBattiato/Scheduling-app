@@ -71,8 +71,16 @@ def busy():
     return world.snapshot()
 
 
+def repeating():
+    """Carol comes every week, Tuesdays at nine."""
+    world = _small()
+    tuesday = scenarios._at(scenarios.next_monday(), 1, 9)
+    world.start_series("carol", "session-60", tuesday.isoformat(), every_weeks=1)
+    return world.snapshot()
+
+
 STATES = {"untouched": untouched, "drafted": drafted, "asked": asked,
-          "blocked": carol_agreed_dan_has_not, "busy": busy}
+          "blocked": carol_agreed_dan_has_not, "busy": busy, "repeating": repeating}
 
 
 # -- the harness ---------------------------------------------------------
@@ -362,3 +370,36 @@ def test_inputs_are_big_enough_that_ios_does_not_zoom():
 
     assert re.search(r"\.field input, \.field select \{[^}]*font-size: 16px", css)
     assert re.search(r"body \{[^}]*16px", css)
+
+
+@node
+def test_a_client_can_choose_how_often(drawn):
+    book = screen(drawn, "untouched", "carol:book")
+
+    for n in ("0", "1", "2", "4"):
+        assert f'data-act="book-every" data-n="{n}"' in book
+
+
+@node
+def test_a_repeating_booking_is_listed_and_can_be_stopped(drawn):
+    bookings = screen(drawn, "repeating", "carol:bookings")
+
+    assert "Repeating" in bookings
+    assert "every week · Tues 09:00" in bookings
+    assert 'data-act="series-stop"' in bookings
+
+
+@node
+def test_a_session_raised_by_a_series_says_so(drawn):
+    """In the provider's queue a repeating session should not look like a
+    one-off: it is somebody's regular slot."""
+    queue = screen(drawn, "repeating", "provider:queue")
+
+    assert "every week" in queue
+
+
+@node
+def test_each_clients_limit_is_shown_to_the_provider(drawn):
+    clients = screen(drawn, "untouched", "provider:more/clients")
+
+    assert "1 a day" in clients

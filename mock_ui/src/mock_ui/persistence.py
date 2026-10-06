@@ -25,7 +25,7 @@ from calendar_store import (
     TimeSegment,
 )
 
-from .state import Approval, Client, Plan, Request, World
+from .state import Approval, Client, Plan, Request, Series, World
 
 
 def _dt(value):
@@ -38,7 +38,8 @@ def _back(value):
 
 def save(world: World, path: Path) -> None:
     payload = {
-        "clients": [{"id": c.id, "name": c.name} for c in world.clients.values()],
+        "clients": [{"id": c.id, "name": c.name, "per_day": c.per_day,
+                     "per_week": c.per_week} for c in world.clients.values()],
         "settings": {
             "alpha": world.alpha,
             "max_displacements": world.max_displacements,
@@ -79,8 +80,16 @@ def save(world: World, path: Path) -> None:
              "duration_minutes": r.duration_minutes, "status": r.status,
              "replaces_appointment_id": r.replaces_appointment_id,
              "origin": r.origin.value, "note": r.note,
-             "preferred_start": _dt(r.preferred_start)}
+             "preferred_start": _dt(r.preferred_start),
+             "series_id": r.series_id}
             for r in world.requests.values()
+        ],
+        "series": [
+            {"id": x.id, "client_id": x.client_id, "service_id": x.service_id,
+             "first_start": _dt(x.first_start), "every_weeks": x.every_weeks,
+             "until": x.until.isoformat() if x.until else None,
+             "status": x.status, "raised": sorted(d.isoformat() for d in x.raised)}
+            for x in world.series.values()
         ],
         "plans": [
             {"id": p.id, "status": p.status, "reason": p.reason, "detail": p.detail,
@@ -127,7 +136,10 @@ def load(path: Path) -> World:
     world = World()
 
     for entry in payload.get("clients", []):
-        world.clients[entry["id"]] = Client(id=entry["id"], name=entry["name"])
+        world.clients[entry["id"]] = Client(
+            id=entry["id"], name=entry["name"],
+            # Sessions saved before limits existed get the defaults.
+            per_day=entry.get("per_day", 1), per_week=entry.get("per_week"))
 
     settings = payload.get("settings", {})
     world.alpha = settings.get("alpha", world.alpha)
@@ -185,6 +197,17 @@ def load(path: Path) -> World:
             origin=Origin(entry.get("origin", "client")),
             note=entry.get("note", ""),
             preferred_start=_back(entry.get("preferred_start")),
+            series_id=entry.get("series_id"),
+        )
+    for entry in payload.get("series", []):
+        world.series[entry["id"]] = Series(
+            id=entry["id"], client_id=entry["client_id"],
+            service_id=entry["service_id"],
+            first_start=_back(entry["first_start"]),
+            every_weeks=entry["every_weeks"],
+            until=date.fromisoformat(entry["until"]) if entry.get("until") else None,
+            status=entry["status"],
+            raised={date.fromisoformat(d) for d in entry.get("raised", [])},
         )
     for entry in payload.get("plans", []):
         world.plans[entry["id"]] = Plan(
@@ -237,6 +260,7 @@ def load(path: Path) -> World:
     # are now restored too, so it must start above them as well.
     world._ids = itertools.count(max(
         [highest] + list(world.requests) + list(world.plans) + list(world.approvals)
+        + list(world.series)
     ) + 1)
     return world
 

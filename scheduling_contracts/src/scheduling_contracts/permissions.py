@@ -34,6 +34,7 @@ ANY = Access.ANY
 PROVIDER_MATRIX: Mapping[str, Access] = {
     "client.add": ANY,
     "client.summary": ANY,
+    "client.set_limits": ANY,
     "service.add": ANY,
     "service.set_active": ANY,
     "service.list": ANY,
@@ -44,6 +45,8 @@ PROVIDER_MATRIX: Mapping[str, Access] = {
     "request.submit": ANY,
     "request.withdraw": ANY,
     "request.list": ANY,
+    "series.start": ANY,
+    "series.stop": ANY,
     "appointment.cancel": ANY,
     "appointment.move": ANY,
     "appointment.request_reschedule": ANY,
@@ -77,6 +80,7 @@ PROVIDER_MATRIX: Mapping[str, Access] = {
 CLIENT_MATRIX: Mapping[str, Access] = {
     "client.add": D,
     "client.summary": OWN,
+    "client.set_limits": D,
     "service.add": D,
     "service.set_active": D,
     "service.list": ANY,            # the catalogue is not anybody's private data
@@ -87,6 +91,8 @@ CLIENT_MATRIX: Mapping[str, Access] = {
     "request.submit": OWN,
     "request.withdraw": OWN,
     "request.list": OWN,
+    "series.start": OWN,
+    "series.stop": OWN,
     "appointment.cancel": OWN,
     "appointment.move": OWN,
     "appointment.request_reschedule": OWN,
@@ -144,6 +150,7 @@ MATRIX: Mapping[Role, Mapping[str, Access]] = {
 ASSISTANT: Mapping[str, str] = {
     "client.add": DRAFT,
     "client.summary": ALLOWED,
+    "client.set_limits": DRAFT,
     "service.add": DRAFT,
     "service.set_active": DRAFT,
     "service.list": ALLOWED,
@@ -154,6 +161,8 @@ ASSISTANT: Mapping[str, str] = {
     "request.submit": DRAFT,
     "request.withdraw": DRAFT,
     "request.list": ALLOWED,
+    "series.start": DRAFT,
+    "series.stop": DRAFT,
     "appointment.cancel": DRAFT,
     "appointment.move": DRAFT,
     "appointment.request_reschedule": DRAFT,

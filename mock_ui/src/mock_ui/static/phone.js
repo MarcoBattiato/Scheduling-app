@@ -25,6 +25,7 @@ let tab = (location.hash || "").slice(1) || "home";
 const ui = {
   pickers: {},          // picker id -> {client, duration, day, time}
   bookService: null,
+  bookEvery: 0,         // 0 = once; otherwise weeks between sessions
   diaryDay: null,
   runOver: null,        // Set of request ids the next run covers
   runSeen: null,        // ids already given a default tick, so a choice sticks
@@ -133,6 +134,38 @@ const windowDays = () => {
   return days;
 };
 
+const limitWords = (c) => [c.per_day ? `${c.per_day} a day` : "", c.per_week ? `${c.per_week} a week` : ""]
+  .filter(Boolean).join(", ") || "no limit";
+const everyWords = (n) => (n === 1 ? "every week" : `every ${n} weeks`);
+const FREQUENCIES = [[0, "Once"], [1, "Weekly"], [2, "Every 2 weeks"], [4, "Every 4 weeks"]];
+
+function seriesLine(x) {
+  const d = parse(x.first_start);
+  return `${everyWords(x.every_weeks)} · ${DOW[d.getDay()]}s ${fmtTime(x.first_start)}`;
+}
+
+function seriesMeta(x) {
+  const bits = [];
+  if (x.next) bits.push(`next ${fmtDay(x.next)}`);
+  if (x.until) bits.push(`until ${fmtDay(x.until)}`);
+  else if (x.status === "active") bits.push("until stopped");
+  if (x.status === "finished") bits.push("all sessions raised");
+  return bits.join(" · ");
+}
+
+function frequencyPicker(current, act) {
+  return `<div class="segmented">${FREQUENCIES.map(([n, label]) => `
+    <button type="button" data-act="${act}" data-n="${n}" aria-pressed="${current === n}">${label}</button>`).join("")}</div>`;
+}
+
+// The optional last date, inside a form so a redraw keeps what was typed.
+function untilField(name) {
+  return `<form data-form="${name}">
+    <label class="field" style="margin-top:12px"><span>Last session (optional)</span>
+      <input type="date" name="until" min="${todayKey()}"></label></form>
+    <p class="hint" style="margin-top:-4px">Leave it empty to keep going until you stop it.</p>`;
+}
+
 // -- talking to the server --------------------------------------------
 
 async function api(path, body) {
@@ -219,17 +252,32 @@ function render(force) {
   renderHeader();
   renderTabs();
 
-  // Horizontal strips keep their scroll position across a redraw; otherwise
-  // every poll snaps the day picker back to today.
-  const scrolls = {};
-  document.querySelectorAll("[data-keep-scroll]").forEach((el) => {
-    scrolls[el.dataset.keepScroll] = el.scrollLeft;
-  });
   const base = currentView();
+  const scrolls = keepScrolls($("view"));
   const kept = keepForms($("view"));
   $("view").innerHTML = VIEWS[isProvider() ? "provider" : "client"][base]();
   restoreForms($("view"), kept);
-  document.querySelectorAll("[data-keep-scroll]").forEach((el) => {
+  restoreScrolls($("view"), scrolls);
+  // The sheet is redrawn too, so it never shows a booking that has since
+  // changed — unless someone is in the middle of one of its fields.
+  const inSheet = active && active.closest && active.closest("#sheet")
+    && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName);
+  if (!inSheet) redrawSheet();
+}
+
+// Horizontal strips keep their scroll position across a redraw; otherwise
+// every poll snaps the day picker back to today. A strip drawn for the first
+// time scrolls to its chosen day instead.
+function keepScrolls(root) {
+  const scrolls = {};
+  root.querySelectorAll("[data-keep-scroll]").forEach((el) => {
+    scrolls[el.dataset.keepScroll] = el.scrollLeft;
+  });
+  return scrolls;
+}
+
+function restoreScrolls(root, scrolls) {
+  root.querySelectorAll("[data-keep-scroll]").forEach((el) => {
     if (scrolls[el.dataset.keepScroll] !== undefined) el.scrollLeft = scrolls[el.dataset.keepScroll];
     else if (el.dataset.scrollTo) {
       const target = el.querySelector(`[data-day="${el.dataset.scrollTo}"]`);
@@ -238,11 +286,6 @@ function render(force) {
       }
     }
   });
-  // The sheet is redrawn too, so it never shows a booking that has since
-  // changed — unless someone is in the middle of one of its fields.
-  const inSheet = active && active.closest && active.closest("#sheet")
-    && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName);
-  if (!inSheet) redrawSheet();
 }
 
 // What has been typed or chosen in a form survives a redraw. Without this a
@@ -413,7 +456,8 @@ function requestRow(r) {
     <div class="main">
       <div class="title">${esc(r.service)}${replacing ? " (moving)" : ""}</div>
       <div class="meta">ideally ${fmtWhen(r.preferred)}</div>
-      <div class="tags"><span class="tag ${cls}">${word}</span></div>
+      <div class="tags"><span class="tag ${cls}">${word}</span>${
+        r.series_id ? ` <span class="tag accent">${esc(r.note || "repeating")}</span>` : ""}</div>
     </div>
     ${openRequest(r) ? `<button class="btn small danger" data-act="withdraw" data-id="${r.id}">Withdraw</button>` : ""}
   </div>`;
@@ -487,12 +531,19 @@ function clientBook() {
 
   html += `<h2>When would suit you best?</h2>${picker("book", me, service.duration)}`;
 
+  html += `<h2>How often</h2>${frequencyPicker(ui.bookEvery, "book-every")}`;
+  if (ui.bookEvery) html += untilField("book-until");
+
   const start = pickedStart("book");
+  const label = !start ? "Pick a time"
+    : ui.bookEvery ? `Book ${everyWords(ui.bookEvery)} from ${fmtDay(start)}`
+    : `Request ${fmtWhen(start)}`;
   html += `<div class="stack">
-    <button class="btn block" data-act="book-submit" ${start ? "" : "disabled"}>
-      ${start ? `Request ${fmtWhen(start)}` : "Pick a time"}</button></div>
-    <p class="hint">This is a wish rather than a booking: you will be offered a
-      time to accept.</p>`;
+    <button class="btn block" data-act="book-submit" ${start ? "" : "disabled"}>${label}</button></div>
+    <p class="hint">${ui.bookEvery
+      ? `You won't need to ask again: each session is requested for you as it
+         comes up, and you are offered a time for it like any booking.`
+      : "This is a wish rather than a booking: you will be offered a time to accept."}</p>`;
   return html;
 }
 
@@ -519,6 +570,16 @@ function clientBookings() {
           <div class="tags">${bookingTag(a)}</div>
         </div><span class="chev">›</span>
       </button>`).join("")}</div>`;
+  }
+  const series = (state.series || []).filter((x) => x.client_id === me && x.status !== "stopped");
+  if (series.length) {
+    html += `<h2>Repeating</h2><div class="list">${series.map((x) => `
+      <div class="row"><div class="main">
+        <div class="title">${esc(x.service)}</div>
+        <div class="meta">${seriesLine(x)}</div>
+        <div class="meta">${seriesMeta(x)}</div></div>
+        ${x.status === "active" ? `<button class="btn small danger" data-act="series-stop" data-id="${x.id}">Stop</button>` : ""}
+      </div>`).join("")}</div>`;
   }
   if (waiting.length) html += `<h2>Requested</h2><div class="list">${waiting.map(requestRow).join("")}</div>`;
   if (done.length) {
@@ -966,7 +1027,8 @@ function queueView() {
           <div class="meta">wants ${fmtWhen(r.preferred)}</div>
           <div class="tags">${r.status === "on_hold" ? `<span class="tag warn">couldn't place last time</span>` : ""}
             ${inWindow(r) ? "" : `<span class="tag">beyond ${(state.scheduler || {}).horizon_days} days</span>`}
-            ${r.replaces ? `<span class="tag move">moving an existing booking</span>` : ""}</div></div>
+            ${r.replaces ? `<span class="tag move">moving an existing booking</span>` : ""}
+            ${r.series_id ? `<span class="tag accent">${esc(r.note || "repeating")}</span>` : ""}</div></div>
         <button class="btn small secondary" data-act="place-open" data-id="${r.id}">Place</button>
       </label>`).join("")}</div>
       <div class="pair">
@@ -1256,7 +1318,8 @@ function clientsView() {
     <button class="row" data-act="client-open" data-id="${esc(c.id)}">
       <span class="avatar">${esc(c.name.slice(0, 1).toUpperCase())}</span>
       <div class="main"><div class="title">${esc(c.name)}</div>
-        <div class="meta">${c.booked} booked${c.open_requests ? ` · ${c.open_requests} waiting` : ""}${c.no_show ? ` · ${c.no_show} no-show` : ""}</div></div>
+        <div class="meta">${c.booked} booked${c.open_requests ? ` · ${c.open_requests} waiting` : ""}${c.no_show ? ` · ${c.no_show} no-show` : ""}</div>
+        <div class="meta">${limitWords(c)}</div></div>
       <span class="chev">›</span></button>`).join("")}</div>
     <h2>Add a client</h2>
     <form data-form="client" class="card">
@@ -1272,12 +1335,64 @@ function clientSheet(id) {
   if (!c) return `<h3>Gone</h3>`;
   const weekly = ((state.weekly || {})[id] || []);
   const hours = weekly.length ? weekly.map((r) => `${WEEKDAYS[r.weekday]} ${r.from}–${r.to}`).join("<br>") : "None set";
+  const choice = (kind, current, options) => `<div class="segmented">${options.map(([n, label]) => `
+    <button type="button" data-act="limit" data-client="${esc(id)}" data-kind="${kind}" data-n="${n}"
+      aria-pressed="${(current ?? "") === n}">${label}</button>`).join("")}</div>`;
   return `<h3>${esc(c.name)}</h3>${factsHtml([
     ["Booked", c.booked], ["Waiting", c.open_requests], ["Attended", c.completed],
     ["No-show", c.no_show], ["Cancelled", c.cancelled], ["Moved by you", c.moved_by_us], ["Free", hours],
   ])}
-  <div class="stack"><button class="btn secondary" data-act="view-as" data-who="${esc(id)}">See ${esc(c.name)}'s view</button>
+  <h2>Sessions allowed</h2>
+  <p class="hint" style="margin-top:0">The scheduler never books or moves ${esc(c.name)} past these.</p>
+  <div class="field"><span>A day</span>${choice("per_day", c.per_day, [[1, "1"], [2, "2"], [3, "3"], ["", "No limit"]])}</div>
+  <div class="field"><span>A week</span>${choice("per_week", c.per_week, [[1, "1"], [2, "2"], [3, "3"], ["", "No limit"]])}</div>
+  ${(() => {
+    const series = (state.series || []).filter((x) => x.client_id === id && x.status !== "stopped");
+    return series.length ? `<h2>Repeating</h2><div class="list">${series.map((x) => `
+      <div class="row"><div class="main"><div class="title">${esc(x.service)}</div>
+        <div class="meta">${seriesLine(x)}</div><div class="meta">${seriesMeta(x)}</div></div>
+        ${x.status === "active" ? `<button class="btn small danger" data-act="series-stop" data-id="${x.id}">Stop</button>` : ""}
+      </div>`).join("")}</div>` : "";
+  })()}
+  <div class="stack">
+    <button class="btn" data-act="series-open" data-id="${esc(id)}">Set up a repeating booking</button>
+    <button class="btn secondary" data-act="view-as" data-who="${esc(id)}">See ${esc(c.name)}'s view</button>
     <button class="btn ghost" data-act="close">Close</button></div>`;
+}
+
+// The provider setting one up for a client — how weekly therapy usually
+// starts: agreed in the room, entered by the clinician.
+function seriesSheet(clientId) {
+  const services = bookable();
+  const key = `series-${clientId}`;
+  const p = ui.pickers[key] || {};
+  if (!p.service || !services.some((x) => x.id === p.service)) {
+    p.service = (services.slice().sort((a, b) => a.duration - b.duration)[0] || {}).id;
+  }
+  if (!p.every) p.every = 1;
+  const service = serviceById(p.service);
+  if (!service) return `<h3>Nothing to book</h3><p>No services are listed.</p>`;
+  const body = picker(key, clientId, service.duration);
+  Object.assign(ui.pickers[key], {service: p.service, every: p.every});
+  const start = pickedStart(key);
+  return `<h3>Repeating booking for ${esc(nameOf(clientId))}</h3>
+    <h2>What</h2><div class="choices">${services.map((x) => `
+      <button class="choice" data-act="series-service" data-client="${esc(clientId)}" data-id="${esc(x.id)}"
+        aria-pressed="${x.id === p.service}"><span><b>${esc(x.name)}</b><br>
+        <span class="meta">${x.duration} minutes</span></span></button>`).join("")}</div>
+    <h2>First session</h2>${body}
+    <h2>How often</h2>
+    <div class="segmented">${FREQUENCIES.filter(([n]) => n).map(([n, label]) => `
+      <button type="button" data-act="series-every" data-client="${esc(clientId)}" data-n="${n}"
+        aria-pressed="${p.every === n}">${label}</button>`).join("")}</div>
+    ${untilField("series-until")}
+    <div class="stack">
+      <button class="btn block" data-act="series-submit" data-client="${esc(clientId)}" ${start ? "" : "disabled"}>
+        ${start ? `Start ${everyWords(p.every)} from ${fmtDay(start)}` : "Pick the first session"}</button>
+      <button class="btn ghost" data-act="close">Cancel</button>
+    </div>
+    <p class="hint">Times shown are when ${esc(nameOf(clientId))} is free. Each session is still
+      offered to them to accept as it comes up.</p>`;
 }
 
 function servicesView() {
@@ -1337,6 +1452,7 @@ function openSheet(renderer) {
   $("sheet").hidden = false;
   $("scrim").hidden = false;
   $("sheet").scrollTop = 0;
+  restoreScrolls($("sheet"), {});      // visible now, so the strip can be measured
 }
 
 function closeSheet(answer) {
@@ -1350,8 +1466,10 @@ function closeSheet(answer) {
 function redrawSheet() {
   if (!sheetRenderer) return;
   const kept = keepForms($("sheet"));
+  const scrolls = keepScrolls($("sheet"));
   $("sheet").innerHTML = `<div class="grabber"></div>${sheetRenderer()}`;
   restoreForms($("sheet"), kept);
+  restoreScrolls($("sheet"), scrolls);
 }
 
 // A yes/no question, as a sheet rather than confirm(): a native dialog on a
@@ -1388,7 +1506,7 @@ function go(next) {
 // Choices belong to the person who made them; nobody inherits a half-picked
 // booking from whoever was on the screen before.
 function resetChoices() {
-  ui.pickers = {}; ui.bookService = null; ui.diaryDay = null;
+  ui.pickers = {}; ui.bookService = null; ui.bookEvery = 0; ui.diaryDay = null;
   ui.runOver = null; ui.runSeen = null; ui.picked = {};
 }
 
@@ -1430,12 +1548,47 @@ const ACTIONS = {
     await done(api(`/api/requests/${d.id}/withdraw`), "Request withdrawn");
   },
   "book-service": (d) => { ui.bookService = d.id; render(true); },
+  "book-every": (d) => { ui.bookEvery = Number(d.n); render(true); },
   "book-submit": async () => {
     const start = pickedStart("book");
     if (!start) return;
-    const ok = await done(api("/api/requests", {client_id: me, service_id: ui.bookService, preferred_start: start}),
-                          "Request sent — you'll be offered a time");
-    if (ok) { delete ui.pickers.book; go("home"); }
+    let ok;
+    if (ui.bookEvery) {
+      const until = document.querySelector('[data-form="book-until"] [name="until"]');
+      ok = await done(api("/api/series", {client_id: me, service_id: ui.bookService, first_start: start,
+                                          every_weeks: ui.bookEvery, until: (until && until.value) || null}),
+                      `Set up ${everyWords(ui.bookEvery)} — no need to ask again`);
+    } else {
+      ok = await done(api("/api/requests", {client_id: me, service_id: ui.bookService, preferred_start: start}),
+                      "Request sent — you'll be offered a time");
+    }
+    if (ok) { delete ui.pickers.book; ui.bookEvery = 0; go("home"); }
+  },
+  "series-stop": async (d) => {
+    const x = (state.series || []).find((y) => y.id === Number(d.id));
+    if (!await ask("Stop this repeating booking?",
+        `${esc(x ? x.service : "")}, ${x ? seriesLine(x) : ""}. Sessions already booked stay booked;
+         ones not yet booked are withdrawn.`, "Stop it", true)) return;
+    await done(api(`/api/series/${d.id}/stop`), "Stopped");
+  },
+  "series-open": (d) => openSheet(() => seriesSheet(d.id)),
+  limit: async (d) => {
+    const c = clientById(d.client);
+    const next = {per_day: c.per_day ?? null, per_week: c.per_week ?? null};
+    next[d.kind] = d.n === "" ? null : Number(d.n);
+    await done(api(`/api/clients/${encodeURIComponent(d.client)}/limits`, next),
+               `${c.name}: ${limitWords(next)}`);
+  },
+  "series-service": (d) => { ui.pickers[`series-${d.client}`].service = d.id; redrawSheet(); },
+  "series-every": (d) => { ui.pickers[`series-${d.client}`].every = Number(d.n); redrawSheet(); },
+  "series-submit": async (d) => {
+    const key = `series-${d.client}`, start = pickedStart(key), p = ui.pickers[key];
+    if (!start) return;
+    const until = document.querySelector('[data-form="series-until"] [name="until"]');
+    const ok = await done(api("/api/series", {client_id: d.client, service_id: p.service, first_start: start,
+                                              every_weeks: p.every, until: (until && until.value) || null}),
+                          `Set up ${everyWords(p.every)} for ${nameOf(d.client)}`);
+    if (ok) { delete ui.pickers[key]; closeSheet(); }
   },
   booking: (d) => openSheet(() => bookingSheet(Number(d.id))),
   "move-open": (d) => openSheet(() => moveSheet(Number(d.id))),
@@ -1578,6 +1731,9 @@ const ACTIONS = {
 };
 
 const FORMS = {
+  // Fields only, read by the button beside them; Enter in one does nothing.
+  "book-until": () => {},
+  "series-until": () => {},
   range: async (form) => {
     const from = form.elements.from.value, to = form.elements.to.value;
     if (toMin(to) <= toMin(from)) { toast("The end has to be after the start"); return; }
@@ -1667,9 +1823,10 @@ document.addEventListener("input", (event) => {
 });
 document.addEventListener("submit", (event) => {
   const form = event.target.closest("[data-form]");
-  if (!form || !FORMS[form.dataset.form]) return;
+  if (!form) return;
+  // Never a real submission: that would reload the page and lose everything.
   event.preventDefault();
-  FORMS[form.dataset.form](form);
+  if (FORMS[form.dataset.form]) FORMS[form.dataset.form](form);
 });
 
 if ($("scrim")) $("scrim").addEventListener("click", () => closeSheet(false));

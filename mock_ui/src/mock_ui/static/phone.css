@@ -234,6 +234,7 @@ button.row:active { background: var(--surface-2); }
 
 .days {
   display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x proximity;
+  scroll-padding-inline: 16px;     /* snap to the gutter, not the screen edge */
   margin: 0 -16px; padding: 2px 16px 8px; scrollbar-width: none;
 }
 .days::-webkit-scrollbar { display: none; }
