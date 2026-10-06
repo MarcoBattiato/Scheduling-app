@@ -32,13 +32,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ortools.sat.python import cp_model
 
 from .fragmentation import waste_minutes, waste_table
 from .models import (
     BookingRequest,
+    ClientId,
+    ClientLimit,
     CostConfig,
     Displacement,
     MovableAppointment,
@@ -80,6 +82,7 @@ def solve_placements(
     max_displacements: int = 0,
     allow_chains: bool = False,
     time_limit_seconds: float = 10.0,
+    client_limits: Optional[Mapping[ClientId, ClientLimit]] = None,
 ) -> PlacementResult:
     """Place as many of `requests` as will fit into `provider_free`.
 
@@ -104,6 +107,11 @@ def solve_placements(
     the strongest argument against them (compounding refusal risk, and
     SPEC.md §7.4's independent application of confirmed moves) belongs to
     negotiation, which is not modelled yet.
+
+    `client_limits` caps how many sessions a client may have in a day and in
+    an ISO week, counting what is placed, what is moved, and their `fixed`
+    sessions alike — so two requests from one client cannot both land on the
+    same day, and a move cannot stack a client's week. See `ClientLimit`.
 
     `time_limit_seconds` applies to each of the two solve phases (see `_solve`),
     so a fully saturated call can take twice it. On timeout the result is the
@@ -130,7 +138,15 @@ def solve_placements(
             raise ValueError(f"duplicate request id {request.id!r}")
         seen.add(request.id)
 
-    movable = list(movable) if max_displacements > 0 else []
+    client_limits = dict(client_limits or {})
+    for client_id, limit in client_limits.items():
+        for name in ("per_day", "per_week"):
+            value = getattr(limit, name)
+            if value is not None and value < 1:
+                raise ValueError(f"client {client_id!r}: {name} must be at least 1")
+
+    offered = list(movable)
+    movable = offered if max_displacements > 0 else []
     for appointment in movable:
         if appointment.range.end <= appointment.range.start:
             raise ValueError(f"appointment {appointment.id}: empty or reversed range")
@@ -146,6 +162,20 @@ def solve_placements(
     )
     moves = _moves_for(movable, blocks, free_blocks, origin, config, allow_chains)
 
+    # A booking offered as movable but dropped above — displacement off, or
+    # nothing could use its slot — stays exactly where it is. It is a fixed
+    # session now, and must count as one, or a limit would see straight past
+    # the very booking it exists to count.
+    still_movable = {appointment.id for appointment in movable}
+    for appointment in offered:
+        limit = client_limits.get(appointment.client_id)
+        if limit is None or appointment.id in still_movable:
+            continue
+        client_limits[appointment.client_id] = ClientLimit(
+            per_day=limit.per_day, per_week=limit.per_week,
+            fixed=tuple(limit.fixed) + (appointment.range.start,),
+        )
+
     # Nothing to decide — but the calendar still has whatever waste it had, and
     # reporting 0 here would make the figure mean different things on different
     # paths.
@@ -157,7 +187,7 @@ def solve_placements(
 
     return _solve(
         requests, movable, blocks, candidates, moves, origin, config,
-        max_displacements, time_limit_seconds,
+        max_displacements, time_limit_seconds, client_limits,
     )
 
 
@@ -400,6 +430,7 @@ def _solve(
     config: CostConfig,
     max_displacements: int,
     time_limit_seconds: float,
+    client_limits: Mapping[ClientId, ClientLimit],
 ) -> PlacementResult:
     """Three solves, not one.
 
@@ -436,7 +467,8 @@ def _solve(
 
     def build():
         return _base_model(
-            requests, candidates, movable, moves, max_displacements, origin, grid
+            requests, candidates, movable, moves, max_displacements, origin, grid,
+            client_limits,
         )
 
     model, chosen, kept, moved, _ = build()
@@ -573,6 +605,7 @@ def _base_model(
     max_displacements: int,
     origin: datetime,
     grid: int,
+    client_limits: Mapping[ClientId, ClientLimit] = None,
 ):
     """Assignment only: at most one slot per request, exactly one per accepted
     booking, and no two of anything sharing a cell. Every solve phase starts
@@ -611,8 +644,66 @@ def _base_model(
         if len(literals) > 1:
             model.AddAtMostOne(literals)
 
+    _limit_per_client(model, requests, candidates, chosen, movable, kept,
+                      moves, moved, origin, grid, client_limits or {})
     _break_symmetry(model, requests, candidates, by_request, chosen)
     return model, chosen, kept, moved, covering
+
+
+def _limit_per_client(
+    model: cp_model.CpModel,
+    requests: Sequence[BookingRequest],
+    candidates: Sequence[_Candidate],
+    chosen: Sequence,
+    movable: Sequence[MovableAppointment],
+    kept: Sequence,
+    moves: Sequence[_Move],
+    moved: Sequence,
+    origin: datetime,
+    grid: int,
+    client_limits: Mapping[ClientId, ClientLimit],
+) -> None:
+    """At most `per_day` sessions on any one day and `per_week` in any ISO
+    week, for each client with a limit.
+
+    Every session the client could end up with on a day is a literal: a
+    request placed there, a booking staying there, a booking moved there. The
+    bound is the limit, or what the day already holds if that is more — so a
+    day over the limit before it was set may stay as it is, but nothing new is
+    added to it, and nobody is ever forced to move to satisfy it.
+    """
+    if not client_limits:
+        return
+
+    def at(cell: int) -> datetime:
+        return origin + timedelta(minutes=cell * grid)
+
+    periods = (("per_day", lambda moment: moment.date()),
+               ("per_week", lambda moment: tuple(moment.isocalendar()[:2])))
+    for client_id, limit in client_limits.items():
+        for name, period_of in periods:
+            cap = getattr(limit, name)
+            if cap is None:
+                continue
+            literals: Dict[object, List] = {}
+            already: Dict[object, int] = {}
+            for moment in limit.fixed:
+                already[period_of(moment)] = already.get(period_of(moment), 0) + 1
+            for i, candidate in enumerate(candidates):
+                if requests[candidate.request_index].client_id == client_id:
+                    literals.setdefault(period_of(at(candidate.start_cell)), []).append(chosen[i])
+            for index, appointment in enumerate(movable):
+                if appointment.client_id == client_id:
+                    period = period_of(appointment.range.start)
+                    literals.setdefault(period, []).append(kept[index])
+                    already[period] = already.get(period, 0) + 1
+            for i, move in enumerate(moves):
+                if movable[move.movable_index].client_id == client_id:
+                    literals.setdefault(period_of(at(move.start_cell)), []).append(moved[i])
+            for period, terms in literals.items():
+                fixed_here = sum(1 for m in limit.fixed if period_of(m) == period)
+                bound = max(cap, already.get(period, 0)) - fixed_here
+                model.Add(sum(terms) <= bound)
 
 
 def _covering(

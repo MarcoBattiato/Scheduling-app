@@ -85,6 +85,27 @@ class BookingRequest:
 
 
 @dataclass(frozen=True)
+class ClientLimit:
+    """How many sessions one client may have in a day, and in a week.
+
+    A hard constraint on what the solver *adds*: no placement or move may take
+    a client's day (or ISO week) above its limit. A day already over it —
+    because the limit was set after the bookings were made — is left as it is
+    rather than forcing anybody out of it, so the limit can never make the
+    status quo infeasible.
+
+    `fixed` is the start of every session this client already has that the
+    solver cannot move: their bookings not passed as `movable`, and any slot
+    held for them while an offer is out. The solver is never told whose fixed
+    bookings are whose otherwise — they arrive subtracted from free time — so
+    without this it would count only what it is placing.
+    """
+    per_day: Optional[int] = None
+    per_week: Optional[int] = None
+    fixed: Sequence[datetime] = ()
+
+
+@dataclass(frozen=True)
 class CostConfig:
     """Tuning for the placement objective (SPEC.md §10 is still deferred for
     the wider disruption cost; this covers placement into free time only).

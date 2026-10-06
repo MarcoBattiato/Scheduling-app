@@ -26,6 +26,14 @@ moves, `stay[A] + Σ y[A,t] == 1`. Where it may move comes from
 bounds. Staying put is always legal and deliberately not derived from
 availability, since availability may have been edited since they booked.
 
+`client_limits` caps sessions per client per day and per ISO week
+(`ClientLimit`). Fixed bookings arrive as time subtracted from
+`provider_free`, anonymous, so the caller lists each client's in
+`ClientLimit.fixed`; a booking offered as movable but dropped (displacement
+off, or nothing could use its slot) is added there by the solver itself. The
+bound is `max(limit, what the period already holds)`, so the status quo is
+always feasible and nobody is moved to satisfy a limit set after the fact.
+
 `allow_chains=False` (default) stops a displaced booking taking a slot another
 displaced booking is vacating, so each new placement depends on one client
 agreeing rather than a sequence. Measured: same placements, same move count,

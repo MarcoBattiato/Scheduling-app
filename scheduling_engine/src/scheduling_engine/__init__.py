@@ -3,6 +3,7 @@ from .fragmentation import waste_minutes, waste_table
 from .models import (
     DEFAULT_SERVICE_DURATIONS,
     BookingRequest,
+    ClientLimit,
     CostConfig,
     Displacement,
     MovableAppointment,
@@ -17,6 +18,7 @@ from .visualize import Gap, Track, gaps_left, render
 
 __all__ = [
     "BookingRequest",
+    "ClientLimit",
     "CostConfig",
     "DEFAULT_SERVICE_DURATIONS",
     "Displacement",
