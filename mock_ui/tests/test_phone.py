@@ -1,0 +1,364 @@
+"""The phone front end, checked the way the desktop page is: load the script
+the way the browser does, feed it real state, and look at what it draws.
+
+Every screen is rendered for every person against the states that matter —
+an untouched calendar, a draft proposal, a plan out with the clients, and a
+plan where somebody has agreed to something that cannot yet happen. A view
+that throws on one of those is a blank tab on somebody's phone.
+"""
+import json
+import re
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime, time
+from pathlib import Path
+
+import pytest
+
+from mock_ui import scenarios
+from mock_ui.state import World
+
+STATIC = Path(__file__).resolve().parent.parent / "src" / "mock_ui" / "static"
+node = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+
+CLIENT_TABS = ["home", "book", "bookings", "hours"]
+PROVIDER_TABS = ["home", "diary", "queue", "plans", "more", "more/hours", "more/away",
+                 "more/clients", "more/services", "more/settings", "more/activity"]
+
+
+# -- states worth drawing --------------------------------------------------
+
+
+def _small():
+    world = World()
+    scenarios.load(world, "simple")
+    return world
+
+
+def untouched():
+    return _small().snapshot()
+
+
+def drafted():
+    world = _small()
+    world.propose()
+    return world.snapshot()
+
+
+def asked():
+    world = _small()
+    plan_id = world.propose()["plan_id"]
+    world.provider_approve(plan_id)
+    return world.snapshot()
+
+
+def carol_agreed_dan_has_not():
+    """Carol's slot is Dan's, and Dan has not answered. Her "yes" cannot be
+    written down yet, and the screen must not offer to confirm it."""
+    world = _small()
+    plan_id = world.propose()["plan_id"]
+    world.provider_approve(plan_id)
+    carol = next(a for a in world.approvals.values() if a.client_id == "carol")
+    world.respond_to_approval(carol.id, "accept")
+    return world.snapshot()
+
+
+def busy():
+    world = World()
+    scenarios.load(world, "busy")
+    world.propose()
+    return world.snapshot()
+
+
+STATES = {"untouched": untouched, "drafted": drafted, "asked": asked,
+          "blocked": carol_agreed_dan_has_not, "busy": busy}
+
+
+# -- the harness ---------------------------------------------------------
+
+HARNESS = r"""
+  const vm = require("vm"), fs = require("fs");
+  const [script, html, statePath, plan] = process.argv.slice(1);
+  const stateText = fs.readFileSync(statePath, "utf8");
+  const wanted = JSON.parse(plan);
+  // Only ids really in the page resolve, so a renamed element is caught.
+  const realIds = new Set([...fs.readFileSync(html, "utf8").matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+  const noop = () => {}, els = {}, missing = [];
+  const el = () => ({innerHTML: "", textContent: "", value: "", hidden: true, dataset: {}, style: {},
+                     addEventListener: noop, querySelector: () => null, querySelectorAll: () => [],
+                     classList: {add: noop, remove: noop}});
+  const sandbox = {
+    console, setInterval: noop, setTimeout, clearTimeout,
+    document: {
+      addEventListener: noop, activeElement: null, title: "",
+      querySelectorAll: () => [], querySelector: () => null,
+      getElementById: (id) => {
+        if (!realIds.has(id)) { missing.push(id); return null; }
+        return els[id] = els[id] || el();
+      },
+    },
+    location: {search: "?as=provider", hash: ""},
+    history: {replaceState: noop},
+    localStorage: {getItem: () => null, setItem: noop},
+    URLSearchParams,
+    fetch: async () => ({ok: true, text: async () => stateText, json: async () => JSON.parse(stateText)}),
+    scrollTo: noop, addEventListener: noop,
+  };
+  sandbox.window = sandbox;
+  const ctx = vm.createContext(sandbox);
+  const out = {problems: [], missing: [], views: {}};
+  try { new vm.Script(fs.readFileSync(script, "utf8"), {filename: script}).runInContext(ctx); }
+  catch (e) { out.problems.push(`load: ${e.message}`); }
+  setTimeout(() => {
+    const P = sandbox.Phone;
+    if (!P) { out.problems.push("window.Phone never defined"); console.log(JSON.stringify(out)); return; }
+    out.actions = P.actions; out.forms = P.forms;
+    for (const [who, tabs] of Object.entries(wanted)) {
+      for (const tab of tabs) {
+        try { out.views[`${who}:${tab}`] = P.show(who, tab) + "\n<!--tabs-->" + P.tabs(); }
+        catch (e) { out.problems.push(`${who}:${tab}: ${e.stack.split("\n").slice(0, 2).join(" ")}`); }
+      }
+    }
+    out.missing = [...new Set(missing)];
+    console.log(JSON.stringify(out));
+  }, 30);
+"""
+
+
+def draw(state: dict, plan: dict) -> dict:
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(state, fh, default=str)
+        path = fh.name
+    result = subprocess.run(
+        ["node", "-e", HARNESS, str(STATIC / "phone.js"), str(STATIC / "phone.html"),
+         path, json.dumps(plan)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def everyone(state: dict) -> dict:
+    plan = {"provider": PROVIDER_TABS}
+    for client in state["clients"]:
+        plan[client["id"]] = CLIENT_TABS
+    return plan
+
+
+@pytest.fixture(scope="module")
+def drawn():
+    """Every screen, for every person, in every state — drawn once."""
+    out = {}
+    for name, build in STATES.items():
+        state = build()
+        out[name] = draw(state, everyone(state))
+    return out
+
+
+# -- it loads, and every screen draws ---------------------------------------
+
+
+@node
+def test_the_script_parses():
+    result = subprocess.run(["node", "--check", str(STATIC / "phone.js")],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@node
+@pytest.mark.parametrize("name", sorted(STATES))
+def test_every_screen_draws_for_everyone(drawn, name):
+    out = drawn[name]
+
+    assert not out["problems"], out["problems"]
+    assert not out["missing"], f"phone.js reaches for ids not in phone.html: {out['missing']}"
+    blank = [k for k, html in out["views"].items() if len(html.split("<!--tabs-->")[0]) < 80]
+    assert not blank, f"screens that drew next to nothing: {blank}"
+
+
+@node
+def test_every_button_has_something_to_do(drawn):
+    """A data-act with no handler is a button that silently does nothing —
+    the commonest way a delegated-click page breaks."""
+    acts, forms = set(), set()
+    for out in drawn.values():
+        for html in out["views"].values():
+            acts |= set(re.findall(r'data-act="([^"]+)"', html))
+            forms |= set(re.findall(r'data-form="([^"]+)"', html))
+    handled = set(next(iter(drawn.values()))["actions"])
+    # "alpha" is read on input rather than dispatched, so the slider stays smooth.
+    assert acts - handled - {"alpha"} == set()
+    assert forms - set(next(iter(drawn.values()))["forms"]) == set()
+
+
+@node
+def test_a_client_and_the_provider_get_different_tabs(drawn):
+    views = drawn["untouched"]["views"]
+    client_tabs = views["carol:home"].split("<!--tabs-->")[1]
+    provider_tabs = views["provider:home"].split("<!--tabs-->")[1]
+
+    assert 'data-tab="book"' in client_tabs and 'data-tab="plans"' not in client_tabs
+    assert 'data-tab="plans"' in provider_tabs and 'data-tab="book"' not in provider_tabs
+
+
+# -- what each person is shown ---------------------------------------------
+
+
+def screen(drawn, state, key):
+    return drawn[state]["views"][key].split("<!--tabs-->")[0]
+
+
+@node
+def test_a_proposal_says_what_it_rests_on(drawn):
+    """Carol only fits if Dan moves. A proposal that hides that looks
+    free-standing, and the provider approves one part without the other."""
+    plans = screen(drawn, "drafted", "provider:plans")
+
+    assert "Only if Dan moves first" in plans
+    assert "strip-track" in plans, "drawn against the day it lands in, not as a bare list"
+
+
+@node
+def test_being_asked_to_move_has_three_answers(drawn):
+    dan = screen(drawn, "asked", "dan:home")
+
+    for answer in ("accept", "decline", "refuse"):
+        assert f'data-answer="{answer}"' in dan
+    assert "Not that time" in dan and "Keep my slot" in dan
+
+
+@node
+def test_an_offer_has_two_answers_not_three(drawn):
+    """There is nothing to refuse to move when nothing is being moved."""
+    carol = screen(drawn, "asked", "carol:home")
+
+    assert 'data-answer="accept"' in carol and 'data-answer="decline"' in carol
+    assert 'data-answer="refuse"' not in carol
+
+
+@node
+def test_agreeing_does_not_make_it_vanish(drawn):
+    """A client who said yes needs to see that the clinic has not confirmed
+    yet, or "it went through" and "it was dropped" look the same."""
+    carol = screen(drawn, "blocked", "carol:home")
+
+    assert "waiting for the clinic" in carol
+
+
+@node
+def test_a_yes_that_cannot_happen_yet_is_not_offered_for_confirming(drawn):
+    """The server holds Carol's booking until Dan agrees to vacate the slot.
+    A button promising to confirm "the 1 agreed" would confirm nothing."""
+    plans = screen(drawn, "blocked", "provider:plans")
+
+    assert "waits for Dan" in plans
+    assert "Nothing ready to confirm yet" in plans
+    assert "Confirm the 1 agreed" not in plans
+
+
+@node
+def test_a_client_never_sees_anybody_else(drawn):
+    """Scoping is not enforced by the server yet, so the views must not leak
+    names on their own account."""
+    others = {"Alice", "Bob", "Dan"}
+    for tab in CLIENT_TABS:
+        html = screen(drawn, "asked", f"carol:{tab}")
+        assert not {name for name in others if name in html}, (tab, html[:400])
+
+
+@node
+def test_a_client_is_only_offered_times_they_are_free(drawn):
+    """Carol is free Tuesdays 09:00-11:00 only, so the time chips on her
+    booking screen are 09:00, 09:30 and 10:00 for an hour's session."""
+    book = screen(drawn, "untouched", "carol:book")
+    chips = re.findall(r'data-act="pick-time"[^>]*>(\d\d:\d\d)<', book)
+
+    assert chips == ["09:00", "09:30", "10:00"], chips
+
+
+@node
+def test_the_diary_lays_overlaps_side_by_side():
+    """An offered slot sits exactly on the booking it would replace; drawn on
+    top of each other, one of them is invisible."""
+    state = asked()
+    tuesday = next(a["now"][:10] for a in state["approvals"] if a["client_id"] == "carol")
+
+    out = draw(state, {"provider": [f"diary@{tuesday}"]})
+
+    assert not out["problems"], out["problems"]
+    html = out["views"][f"provider:diary@{tuesday}"]
+    assert 'class="slot offered' in html, "Carol's offered slot is drawn"
+    assert "(100% - 12px) / 2 * 1" in html, "and shares the width with Dan's booking"
+
+
+# -- served, cached, and installable ----------------------------------------
+
+
+@pytest.fixture
+def client():
+    from fastapi.testclient import TestClient
+    from mock_ui import app as app_module
+    return TestClient(app_module.app)
+
+
+def test_the_phone_page_is_served_fresh_and_versioned(client):
+    page = client.get("/phone")
+
+    assert page.status_code == 200
+    for asset in ("phone.js", "phone.css"):
+        assert f"/static/{asset}?v=" in page.text, f"{asset} is not cache-busted"
+    assert "no-store" in page.headers.get("cache-control", "")
+
+
+def test_it_can_be_added_to_a_home_screen(client):
+    manifest = client.get("/static/phone.webmanifest")
+
+    assert manifest.status_code == 200
+    assert "manifest" in manifest.headers["content-type"]
+    body = manifest.json()
+    assert body["start_url"] == "/phone"
+    assert body["display"] == "standalone"
+    assert client.get(body["icons"][0]["src"]).status_code == 200
+
+
+def test_the_phone_page_reports_a_broken_script():
+    html = (STATIC / "phone.html").read_text()
+
+    assert html.index("boot-error") < html.index("phone.js")
+    assert "unhandledrejection" in html
+
+
+def test_every_element_the_script_reaches_for_exists():
+    html = (STATIC / "phone.html").read_text()
+    wanted = set(re.findall(r'\$\("([a-z-]+)"\)', (STATIC / "phone.js").read_text()))
+
+    assert not {i for i in wanted if f'id="{i}"' not in html}
+
+
+def test_a_phone_opening_the_desktop_page_is_sent_to_the_phone_one():
+    """And can still opt out, since the desktop page is the only place some
+    things (the arrows, the hover peek) exist."""
+    html = (STATIC / "index.html").read_text()
+    head = html[:html.index("</head>")]
+
+    assert 'location.replace("/phone"' in head
+    assert "desktop=1" in head
+
+
+def test_nothing_needs_a_mouse():
+    """No hover-only behaviour and no drag: neither exists on a phone."""
+    script = (STATIC / "phone.js").read_text()
+    css = (STATIC / "phone.css").read_text()
+
+    for event in ("mouseover", "mousedown", "mouseup", "dragstart"):
+        assert event not in script
+    assert ":hover" not in css
+
+
+def test_inputs_are_big_enough_that_ios_does_not_zoom():
+    """iOS zooms the page into any input under 16px and does not zoom back."""
+    css = (STATIC / "phone.css").read_text()
+
+    assert re.search(r"\.field input, \.field select \{[^}]*font-size: 16px", css)
+    assert re.search(r"body \{[^}]*16px", css)

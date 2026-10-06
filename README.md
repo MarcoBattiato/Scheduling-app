@@ -244,6 +244,21 @@ Then open a tab per person: `http://127.0.0.1:8000/?as=provider`,
 one engine, so an action in one tab shows up in the others within a couple of
 seconds.
 
+**On a phone**, use `/phone` instead (`/phone?as=carol`). It is a separate page
+over the same API: a bottom tab bar, and taps, sheets and pickers in place of
+the desktop page's drag and hover. A narrow screen opening `/` is sent there
+automatically (`?desktop=1` opts out). To reach it from a real phone the server
+has to listen beyond this machine:
+
+```bash
+./mock_ui/run.sh --host 0.0.0.0
+```
+
+then open `http://<your computer's LAN address>:8000/phone` on the phone, on the
+same Wi-Fi. There is **no login of any kind**, so anyone on that network can
+open it and act as anyone. Fine for trying it out at home; do not do it on a
+shared network.
+
 ### The solver playground
 
 The engine can be driven directly from a JSON scenario file, with no UI involved:
@@ -290,8 +305,8 @@ cd calendar_store   && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 cd mock_ui          && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 ```
 
-471 tests: 239 for the engine, 64 for the store, 168 for the mock UI. See the note
-on the one known failure below.
+573 tests: 239 for the engine, 64 for the store, 241 for the mock UI, 29 for the
+contracts. See the note on the one known failure below.
 
 ---
 

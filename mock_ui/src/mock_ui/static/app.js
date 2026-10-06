@@ -48,6 +48,7 @@ function render() {
     sel.innerHTML = known.map((id) => `<option value="${id}">${id}</option>`).join("");
   }
   sel.value = me;
+  $("phone-link").href = `/phone?as=${encodeURIComponent(me)}`;
 
   const s = state.settings, sch = state.scheduler || {};
   $("settings").textContent =
@@ -898,9 +899,12 @@ $("solve").onclick = async () => {
 };
 $("save").onclick = async () => { const r = await api("/api/snapshot/save"); alert("Saved " + r.saved); };
 $("reset").onclick = async () => {
-  if (confirm("Throw away this session and start again?")) {
-    await api("/api/reset"); pendingGrid = null; picked = {}; refresh();
-  }
+  const which = $("scenario").value;
+  const named = $("scenario").selectedOptions[0].textContent.toLowerCase();
+  if (!confirm(`Throw away this session and start again on the ${named}?`)) return;
+  await api(`/api/reset?scenario=${encodeURIComponent(which)}`);
+  pendingGrid = null; picked = {}; runOver = null;
+  refresh();
 };
 $("save-avail").onclick = async () => {
   const ranges = [];

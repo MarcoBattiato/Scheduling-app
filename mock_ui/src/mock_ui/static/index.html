@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Scheduling mock</title>
 <link rel="stylesheet" href="/static/style.css">
+<script>
+// A week grid driven by hover and drag is unusable on a phone, so a phone
+// gets the page built for one. ?desktop=1 opts out, for anyone who wants this
+// one anyway.
+if (window.matchMedia("(max-width: 700px)").matches
+    && !/[?&]desktop=1/.test(location.search)) {
+  location.replace("/phone" + location.search);
+}
+</script>
 </head>
 <body>
 <!-- Registered before any other script: a syntax error or a missing global
@@ -45,7 +54,13 @@ window.addEventListener("unhandledrejection", function (e) {
   </span>
   <button id="solve" class="ghost">Run scheduler</button>
   <button id="save" class="ghost">Save session</button>
-  <button id="reset" class="ghost danger">Reset</button>
+  <select id="scenario" title="Which example calendar to start from">
+    <option value="simple">Small example</option>
+    <option value="busy">Realistic practice</option>
+    <option value="empty">Empty</option>
+  </select>
+  <button id="reset" class="ghost danger">Start over</button>
+  <a id="phone-link" class="ghost" href="/phone">Phone view</a>
 </header>
 
 <main>

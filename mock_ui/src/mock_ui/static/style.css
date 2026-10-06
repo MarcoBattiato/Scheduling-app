@@ -53,6 +53,8 @@ button {
   border: 1px solid var(--accent); background: var(--accent); color: #fff;
 }
 button.ghost { background: transparent; color: var(--fg); border-color: var(--line); }
+#phone-link { color: var(--fg); text-decoration: none; font-size: 13px; padding: 5px 10px;
+              border: 1px solid var(--line); border-radius: 6px; }
 button.danger { border-color: var(--warn); color: var(--warn); }
 /* The provider reading answers: agreed, waiting and refused each need to be
    distinguishable at a glance, since the three buttons act on them by group. */

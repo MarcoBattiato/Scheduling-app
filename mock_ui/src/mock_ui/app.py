@@ -6,8 +6,9 @@ Deliberately holds no logic of its own — anything interesting belongs in
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 import os
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,10 +19,13 @@ from pydantic import BaseModel
 
 from calendar_store import Party
 
-from . import persistence
-from .state import PROVIDER, World
+from . import persistence, scenarios
+from .state import World
 
 STATIC = Path(__file__).parent / "static"
+# Not in every platform's table, and a manifest served as octet-stream is
+# ignored, so "Add to Home Screen" would open the desktop page.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 def default_snapshot() -> Path:
     """Beside the package, not beside the shell.
 
@@ -435,68 +439,51 @@ def snapshot_save():
 
 
 @app.post("/api/reset")
-def reset(seed: bool = True):
-    """Start again — including on disk.
+def reset(scenario: str = "simple"):
+    """Start again on a chosen example calendar — including on disk.
 
     Leaving the saved file behind would mean a reset that undoes itself at the
     next restart, which is the opposite of what the button says.
+
+    `scenario` is a key from `scenarios.SCENARIOS`, or "empty" for nothing at
+    all. Both examples are built so the first run has something to negotiate
+    about; see that module for why that has to be deliberate.
     """
     global world
     world = World()
-    if seed:
-        seed_world(world)
+    if scenario != "empty":
+        try:
+            scenarios.load(world, scenario)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
     SNAPSHOT.unlink(missing_ok=True)
-    return {"ok": True}
+    return {"ok": True, "scenario": scenario}
+
+
+@app.get("/api/scenarios")
+def list_scenarios():
+    return {"scenarios": sorted(scenarios.SCENARIOS) + ["empty"]}
 
 
 # -- a world worth opening on the first run --------------------------
 
 
-def seed_world(target: World) -> None:
-    """Enough of a calendar that the first page load shows something.
-
-    Weekdays 09:00-17:00 for the provider, three clients with different
-    availability, and one booking each so history starts accumulating rather
-    than requiring setup before anything can be tried.
-    """
-    target.catalogue.add_service("session-60", "Standard session", 60, 8000)
-    target.catalogue.add_service("session-90", "Extended session", 90, 11000)
-    target.catalogue.add_service("break", "Break", 60, 0, client_bookable=False)
-
-    target.add_client("alice", "Alice")
-    target.add_client("bob", "Bob")
-    target.add_client("carol", "Carol")
-
-    weekdays = [{"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)]
-    target.set_weekly_availability(PROVIDER, weekdays)
-    target.set_weekly_availability("alice", [
-        {"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)
-    ])
-    target.set_weekly_availability("bob", [
-        {"weekday": d, "from": "13:00", "to": "17:00"} for d in (0, 2, 4)
-    ])
-    target.set_weekly_availability("carol", [
-        {"weekday": d, "from": "10:00", "to": "16:00"} for d in (1, 3)
-    ])
-
-    monday = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7)
-    for client_id, day_offset, hour in (
-        ("alice", 0, 10), ("bob", 0, 14), ("carol", 1, 11),
-    ):
-        start = datetime.combine(monday + timedelta(days=day_offset), time(hour))
-        target.store.book_appointment(
-            client_id, "session-60", start, start + timedelta(minutes=60)
-        )
-    target._note("seeded a starting calendar")
-
-
 def _asset_version() -> str:
     """A hash of the scripts, so their URLs change whenever they do."""
     digest = hashlib.sha256()
-    for name in sorted(STATIC.glob("*.js")):
+    for name in sorted([*STATIC.glob("*.js"), *STATIC.glob("*.css")]):
         digest.update(name.read_bytes())
-    digest.update((STATIC / "style.css").read_bytes())
     return digest.hexdigest()[:12]
+
+
+def _page(name: str, assets) -> HTMLResponse:
+    # Version the asset URLs too, so even a cache that ignores the header
+    # cannot pair a stale script with a fresh one.
+    html = (STATIC / name).read_text()
+    version = _asset_version()
+    for asset in assets:
+        html = html.replace(f"/static/{asset}", f"/static/{asset}?v={version}")
+    return HTMLResponse(html)
 
 
 @app.middleware("http")
@@ -525,23 +512,25 @@ async def no_stale_assets(request, call_next):
     This is a development tool, so correctness beats a cache hit.
     """
     response = await call_next(request)
-    if request.url.path.startswith("/static") or request.url.path == "/":
+    if request.url.path.startswith("/static") or request.url.path in ("/", "/phone"):
         response.headers["Cache-Control"] = "no-store, must-revalidate"
     return response
 
 
 @app.get("/")
 def index():
-    # Version the script URLs too, so even a cache that ignores the header
-    # cannot pair a stale script with a fresh one.
-    html = (STATIC / "index.html").read_text()
-    version = _asset_version()
-    for asset in ("calendar.js", "app.js", "style.css"):
-        html = html.replace(f"/static/{asset}", f"/static/{asset}?v={version}")
-    return HTMLResponse(html)
+    return _page("index.html", ("calendar.js", "app.js", "style.css"))
+
+
+@app.get("/phone")
+def phone():
+    """The same world, laid out for a phone: tabs, taps and sheets instead of
+    a week grid driven by hover and drag. Same API, so either page can be
+    open on the same session at once."""
+    return _page("phone.html", ("phone.js", "phone.css"))
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 if not world.clients:
-    seed_world(world)
+    scenarios.load(world, "simple")

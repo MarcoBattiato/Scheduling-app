@@ -52,6 +52,18 @@ Layers, and the rule that keeps them apart:
   real schedule and a proposed one, which is the point — a proposal is only
   legible against the calendar it would land in.
 - `static/app.js` — state, panels, actions. No build step, no framework.
+- `static/phone.{html,js,css}` — the phone front end at `/phone`, over the
+  same API. A separate page rather than a responsive version of the desktop
+  one, because the desktop page is built on hover and drag, and neither exists
+  on a phone. Views are pure functions from state to HTML; every tap goes
+  through one delegated handler keyed on `data-act`, so a view can be rendered
+  in Node (`tests/test_phone.py`) and a button with no handler fails a test.
+  It polls like the desktop page but **redraws only when the state changed,
+  never while a field has focus, and carries form values across a redraw** —
+  without all three, a poll every 2.5s resets whatever is being typed.
+  Settling a plan shows an agreed booking that is still waiting on somebody
+  else's move as *waiting*, not *ready*; the server would hold it anyway, and
+  a button promising to confirm it would confirm nothing.
 
 Availability is edited in two places on purpose, mirroring calendar_store's own
 split: the side grid is the **weekly pattern** (generic weekdays, what every

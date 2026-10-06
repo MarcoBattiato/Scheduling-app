@@ -31,9 +31,10 @@ def at(day_offset: int, hour: int) -> str:
 def test_a_fresh_server_has_something_to_look_at(client):
     state = client.get("/api/state").json()
 
-    assert {c["id"] for c in state["clients"]} == {"alice", "bob", "carol"}
+    assert {"alice", "bob", "carol"} <= {c["id"] for c in state["clients"]}
     assert state["appointments"], "seeded bookings so the first page is not empty"
     assert state["weekly"]["provider-self"], "provider has a working week"
+    assert state["requests"], "and something waiting, or there is nothing to run"
 
 
 def test_the_page_is_served(client):
