@@ -178,6 +178,15 @@ overlapping times, and follows them transitively — with chains, a move can
 itself be waiting on another. When a move falls through, everything resting on
 it is withdrawn, whether or not those clients had already answered.
 
+A booking can need **more than one** move, and is written down only once all of
+them are — every dependent goes through `_apply_approval`'s gate, never straight
+to `_book`. The example calendars only ever need one move per booking, which is
+how writing it down after the first of two went unnoticed;
+`test_dependent_moves.py` runs every answer order. A booking that falls through
+is withdrawn (final, so no later settle revives the "yes"), and any move made
+only for it and not yet written down is withdrawn with it. Withdrawing a
+request does the same to its outstanding offer.
+
 When the engine grows `AcceptedChange`, this should lose the responsibility
 rather than keep a second implementation of it.
 

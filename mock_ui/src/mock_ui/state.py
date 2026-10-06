@@ -285,9 +285,24 @@ class World:
         return request
 
     def withdraw_request(self, request_id: int) -> None:
+        """The client no longer wants it — including any offer already made.
+
+        Marking only the request left the offer out with them and its slot
+        held, and accepting it afterwards booked the appointment and flipped
+        the request back to placed: a withdrawal that undid itself. Anybody
+        asked to move purely to make room for it is no longer asked either.
+        """
         request = self.requests[request_id]
         request.status = "withdrawn"
         self._note(f"{request.client_id} withdrew request {request_id}")
+        for approval in self.approvals.values():
+            if (approval.kind == "booking" and approval.request_id == request_id
+                    and self._outstanding(approval)):
+                approval.status = "withdrawn"
+                self._note(f"took back the offer of "
+                           f"{approval.now_start:%a %d %b %H:%M} — the request was withdrawn")
+                self._drop_moves_nobody_needs(approval.plan_id)
+                self._settle_if_answered(approval.plan_id)
 
     def cancel_appointment(
         self, appointment_id: int, *, by: Party = Party.CLIENT
@@ -967,7 +982,11 @@ class World:
         discover that is simpler than computing an order and being wrong about
         it.
         """
-        applied = 0
+        def written():
+            return sum(1 for a in self.approvals.values()
+                       if a.plan_id == plan.id and a.applied)
+
+        before = written()
         progress = True
         while progress:
             progress = False
@@ -977,9 +996,10 @@ class World:
                     continue
                 self._apply_approval(approval)
                 if approval.applied:
-                    applied += 1
                     progress = True
-        return applied
+        # Counted from the record rather than per iteration: writing one move
+        # also writes whatever was waiting on it, and those count too.
+        return written() - before
 
     def _withdraw_outstanding(self, plan: Plan, why: str) -> int:
         """Take back everything still in the air, and put the work back.
@@ -1085,7 +1105,7 @@ class World:
     def _apply_approval(self, approval: Approval) -> None:
         blocker = self._unmet_dependency(approval)
         if blocker is not None:
-            if blocker.status == "declined":
+            if blocker.status in self.DEAD:
                 self._strand(approval, blocker)
             return                      # still waiting, or never happening
 
@@ -1111,17 +1131,24 @@ class World:
         be waiting on another. The engine reports these dependencies, so this
         does not have to guess.
         """
-        for other in self.approvals.values():
+        for other in list(self.approvals.values()):
             if (other.status == "accepted" and not other.applied
                     and other.plan_id == moved.plan_id
                     and moved.appointment_id in other.depends_on):
-                if other.kind == "booking":
-                    self._book(other)
-                else:
-                    self._apply_approval(other)
+                # Through the same gate as everything else. Booking here
+                # directly wrote a placement down as soon as *one* of the moves
+                # it needed had happened — so with two moves needed and one
+                # still unanswered, two people were booked into the same hour.
+                self._apply_approval(other)
 
     def _book(self, approval: Approval) -> None:
         request = self.requests[approval.request_id]
+        if request.status == "withdrawn":
+            # Belt and braces: withdraw_request takes the offer back, so this
+            # should be unreachable. If it is reached, the client's "no longer
+            # wanted" outranks an earlier "yes".
+            approval.status = "withdrawn"
+            return
         self.store.book_appointment(
             approval.client_id, request.service_id,
             approval.now_start, approval.now_end,
@@ -1146,24 +1173,72 @@ class World:
                     else Party.CLIENT,
                 )
 
+    # An ask in one of these states is never going to happen.
+    DEAD = ("declined", "refused", "withdrawn")
+
     def _unmet_dependency(self, approval: Approval) -> Optional[Approval]:
-        """A move this one needs that has not happened yet."""
-        for other in self.approvals.values():
-            if (other.appointment_id in approval.depends_on
-                    and other.plan_id == approval.plan_id
-                    and not other.applied):
-                return other
-        return None
+        """A move this one needs that has not happened yet.
+
+        One that never will is reported ahead of one still waiting, so that a
+        booking resting on two moves is stranded as soon as either falls
+        through rather than held until the other is answered.
+        """
+        unmet = [other for other in self.approvals.values()
+                 if other.appointment_id in approval.depends_on
+                 and other.plan_id == approval.plan_id
+                 and not other.applied]
+        dead = [other for other in unmet if other.status in self.DEAD]
+        return (dead or unmet or [None])[0]
+
+    def _drop_moves_nobody_needs(self, plan_id: int) -> None:
+        """Stop asking people to move to make room for something that is no
+        longer coming.
+
+        A move exists for what rests on it. Once everything that did has fallen
+        away, asking the client to move anyway is disruption for nothing. A
+        move with nothing depending on it at all was approved on its own by the
+        provider, and is left alone.
+        """
+        changed = True
+        while changed:
+            changed = False
+            for move in self.approvals.values():
+                if (move.plan_id != plan_id or move.kind != "reschedule"
+                        or not self._outstanding(move)):
+                    continue
+                needed_by = [a for a in self.approvals.values()
+                             if a.plan_id == plan_id
+                             and move.appointment_id in a.depends_on]
+                if needed_by and all(a.status in self.DEAD and not a.applied
+                                      for a in needed_by):
+                    move.status = "withdrawn"
+                    changed = True
+                    self._note(f"stopped asking {move.client_id} to move — "
+                               f"nothing needs the slot any more")
+
+    def _settle_if_answered(self, plan_id: int) -> None:
+        plan = self.plans.get(plan_id)
+        if plan and plan.status == "awaiting_clients" and not self.pending_approvals(plan_id):
+            plan.status = "answered"
+            self._note(f"plan {plan_id}: everyone has answered")
 
     def _strand(self, approval: Approval, blocker: Approval) -> None:
         """Something that can never happen now, because what it needed was
-        refused."""
+        refused.
+
+        Final: the ask is withdrawn, so its slot stops being held and a later
+        settlement cannot pick an old "yes" back up and write it down.
+        """
+        approval.status = "withdrawn"
         if approval.kind == "booking":
             request = self.requests.get(approval.request_id)
-            if request:
+            if request and request.status != "withdrawn":
                 request.status = "on_hold"
         self._note(f"{approval.client_id}'s slot fell through — "
                    f"{blocker.client_id} would not move")
+        # The other moves made for it are now disruption for nothing — unless
+        # already written down, which is past undoing.
+        self._drop_moves_nobody_needs(approval.plan_id)
 
     def _cascade_refusal(self, refused: Approval) -> None:
         """Everything that rested on this move, whether or not it had answered.
