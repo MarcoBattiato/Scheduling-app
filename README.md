@@ -250,6 +250,23 @@ test mode instead, install the extra (`pip install -e "../mock_ui[stripe]"`)
 and start the server with a Stripe **test** secret key in the environment —
 `STRIPE_SECRET_KEY=sk_test_... ./mock_ui/run.sh`. A live key is refused.
 
+**The AI assistant** runs on either of two models, chosen when the server
+starts. It is off until the practice switches it on (More → Assistant), and
+each client opts in.
+
+- **Free, on this computer** (the default when no API key is set): install
+  [Ollama](https://ollama.com), run `ollama serve`, and `ollama pull qwen3:8b`
+  (~5 GB). Nothing typed to the assistant leaves the machine. A smaller model,
+  so it makes more mistakes — every change is still a card to confirm.
+  On an Apple Silicon Mac, use the native app from ollama.com rather than a
+  Homebrew running under Rosetta, which would be an Intel build and far slower.
+- **Claude** (Anthropic): `pip install -e "../mock_ui[assistant]"`, then
+  `ANTHROPIC_API_KEY=sk-ant-... ./mock_ui/run.sh`. Pay-as-you-go; the key comes
+  from the Claude Console (platform.claude.com).
+
+`ASSISTANT_PROVIDER=local|claude` forces one; `ASSISTANT_LOCAL_MODEL` and
+`ASSISTANT_MODEL` pick the model within each.
+
 **On a phone**, use `/phone` instead (`/phone?as=carol`). It is a separate page
 over the same API: a bottom tab bar, and taps, sheets and pickers in place of
 the desktop page's drag and hover. A narrow screen opening `/` is sent there
@@ -314,7 +331,7 @@ cd calendar_store   && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 cd mock_ui          && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 ```
 
-845 tests: 251 for the engine, 64 for the store, 501 for the mock UI, 29 for the
+878 tests: 251 for the engine, 64 for the store, 534 for the mock UI, 29 for the
 contracts. See the note on the one known failure below.
 
 ---

@@ -11,8 +11,8 @@ Status: calendar steps 1–2 **built** (event rules and the subscription feed,
 in `mock_ui/calendar_sync.py`); payments steps 1–2 **built** in test mode
 (`mock_ui/billing.py`: ledger, pay-after-session, fees awaiting the provider,
 a simulated processor and Stripe Checkout in test mode). Everything else is a
-proposal, as is Part 3 beyond its first two steps (the guarded core and
-the clinician chat, built). Decisions still needed are collected at the
+proposal, as is Part 3 beyond its first three steps (the guarded core, the
+clinician chat and the assistant, built). Decisions still needed are collected at the
 end.
 
 ---
@@ -338,9 +338,11 @@ to be checked. Required before going live, not for the demo.
 so audio never goes to another company. Conversations kept no longer than
 needed; erasing a client (crypto-shredding) erases their conversations too.
 
-**5. Fallback: a model on the practice's own server.** Nothing leaves at all,
-at the cost of markedly worse reliability and a far more expensive server.
-Kept in reserve in case 1–4 are not enough.
+**5. A model on the practice's own computer.** Nothing leaves at all, at the
+cost of markedly worse reliability. **Built** as an alternative to Claude
+(`ASSISTANT_PROVIDER=local`, through Ollama): free, and what the prototype
+uses until a Claude API key is in place. For a hosted deployment it needs a
+server with a GPU, which costs far more than the API.
 
 ### What clients type: distress, and the clinician
 
@@ -431,8 +433,10 @@ server, kept like the Stripe key: in the environment, never in the app.
    Through the gate from the start, never in the shared state, forbidden to
    assistants. No notifications yet (they need hosting), so the provider is
    alerted in the app only.
-3. **The Assistant tab** for both roles, typed and dictated, with the opt-in
-   notice and the hand-off.
+3. ✅ **The assistant** for both roles — a button on every screen rather than
+   a tab — typed or dictated through the keyboard, with the opt-in notice,
+   confirmation cards, and the hand-off (client's yes required; flagged for
+   the provider). Needs `ANTHROPIC_API_KEY` on the server to talk to Claude.
 4. **What-if comparisons** for the provider.
 5. A mic button; a speech service only if dictation is not good enough.
 

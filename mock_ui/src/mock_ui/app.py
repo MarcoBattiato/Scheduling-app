@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from calendar_store import Party
 from scheduling_contracts import Principal, Role, Session
 
-from . import billing, calendar_sync, control, persistence, scenarios
+from . import assistant as assistant_mod, billing, calendar_sync, control, persistence, scenarios
 from .state import World
 
 STATIC = Path(__file__).parent / "static"
@@ -199,6 +199,7 @@ class SettingsIn(BaseModel):
     rehouse_orphans_on_run: Optional[bool] = None
     practice_name: Optional[str] = None
     chat_enabled: Optional[bool] = None
+    assistant_enabled: Optional[bool] = None
     chat_reply_expectation: Optional[str] = None
     chat_emergency_note: Optional[str] = None
 
@@ -306,6 +307,65 @@ def run_command(name: str, payload: CommandIn, as_: str = Query("provider", alia
         _gate_error(exc)
     return {"status": outcome.status, "result": outcome.result,
             "token": outcome.token, "summary": outcome.summary}
+
+
+# -- the assistant (assistant.py) -----------------------------------------------
+
+_assistant = None
+
+
+def assistant() -> assistant_mod.Assistant:
+    global _assistant
+    if _assistant is None or _assistant.world is not world:
+        _assistant = assistant_mod.Assistant(world, gate())
+    elif _assistant.gate is not gate():
+        _assistant.gate = gate()
+    return _assistant
+
+
+class AssistantIn(BaseModel):
+    conversation_id: Optional[str] = None
+    text: str
+
+
+class OptIn(BaseModel):
+    on: bool
+
+
+@app.get("/api/assistant/status")
+def assistant_status(as_: str = Query("provider", alias="as")):
+    return assistant().status(session_for(as_).principal)
+
+
+@app.post("/api/assistant/opt-in")
+def assistant_opt_in(payload: OptIn, as_: str = Query("provider", alias="as")):
+    """A client's own choice, after reading what is sent where."""
+    principal = session_for(as_).principal
+    if principal.role is not Role.CLIENT:
+        raise HTTPException(400, "only a client opts in; the practice switches it on")
+    (world.assistant.opted_in.add if payload.on else world.assistant.opted_in.discard)(principal.client_id)
+    world._note(f"{principal.client_id} turned the assistant {'on' if payload.on else 'off'}")
+    return {"opted_in": payload.on}
+
+
+@app.post("/api/assistant/send")
+def assistant_send(payload: AssistantIn, as_: str = Query("provider", alias="as")):
+    try:
+        return assistant().send(session_for(as_).principal, payload.conversation_id, payload.text)
+    except assistant_mod.Unavailable as exc:
+        raise HTTPException(503, str(exc)) from None
+    except assistant_mod.AssistantError as exc:
+        raise HTTPException(502, str(exc)) from None
+    except control.GateError as exc:
+        _gate_error(exc)
+
+
+@app.post("/api/assistant/{conversation_id}/handoff")
+def assistant_handoff(conversation_id: str, as_: str = Query("provider", alias="as")):
+    try:
+        return assistant().handoff(session_for(as_).principal, conversation_id)
+    except control.GateError as exc:
+        _gate_error(exc)
 
 
 @app.get("/api/drafts")
@@ -757,6 +817,9 @@ def settings(payload: SettingsIn):
         if not name:
             raise HTTPException(400, "the practice needs a name")
         world.practice_name = name[:80]
+    if payload.assistant_enabled is not None:
+        world.assistant.enabled = payload.assistant_enabled
+        world._note(f"the practice turned the assistant {'on' if payload.assistant_enabled else 'off'}")
     if payload.chat_enabled is not None:
         world.chat.enabled = payload.chat_enabled
     if payload.chat_reply_expectation is not None:

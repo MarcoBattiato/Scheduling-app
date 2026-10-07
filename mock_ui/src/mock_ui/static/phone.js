@@ -192,6 +192,11 @@ function untilField(name) {
 // screen polls: each person asks the gate for their own, as themselves.
 const chat = {mine: null, summary: [], thread: {}};
 
+// The assistant: its status for this person, the open conversation, and the
+// cards waiting for them to confirm. Cards come from the server, which wrote
+// them — never from the model's reply.
+const helper = {status: null, convo: null, drafts: [], busy: false};
+
 async function command(name, args) {
   const res = await fetch(`/api/commands/${name}?as=${encodeURIComponent(me)}`, {
     method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({args}),
@@ -202,6 +207,15 @@ async function command(name, args) {
 }
 
 const openThread = () => (isProvider() && tab.startsWith("more/messages/") ? tab.split("/")[2] : null);
+
+async function fetchHelper() {
+  try {
+    const who = encodeURIComponent(me);
+    helper.status = await (await fetch(`/api/assistant/status?as=${who}`)).json();
+    helper.drafts = (await (await fetch(`/api/drafts?as=${who}`)).json()).drafts || [];
+  } catch { helper.drafts = []; }
+  return JSON.stringify([helper.status, helper.drafts]);
+}
 
 async function fetchChat() {
   try {
@@ -237,7 +251,7 @@ let chatText = "";
 
 async function refresh(force) {
   const text = await (await fetch("/api/state")).text();
-  const conversation = await fetchChat();
+  const conversation = (await fetchChat()) + (await fetchHelper());
   if (!force && text === stateText && conversation === chatText) return;
   stateText = text;
   chatText = conversation;
@@ -327,6 +341,12 @@ function render(force) {
 
   renderHeader();
   renderTabs();
+  const button = $("assistant-button");
+  if (button) {
+    const st = helper.status;
+    button.hidden = !st || (!st.offered && !isProvider());
+    button.classList.toggle("has-cards", helper.drafts.length > 0);
+  }
 
   const base = currentView();
   const scrolls = keepScrolls($("view"));
@@ -854,6 +874,7 @@ function bubbles(messages, mineAuthor) {
   if (!messages.length) return `<p class="hint" style="text-align:center">No messages yet.</p>`;
   return `<div class="bubbles">${messages.map((m) => `
     <div class="bubble ${m.author === mineAuthor ? "mine" : "theirs"}">
+      ${m.handoff ? `<div class="bubble-meta" style="opacity:1;font-weight:600">Passed on by the assistant</div>` : ""}
       <div>${esc(m.text).replace(/\n/g, "<br>")}</div>
       <div class="bubble-meta">${fmtWhen(m.at)}${m.author === mineAuthor && m.read ? " · read" : ""}</div>
     </div>`).join("")}</div>`;
@@ -894,7 +915,8 @@ function messagesView() {
     ${chat.summary.length ? `<div class="list">${chat.summary.map((t) => `
       <button class="row" data-act="tab" data-tab="more/messages/${esc(t.client_id)}">
         <span class="avatar">${esc(t.name.slice(0, 1).toUpperCase())}</span>
-        <div class="main"><div class="title">${esc(t.name)}${t.unread ? ` <span class="tag accent">${t.unread} new</span>` : ""}</div>
+        <div class="main"><div class="title">${esc(t.name)}${t.unread ? ` <span class="tag accent">${t.unread} new</span>` : ""}${
+          t.attention ? ` <span class="tag warn">may need attention</span>` : ""}</div>
           <div class="meta">${t.last_author === "provider" ? "You: " : ""}${esc(t.preview)}</div></div>
         <span class="meta">${relDay(t.last_at)}</span></button>`).join("")}</div>`
       : empty("No conversations yet", "<p>Clients can write to you from the Messages tab in their app.</p>")}
@@ -910,6 +932,89 @@ function messagesView() {
       <p class="hint" style="margin-top:-4px">Shown above every client's conversation. Confirm the numbers and wording are right for your practice.</p>
       <button class="btn secondary block" type="submit">Save</button>
     </form>`;
+}
+
+// -- the assistant ---------------------------------------------------
+
+function assistantSheet() {
+  const st = helper.status || {};
+  const head = `<h3>Assistant</h3>`;
+  if (!st.configured) {
+    return `${head}<p>The assistant is not set up on this server yet.</p>
+      ${isProvider() ? `<p class="hint">Run Ollama on this computer with the model downloaded (free), or start
+        the server with an Anthropic API key in <code>ANTHROPIC_API_KEY</code>. Everything else in the app
+        works without it.</p>` : ""}
+      <div class="stack"><button class="btn ghost" data-act="close">Close</button></div>`;
+  }
+  if (!st.offered) {
+    return `${head}<p>${isProvider() ? "The assistant is switched off for the practice." :
+      "Your practice does not offer the assistant."}</p>
+      ${isProvider() ? `<div class="stack"><button class="btn" data-act="more-open" data-page="assistant">Assistant settings</button></div>` : ""}
+      <div class="stack"><button class="btn ghost" data-act="close">Close</button></div>`;
+  }
+  if (!st.opted_in) {
+    return `${head}<p class="lead" style="margin:0 0 10px">Talk to the app instead of tapping through it.</p>
+      <div class="card">${esc(st.notice)}</div>
+      <div class="stack"><button class="btn block" data-act="helper-opt-in">Turn on the assistant</button>
+        <button class="btn ghost" data-act="close">Not now</button></div>
+      <p class="hint">You can turn it off again at any time. Everything it does, the app's screens do too.</p>`;
+  }
+  const convo = helper.convo;
+  const lines = convo ? convo.messages : [];
+  const cards = helper.drafts.map((d) => `
+    <div class="card attention confirm-card">
+      <span class="tag accent">please confirm</span>
+      <p style="margin:8px 0 10px">${esc(d.summary)}</p>
+      <div class="pair" style="margin-top:0">
+        <button class="btn ok" data-act="draft-confirm" data-token="${esc(d.token)}">Confirm</button>
+        <button class="btn secondary" data-act="draft-discard" data-token="${esc(d.token)}">Not now</button>
+      </div></div>`).join("");
+  const handoff = convo && convo.handoff_offered ? `
+    <div class="card warn">
+      <p style="margin:0 0 8px"><b>${esc(convo.emergency_note || "")}</b></p>
+      <p style="margin:0 0 10px">Would you like to send what you've written here to your clinician?</p>
+      <div class="pair" style="margin-top:0">
+        <button class="btn" data-act="helper-handoff">Send to my clinician</button>
+        <button class="btn secondary" data-act="tab" data-tab="messages">Write to them myself</button>
+      </div></div>` : "";
+  return `<div style="display:flex;justify-content:space-between;align-items:center">${head}
+      ${convo ? `<button class="link" data-act="helper-new">New conversation</button>` : ""}</div>
+    ${lines.length ? "" : `<p class="hint" style="margin-top:0">${isProvider()
+      ? 'Try "What is waiting this week?" or "Compare packing the diary with booking people closest to the times they asked for."'
+      : 'Try "When is my next appointment?" or "Can I move Tuesday\'s session to later in the week?"'}</p>`}
+    <div class="bubbles">${lines.map((m) => `
+      <div class="bubble ${m.role === "user" ? "mine" : "theirs"}">${esc(m.text).replace(/\n/g, "<br>")}</div>`).join("")}
+      ${helper.busy ? `<div class="bubble theirs typing">Thinking…</div>` : ""}</div>
+    ${cards}${handoff}
+    <form data-form="assistant" class="composer">
+      <textarea name="text" rows="2" maxlength="2000" placeholder="Ask, or tap the keyboard's microphone to speak"
+        ${helper.busy ? "disabled" : ""}></textarea>
+      <button class="btn" type="submit" ${helper.busy ? "disabled" : ""}>Send</button></form>
+    <p class="hint">It can only prepare changes — you confirm each one.${isProvider() ? "" :
+      " It never sees your name or your messages to your clinician."}</p>
+    ${isProvider() ? "" : `<div class="pair" style="margin-top:4px">
+      ${convo && !convo.handoff_offered && !convo.handoff_sent && lines.length
+        ? `<button class="link" data-act="helper-handoff-ask">Send this to my clinician</button>` : "<span></span>"}
+      <button class="link" data-act="helper-opt-out" style="text-align:right">Turn the assistant off</button></div>`}`;
+}
+
+function assistantSettingsView() {
+  const st = helper.status || {};
+  return `${backLink()}<h1>Assistant</h1>
+    <p class="lead">Lets you and your clients run the app by talking to it.</p>
+    <div class="list">
+      <label class="row"><div class="main"><div class="title">Offer the assistant</div>
+        <div class="meta">Off by default. Each client must also switch it on themselves.</div></div>
+        <input type="checkbox" data-act="helper-offer" ${st.offered ? "checked" : ""}></label>
+    </div>
+    <h2>What clients are told</h2>
+    <div class="card" style="font-size:15px">${esc(st.client_notice || "")}</div>
+    <h2>Which AI answers</h2>
+    <div class="card">${st.configured
+      ? (st.provider === "local"
+          ? `<b>A free model on this computer</b> (<code>${esc(st.model || "")}</code>). Nothing typed to it leaves the practice. It is smaller than the online models, so it makes more mistakes — every change is still a card to check.`
+          : `<b>Claude</b> by Anthropic (<code>${esc(st.model || "")}</code>), online.`)
+      : `Not set up yet. Either run Ollama on this computer with <code>${esc(st.model || "qwen3:8b")}</code> downloaded (free, nothing leaves the practice), or start the server with an Anthropic API key in <code>ANTHROPIC_API_KEY</code>.`}</div>`;
 }
 
 // -- the provider: home ------------------------------------------------
@@ -940,7 +1045,8 @@ function providerHome() {
   if (unreadThreads.length) {
     cards.push(`<button class="card attention tap" data-act="tab" data-tab="${
       unreadThreads.length === 1 ? `more/messages/${esc(unreadThreads[0].client_id)}` : "more/messages"}">
-      <div class="main"><span class="tag accent">messages</span>
+      <div class="main"><span class="tag ${unreadThreads.some((t) => t.attention) ? "warn" : "accent"}">${
+        unreadThreads.some((t) => t.attention) ? "may need attention" : "messages"}</span>
         <h3 style="margin-top:6px">${plural(unreadThreads.reduce((n, t) => n + t.unread, 0), "new message")}</h3>
         <p class="meta">From ${unreadThreads.slice(0, 3).map((t) => esc(t.name)).join(", ")}</p></div>
       <span class="chev">›</span></button>`);
@@ -1464,6 +1570,7 @@ const MORE = [
   ["services", "Services", "What can be booked, for how long"],
   ["calendar", "Calendar sync", "Your diary in Google, Apple or Outlook"],
   ["messages", "Messages", "Conversations with clients"],
+  ["assistant", "Assistant", "Run the app by talking to it"],
   ["payments", "Payments", "Fees to decide, what is owed, what is paid"],
   ["billing", "Billing settings", "Fees, GST, how clients pay"],
   ["settings", "Scheduling", "How far ahead to plan, and when"],
@@ -1476,7 +1583,8 @@ function moreView() {
   const page = tab.split("/")[1];
   const pages = {hours: hoursView, away: awayView, clients: clientsView, services: servicesView,
                  settings: settingsView, activity: activityView, calendar: calendarView,
-                 payments: paymentsView, billing: billingView, messages: messagesView};
+                 payments: paymentsView, billing: billingView, messages: messagesView,
+                 assistant: assistantSettingsView};
   if (pages[page]) return pages[page]();
   return `<h1>More</h1><div class="list">${MORE.map(([id, title, meta]) => `
     <button class="row" data-act="more-open" data-page="${id}">
@@ -1873,6 +1981,7 @@ function go(next) {
 // booking from whoever was on the screen before.
 function resetChoices() {
   chat.mine = null; chat.summary = []; chat.thread = {}; chatText = "";
+  helper.convo = null; helper.drafts = []; helper.status = null;
   ui.pickers = {}; ui.bookService = null; ui.bookEvery = 0; ui.diaryDay = null;
   ui.runOver = null; ui.runSeen = null; ui.picked = {};
 }
@@ -1940,6 +2049,34 @@ const ACTIONS = {
   },
   "series-open": (d) => openSheet(() => seriesSheet(d.id)),
   "calendar-open": () => openSheet(calendarSheet),
+  "helper-opt-in": async () => {
+    await done(api(`/api/assistant/opt-in?as=${encodeURIComponent(me)}`, {on: true}), "Assistant on");
+  },
+  "helper-offer": async (d, el) => {
+    await done(api("/api/settings", {assistant_enabled: el.checked}), el.checked ? "Assistant offered" : "Assistant off");
+  },
+  "helper-new": () => { helper.convo = null; redrawSheet(); },
+  // Always available to the person, not only when the model offers it.
+  "helper-handoff-ask": () => {
+    helper.convo = {...helper.convo, handoff_offered: true,
+                    emergency_note: (state.chat || {}).emergency_note || ""};
+    redrawSheet();
+  },
+  "helper-opt-out": async () => {
+    helper.convo = null;
+    await done(api(`/api/assistant/opt-in?as=${encodeURIComponent(me)}`, {on: false}), "Assistant off");
+    closeSheet();
+  },
+  "draft-confirm": async (d) => {
+    await done(api(`/api/drafts/${encodeURIComponent(d.token)}/confirm?as=${encodeURIComponent(me)}`), "Done");
+  },
+  "draft-discard": async (d) => {
+    await done(api(`/api/drafts/${encodeURIComponent(d.token)}/discard?as=${encodeURIComponent(me)}`), "Left as it was");
+  },
+  "helper-handoff": async () => {
+    const out = await api(`/api/assistant/${encodeURIComponent(helper.convo.conversation_id)}/handoff?as=${encodeURIComponent(me)}`);
+    if (out) { helper.convo = out; toast("Sent to your clinician"); await refresh(true); }
+  },
   "install-tip-dismiss": () => {
     try { localStorage.setItem("install-tip", "no"); } catch { /* private mode */ }
     render(true);
@@ -2146,6 +2283,31 @@ const ACTIONS = {
 };
 
 const FORMS = {
+  assistant: async (form) => {
+    const text = form.elements.text.value.trim();
+    if (!text || helper.busy) return;
+    helper.busy = true;
+    // Shown at once, before the model answers; replaced by the server's copy.
+    helper.convo = {...(helper.convo || {messages: []}),
+                    messages: [...((helper.convo || {}).messages || []), {role: "user", text}]};
+    form.reset();
+    if (document.activeElement) document.activeElement.blur();
+    redrawSheet();
+    try {
+      const res = await fetch(`/api/assistant/send?as=${encodeURIComponent(me)}`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({conversation_id: helper.convo.conversation_id || null, text}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "The assistant could not answer");
+      helper.convo = data;
+    } catch (e) {
+      helper.convo.messages.push({role: "assistant", text: e.message});
+    }
+    helper.busy = false;
+    await refresh(true);
+    redrawSheet();
+  },
   message: async (form) => {
     const text = form.elements.text.value.trim();
     if (!text) return;
@@ -2276,6 +2438,7 @@ document.addEventListener("submit", (event) => {
 });
 
 if ($("scrim")) $("scrim").addEventListener("click", () => closeSheet(false));
+if ($("assistant-button")) $("assistant-button").addEventListener("click", () => openSheet(assistantSheet));
 if ($("role")) $("role").addEventListener("change", (e) => switchTo(e.target.value));
 window.addEventListener("hashchange", () => {
   const next = (location.hash || "").slice(1) || "home";

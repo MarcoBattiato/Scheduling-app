@@ -15,6 +15,8 @@ dependencies = [
 dev = ["pytest>=7.0", "httpx>=0.27"]
 # Real Stripe Checkout, test mode only. Without it payments are simulated.
 stripe = ["stripe>=9"]
+# The AI assistant. Without it, or without ANTHROPIC_API_KEY, it says it is not set up.
+assistant = ["anthropic>=0.125"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

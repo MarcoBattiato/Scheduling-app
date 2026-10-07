@@ -26,7 +26,7 @@ from calendar_store import (
 )
 
 from .billing import BillingSettings, Charge, Payment
-from .state import Approval, ChatSettings, Client, Message, Plan, Request, Series, World
+from .state import Approval, AssistantSettings, ChatSettings, Client, Message, Plan, Request, Series, World
 
 
 def _dt(value):
@@ -135,6 +135,8 @@ def save(world: World, path: Path) -> None:
         "messages": [{**vars(m), "at": _dt(m.at), "read_at": _dt(m.read_at)}
                      for m in world.messages],
         "chat": vars(world.chat),
+        "assistant": {"enabled": world.assistant.enabled,
+                      "opted_in": sorted(world.assistant.opted_in)},
         "log": world.log,
     }
     path.write_text(json.dumps(payload, indent=2))
@@ -276,6 +278,9 @@ def load(path: Path) -> World:
     world.messages = [Message(**{**m, "at": _back(m["at"]), "read_at": _back(m.get("read_at"))})
                       for m in payload.get("messages", [])]
     world.chat = ChatSettings(**payload.get("chat", {}))
+    saved = payload.get("assistant", {})
+    world.assistant = AssistantSettings(enabled=saved.get("enabled", False),
+                                        opted_in=set(saved.get("opted_in", [])))
 
     # Restart id issuing above everything restored, so a reloaded session
     # cannot mint an id that already exists.

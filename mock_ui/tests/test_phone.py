@@ -24,7 +24,7 @@ node = pytest.mark.skipif(shutil.which("node") is None, reason="node not install
 
 CLIENT_TABS = ["home", "book", "bookings", "hours", "messages"]
 PROVIDER_TABS = ["home", "diary", "queue", "plans", "more", "more/hours", "more/away",
-                 "more/clients", "more/services", "more/settings", "more/activity", "more/calendar", "more/payments", "more/billing", "more/messages"]
+                 "more/clients", "more/services", "more/settings", "more/activity", "more/calendar", "more/payments", "more/billing", "more/messages", "more/assistant"]
 
 
 # -- states worth drawing --------------------------------------------------
@@ -95,7 +95,7 @@ HARNESS = r"""
   const noop = () => {}, els = {}, missing = [];
   const el = () => ({innerHTML: "", textContent: "", value: "", hidden: true, dataset: {}, style: {},
                      addEventListener: noop, querySelector: () => null, querySelectorAll: () => [],
-                     classList: {add: noop, remove: noop}});
+                     classList: {add: noop, remove: noop, toggle: noop}});
   const sandbox = {
     console, setInterval: noop, setTimeout, clearTimeout,
     document: {

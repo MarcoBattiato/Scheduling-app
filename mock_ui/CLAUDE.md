@@ -218,6 +218,30 @@ hand-off into the chat is a separate path, still to be built. The practice's
 "reply expectation" and "emergency note" are shown above every client's
 conversation, and the emergency note cannot be blanked.
 
+**The assistant** (`assistant.py`) is a model — Claude (`ClaudeBrain`) or a
+free local one through Ollama (`LocalBrain`), chosen by `ASSISTANT_PROVIDER` —
+with the gate's tools and nothing else. A brain only knows how to talk to its
+model; everything that keeps it safe lives in `Assistant` and is shared: every tool call is `Gate.execute` as the person via the assistant
+channel, so changes come back as drafts and the model is told "prepared, not
+done" — never given the token. The provider's typed client names are swapped
+for the conversation's pseudonyms before sending and back on the way out.
+History sent to the model is append-only (thinking blocks are bound to it);
+the current time goes in a mid-conversation system note so the cached prefix
+survives. Distress is `offer_clinician_handoff`, which only shows the client
+a button; `Assistant.handoff` sends *their own words* to the clinician chat
+when they press it, flagged server-side so the provider sees it may need
+attention. The person can also send it themselves at any time ("Send this to
+my clinician"), and a server-side phrase check (`DISTRESS`) shows the
+hand-off card whatever the model does — a model noticing is not reliable
+enough to be the only way to a person. Each client message carries their own
+diary (`_client_context`: upcoming appointments with real ids, waiting
+requests, open questions), read through the gate exactly as the tools would;
+without it a small local model guessed date ranges and invented ids. Off
+until the practice offers it; each client opts in after the notice. Conversations are in memory only. Model and effort from
+`ASSISTANT_MODEL` / `ASSISTANT_EFFORT` (default Opus 5.5, medium), with
+server-side refusal fallbacks on. `tests/test_assistant.py` replaces Claude
+with a script and checks what leaves the practice.
+
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider
 says so, and the decision is a pure function so it is testable without waiting

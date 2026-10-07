@@ -745,6 +745,7 @@ def _list_messages(w, c, p):
             last = convo[-1]
             out.append({"client_id": cid, "name": client.name,
                         "unread": w.unread(cid, me), "last_at": last.at,
+                        "attention": any(m.handoff and m.read_at is None for m in convo),
                         "last_author": last.author, "preview": last.text[:80]})
         return sorted(out, key=lambda x: x["last_at"], reverse=True)
     return {"client_id": c.client_id,
@@ -753,7 +754,7 @@ def _list_messages(w, c, p):
                          "emergency_note": w.chat.emergency_note,
                          "enabled": w.chat.enabled},
             "messages": [{"message_id": m.id, "author": m.author, "text": m.text,
-                          "at": m.at, "read": m.read_at is not None}
+                          "at": m.at, "read": m.read_at is not None, "handoff": m.handoff}
                          for m in w.conversation(c.client_id)]}
 
 
@@ -825,6 +826,39 @@ def _schema_for(tp) -> dict:
     return {"type": "string"}
 
 
+# How each tool should be used, written for an assistant rather than for a
+# developer. Small local models in particular take these literally: without
+# "four weeks ahead" one asked for "upcoming appointments" within today only.
+TOOL_HINTS = {
+    "appointment.read": "Appointments in a time window. For 'next' or 'upcoming', use a window from now to four weeks ahead. Set include_history to see past and cancelled ones.",
+    "availability.read": "When someone is free, as time ranges, within a window. Use from now to two weeks ahead unless asked about specific dates.",
+    "request.list": "Booking requests still waiting for a time.",
+    "approval.list": "Questions waiting for an answer: offered times and proposed moves. Answer with approval_respond.",
+    "service.list": "What can be booked, with how long each takes. Use a service_id from here when booking.",
+    "plan.list": "Schedules that have been made: proposals not yet sent, and ones out with clients.",
+    "plan.preview": "What a schedule WOULD look like at given settings. Changes nothing, so use it freely to compare. alpha 0 = closest to the times people asked for, 1 = fewest unusable gaps. max_displacements = how many booked clients may be asked to move.",
+    "charge.list": "What is owed and what has been paid.",
+    "client.summary": "A client's history at a glance: bookings, attendance, cancellations.",
+    "availability.set_weekly": "Replace the usual weekly hours entirely. Include every window to keep, not only the change. weekday 0 is Monday.",
+    "availability.set_exception": "Change one date only: available true to add free time, false to mark time away.",
+    "availability.clear_exception": "Undo a one-date change, giving its exact date, start and end.",
+    "request.submit": "Ask for a booking: a service and the time that would suit best. The practice then offers a time.",
+    "request.withdraw": "Take back a waiting request.",
+    "series.start": "Book the same service every week (or every_weeks weeks) from first_start, optionally until a date.",
+    "series.stop": "Stop a repeating booking. Sessions already booked stay.",
+    "appointment.cancel": "Cancel an appointment. Use appointment_read first to find its appointment_id.",
+    "appointment.request_reschedule": "Ask to move an appointment, optionally to around preferred_start. Use appointment_read first to find its appointment_id. release_slot false keeps the current time until a new one is agreed.",
+    "approval.respond": "Answer an offered time or proposed move: accept, decline (not that time), or refuse (keep my current time; moves only).",
+    "plan.propose": "Make a real proposal from the waiting requests, at given settings. Compare with plan_preview first.",
+    "plan.approve": "Send a proposal to the clients it affects.",
+    "plan.settle": "Act on clients' answers: agreed (confirm what is agreed), agreed_and_drop (also stop waiting for the rest), or reject (drop it and re-plan).",
+    "plan.discard": "Throw away a proposal that has not been sent.",
+    "appointment.mark_attendance": "Record whether a client came to a past appointment.",
+    "appointment.place_manually": "Book a waiting request at a time chosen by hand.",
+    "client.set_limits": "How many sessions a client may have per day and per week.",
+}
+
+
 def tools_for(session: Session) -> List[dict]:
     """The commands an assistant acting for this person may ask for, as tool
     definitions. Cut to the person: a client's assistant is not even told
@@ -852,7 +886,7 @@ def tools_for(session: Session) -> List[dict]:
         tools.append({
             "name": name.replace(".", "_"),
             "command": name,
-            "description": " ".join((cls.__doc__ or name).split()),
+            "description": TOOL_HINTS.get(name) or " ".join((cls.__doc__ or name).split()),
             "needs_confirmation": ASSISTANT.get(name) != "allowed",
             "input_schema": {"type": "object", "properties": props, "required": required,
                              "additionalProperties": False},

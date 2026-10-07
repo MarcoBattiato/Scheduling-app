@@ -105,6 +105,9 @@ class Message:
     text: str
     at: datetime
     read_at: Optional[datetime] = None   # when the other side read it
+    # Passed on by the assistant at the client's request — set by the server,
+    # never by a caller, so a client cannot make an ordinary message look urgent.
+    handoff: bool = False
 
 
 @dataclass
@@ -115,6 +118,14 @@ class ChatSettings:
     # The practice confirms the numbers and wording.
     emergency_note: str = ("This is not an emergency service. If you are in danger "
                            "or need help now, call 995, or the SOS 24-hour line on 1767.")
+
+
+@dataclass
+class AssistantSettings:
+    """Off until the practice offers it, and then only for clients who have
+    read what it sends where and switched it on themselves."""
+    enabled: bool = False
+    opted_in: set = field(default_factory=set)
 
 
 @dataclass
@@ -237,6 +248,7 @@ class World:
         # Client ↔ clinician conversations — see Message.
         self.messages: List[Message] = []
         self.chat = ChatSettings()
+        self.assistant = AssistantSettings()
         # Money — see billing.py.
         self.billing = BillingSettings()
         self.charges: Dict[int, Charge] = {}
@@ -1911,6 +1923,7 @@ class World:
             "practice_name": self.practice_name,
             # The chat's settings — what clients are told — but never a word
             # of any conversation: those are fetched through the gate.
+            "assistant": {"enabled": self.assistant.enabled},
             "chat": {"enabled": self.chat.enabled,
                      "reply_expectation": self.chat.reply_expectation,
                      "emergency_note": self.chat.emergency_note},
