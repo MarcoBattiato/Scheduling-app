@@ -11,7 +11,7 @@ Status: calendar steps 1–2 **built** (event rules and the subscription feed,
 in `mock_ui/calendar_sync.py`); payments steps 1–2 **built** in test mode
 (`mock_ui/billing.py`: ledger, pay-after-session, fees awaiting the provider,
 a simulated processor and Stripe Checkout in test mode). Everything else is a
-proposal, as is all of Part 3. Decisions still needed are collected at the
+proposal, as is Part 3 beyond its first step (the guarded core, built). Decisions still needed are collected at the
 end.
 
 ---
@@ -420,9 +420,11 @@ server, kept like the Stripe key: in the environment, never in the app.
 
 ### Order
 
-1. **The guarded core**: commands wired to the permission gate, per-person
-   views with no identifiers (clients) or per-conversation pseudonyms
-   (provider), confirmation cards. This is also the first real consumer of
+1. ✅ **The guarded core** (`mock_ui/control.py`): commands wired to the
+   permission gate, per-person views with no identifiers (clients) or
+   per-conversation pseudonyms (provider), server-written confirmation cards
+   behind single-use tokens, the audit trail, and `plan.preview` — the
+   what-if read. No AI is connected yet. This is also the first real consumer of
    `scheduling_contracts`, and moves INTERFACE_PLAN.md phase C forward.
 2. **The clinician chat**, with the always-visible "Message my clinician".
 3. **The Assistant tab** for both roles, typed and dictated, with the opt-in

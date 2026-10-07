@@ -14,14 +14,15 @@ from typing import List, Optional
 
 import html as html_lib
 
-from fastapi import FastAPI, Form, HTTPException, Request as HttpRequest
+from fastapi import FastAPI, Form, HTTPException, Query, Request as HttpRequest
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from calendar_store import Party
+from scheduling_contracts import Principal, Role, Session
 
-from . import billing, calendar_sync, persistence, scenarios
+from . import billing, calendar_sync, control, persistence, scenarios
 from .state import World
 
 STATIC = Path(__file__).parent / "static"
@@ -255,6 +256,62 @@ def submit_request(payload: RequestIn):
     # Deliberately does NOT run the scheduler. A request arriving is not a
     # reason to re-plan the week — see policy.py.
     return {"request_id": request.id}
+
+
+# -- the gate (control.py) ---------------------------------------------------
+
+_gate = None
+
+
+def gate() -> control.Gate:
+    """The gate over the current world; a reset replaces both."""
+    global _gate
+    if _gate is None or _gate.world is not world:
+        _gate = control.Gate(world)
+    return _gate
+
+
+def session_for(person: str) -> Session:
+    """Who is asking. **A stand-in for signing in**: "as" is a claim, exactly
+    like "view as" on the screens, until there is a login to take it from.
+    Everything downstream already treats the session as the only source of
+    identity, so replacing this one function is what sign-in will be."""
+    if person == "provider":
+        return Session(Principal(Role.PROVIDER))
+    if person in world.clients:
+        return Session(Principal(Role.CLIENT, person))
+    raise HTTPException(404, "no such person")
+
+
+def _gate_error(exc: control.GateError):
+    raise HTTPException(exc.status, str(exc)) from None
+
+
+@app.get("/api/drafts")
+def list_drafts(as_: str = Query("provider", alias="as")):
+    """Changes an assistant has prepared for this person to confirm."""
+    session = session_for(as_)
+    return {"drafts": [{"token": d.token, "summary": d.summary,
+                        "created": d.created.isoformat(timespec="seconds")}
+                       for d in gate().pending(session.principal)]}
+
+
+@app.post("/api/drafts/{token}/confirm")
+def confirm_draft(token: str, as_: str = Query("provider", alias="as")):
+    try:
+        outcome = gate().confirm(session_for(as_), token)
+    except control.GateError as exc:
+        _gate_error(exc)
+    return {"status": outcome.status}
+
+
+@app.post("/api/drafts/{token}/discard")
+def discard_draft(token: str, as_: str = Query("provider", alias="as")):
+    try:
+        gate().discard(session_for(as_), token)
+    except control.GateError as exc:
+        _gate_error(exc)
+    return {"ok": True}
 
 
 # -- money --------------------------------------------------------------

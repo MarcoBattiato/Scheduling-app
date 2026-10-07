@@ -191,6 +191,7 @@ deciding this.
 | Command | Effect | Tier | Prov | Client | Asst | Status |
 |---|---|---|---|---|---|---|
 | `plan.propose` | Run the solver, produce a draft | C | ● | ○ | ✎ | live |
+| `plan.preview` | What the scheduler *would* propose at given settings; stores nothing | R | ● | ○ | ◐ | new |
 | `plan.tick` | Policy-driven automatic run | — | *system* | ○ | ○ | live |
 | `plan.list` | Drafts and their metrics | R | ● | ○ | ● | live |
 | `plan.discard` | Drop a draft | W | ● | ○ | ✎ | live |

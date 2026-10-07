@@ -61,6 +61,7 @@ PROVIDER_MATRIX: Mapping[str, Access] = {
     "appointment.place_manually": ANY,
     "appointment.read": ANY,
     "plan.propose": ANY,
+    "plan.preview": ANY,
     "plan.tick": D,                 # runs are fired by the clock, not by hand
     "plan.list": ANY,
     "plan.discard": ANY,
@@ -114,6 +115,7 @@ CLIENT_MATRIX: Mapping[str, Access] = {
     "appointment.place_manually": D,
     "appointment.read": OWN,
     "plan.propose": D,
+    "plan.preview": D,
     "plan.tick": D,
     "plan.list": D,
     "plan.discard": D,
@@ -191,6 +193,7 @@ ASSISTANT: Mapping[str, str] = {
     "appointment.place_manually": DRAFT,
     "appointment.read": ALLOWED,
     "plan.propose": DRAFT,
+    "plan.preview": ALLOWED,
     "plan.tick": FORBIDDEN,
     "plan.list": ALLOWED,
     "plan.discard": DRAFT,

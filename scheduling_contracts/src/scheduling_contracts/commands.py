@@ -391,6 +391,23 @@ class ProposePlan:
     allow_chains: Optional[bool] = None
 
 
+@command("plan.preview", Tier.READ)
+@dataclass(frozen=True)
+class PreviewPlan:
+    """What the scheduler *would* propose at these settings — and nothing
+    else. No plan is stored, no request is touched, the run is not recorded.
+
+    A read, which is the point: comparing settings ("what if I favoured a
+    packed diary?") is exploration, and an assistant may do as much of it as
+    asked. Turning one answer into a real proposal is `plan.propose`, which
+    is not.
+    """
+    alpha: Optional[float] = None
+    max_displacements: Optional[int] = None
+    request_ids: Optional[Sequence[RequestId]] = None
+    horizon_days: Optional[int] = None
+
+
 @command("plan.tick", Tier.ROUTINE)
 @dataclass(frozen=True)
 class TickScheduler:

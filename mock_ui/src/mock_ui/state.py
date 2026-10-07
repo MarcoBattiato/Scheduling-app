@@ -205,6 +205,9 @@ class World:
         # feed's address. The address is the only credential a subscribed
         # calendar app can present, so it has to be unguessable.
         self.feed_tokens: Dict[str, str] = {}
+        # Every command that went through the gate (control.py): who, through
+        # which channel, in which conversation, and what came of it.
+        self.audit: List[dict] = []
         # Money — see billing.py.
         self.billing = BillingSettings()
         self.charges: Dict[int, Charge] = {}
@@ -1073,8 +1076,14 @@ class World:
         alpha: Optional[float] = None,
         max_displacements: Optional[int] = None,
         allow_chains: Optional[bool] = None,
+        dry_run: bool = False,
     ) -> dict:
         """Run the engine and put the answer in front of the provider.
+
+        `dry_run` answers "what would happen at these settings?" and changes
+        nothing at all: no plan is stored, no request is parked, nothing is
+        rehoused, and the run is not recorded. It is what lets an assistant
+        compare settings freely — a read, not a write (`plan.preview`).
 
         Writes nothing to the calendar. The result is a *proposal*: the
         provider approves it, then each affected client is asked, and only
@@ -1103,14 +1112,15 @@ class World:
         """
         now = now or datetime.now()
         horizon_days = horizon_days or self.policy.horizon_days
-        self.last_run = now
+        if not dry_run:
+            self.last_run = now
 
         # Bookings the provider no longer has time for. Never rescheduled as a
         # side effect of the availability changing — either the provider has
         # asked for that standing, or this only reports them.
         stranded = self.orphaned_appointments()
         warnings = []
-        if stranded and self.policy.rehouse_orphans_on_run:
+        if stranded and self.policy.rehouse_orphans_on_run and not dry_run:
             raised = self.rehouse_orphans()
             if raised:
                 warnings.append(
@@ -1199,6 +1209,28 @@ class World:
         # Anything the engine could not place is parked, so its approaching
         # date stops demanding a fresh run on every tick.
         placed_ids = {int(p.request_id) for p in result.placements}
+        if dry_run:
+            return {
+                "ran": True, "dry_run": True,
+                "params": {"alpha": alpha, "max_displacements": max_moves},
+                "metrics": {
+                    "placed": len(result.placements), "unplaced": len(result.unplaced),
+                    "displacements": len(result.displacements),
+                    "fragmentation_minutes": result.fragmentation_minutes,
+                    "preference_gap_minutes": result.preference_gap_minutes,
+                },
+                "placements": [
+                    {"request_id": int(p.request_id), "client_id": p.client_id,
+                     "start": p.range.start, "end": p.range.end,
+                     "wanted": self.requests[int(p.request_id)].preferred_start}
+                    for p in result.placements],
+                "displacements": [
+                    {"appointment_id": int(d.appointment_id), "client_id": d.client_id,
+                     "was_start": d.was.start, "now_start": d.now.start}
+                    for d in result.displacements],
+                "unplaced": [int(r) for r in result.unplaced],
+                "out_of_scope": len(skipped), "warnings": warnings,
+            }
         for request in waiting:
             if request.id not in placed_ids:
                 request.status = "on_hold"

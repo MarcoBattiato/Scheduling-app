@@ -131,6 +131,7 @@ def save(world: World, path: Path) -> None:
         # payment in progress across a restart would read as expired.
         "simulated_outcomes": getattr(world.processor, "outcomes", {}),
         "feed_tokens": world.feed_tokens,
+        "audit": world.audit,
         "log": world.log,
     }
     path.write_text(json.dumps(payload, indent=2))
@@ -268,6 +269,7 @@ def load(path: Path) -> World:
             {k: tuple(v) for k, v in payload.get("simulated_outcomes", {}).items()})
     # Kept across restarts, or every subscribed calendar would break on each one.
     world.feed_tokens = dict(payload.get("feed_tokens", {}))
+    world.audit = list(payload.get("audit", []))
 
     # Restart id issuing above everything restored, so a reloaded session
     # cannot mint an id that already exists.

@@ -32,6 +32,22 @@ Layers, and the rule that keeps them apart:
   module that knows both packages.
 - `app.py` — HTTP only. If a route contains logic, it is in the wrong file;
   the flow tests drive `World` directly and never go through HTTP.
+- `control.py` — **the gate**: the one way a command is meant to reach the
+  World. Untrusted JSON → a typed `scheduling_contracts` command
+  (`build_command`, strict) → identity from the `Session`, never the command →
+  owner looked up (`owner_of`) → `scheduling_contracts.decide` → run, draft,
+  or refuse. A refusal of someone else's thing reads exactly like "no such
+  thing". "Needs confirmation" executes nothing: the command waits behind a
+  single-use, expiring token with a summary written *by the server*
+  (`describe`), and only the person, outside the assistant, can `confirm`.
+  What an assistant gets back is cut down (`_strip`): a client's sees no
+  identifiers at all — its tools have no `client_id`, which the gate always
+  fills with "you" — and the provider's sees per-conversation pseudonyms and
+  can only act through ones it was shown. Every attempt goes to
+  `World.audit`. The screens do not go through the gate yet; when they do,
+  `app.session_for` (today: the "as" claim) is where sign-in plugs in.
+  `tests/test_gate.py` checks the guarantees across every handled command —
+  and fails if the gate is made to act instead of draft, or to leak names.
 - `persistence.py` — session save/load. **Deliberately reaches into
   `calendar_store`'s private lists**, because real persistence does not exist
   yet and rebuilding through the public API would issue fresh appointment ids,
