@@ -837,7 +837,6 @@ def test_stranded_bookings_are_flagged_and_nothing_is_done_about_them():
     assert "fixStranded('rehouse')" in panel and "fixStranded('cancel')" in panel, (
         "both explicit triggers, since only the provider knows which is right"
     )
-    assert "setRehouseOnRun" in panel, "and the standing alternative"
 
 
 def _scheduleLayers(state, who):

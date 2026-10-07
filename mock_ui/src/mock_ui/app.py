@@ -241,7 +241,6 @@ class SettingsIn(BaseModel):
     retry_after_minutes: Optional[int] = None
     horizon_days: Optional[int] = None
     scope_to_horizon: Optional[bool] = None
-    rehouse_orphans_on_run: Optional[bool] = None
     min_notice_hours: Optional[int] = None
     reschedule_window: Optional[str] = None
     reschedule_window_days: Optional[int] = None
@@ -982,8 +981,6 @@ def settings(payload: SettingsIn):
         world.policy.horizon_days = max(1, payload.horizon_days)
     if payload.scope_to_horizon is not None:
         world.policy.scope_to_horizon = payload.scope_to_horizon
-    if payload.rehouse_orphans_on_run is not None:
-        world.policy.rehouse_orphans_on_run = payload.rehouse_orphans_on_run
     if payload.min_notice_hours is not None:
         world.policy.min_notice_hours = max(0, payload.min_notice_hours)
     if payload.reschedule_window is not None:

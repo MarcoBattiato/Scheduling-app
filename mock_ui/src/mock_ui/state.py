@@ -1885,18 +1885,13 @@ class World:
         if not dry_run:
             self.last_run = now
 
-        # Bookings the provider no longer has time for. Never rescheduled as a
-        # side effect of the availability changing — either the provider has
-        # asked for that standing, or this only reports them.
-        stranded = self.orphaned_appointments()
+        # Bookings in time the provider is not working that nobody is moving
+        # — only data from before time off needed a decision can be like
+        # that. Reported, never acted on here.
+        moving = self._asked_to_move()
+        stranded = [a for a in self.orphaned_appointments() if a.id not in moving]
         warnings = []
-        if stranded and self.policy.rehouse_orphans_on_run and not dry_run:
-            raised = self.rehouse_orphans()
-            if raised:
-                warnings.append(
-                    f"{len(raised)} booking(s) were in time you are not "
-                    f"available for; they have been queued to be rehoused")
-        elif stranded:
+        if stranded:
             warnings.append(
                 f"{len(stranded)} booking(s) are in time you are not available "
                 f"for, and were left alone")
@@ -2786,6 +2781,8 @@ class World:
                  "was": a.was_start.isoformat() if a.was_start else None,
                  "was_end": a.was_end.isoformat() if a.was_end else None,
                  "now": a.now_start.isoformat(), "now_end": a.now_end.isoformat(),
+                 # Named here: a client's screens get no plans to look it up in.
+                 "service": self._approval_service(a),
                  "asked_at": a.asked_at.isoformat() if a.asked_at else None,
                  "overdue": a.id in overdue}
                 for a in self.approvals.values()
@@ -2824,7 +2821,6 @@ class World:
                 "retry_after_minutes": self.policy.retry_after_minutes,
                 "horizon_days": self.policy.horizon_days,
                 "scope_to_horizon": self.policy.scope_to_horizon,
-                "rehouse_orphans_on_run": self.policy.rehouse_orphans_on_run,
                 "min_notice_hours": self.policy.min_notice_hours,
                 "reschedule_window": self.policy.reschedule_window,
                 "reschedule_window_days": self.policy.reschedule_window_days,
@@ -2880,6 +2876,14 @@ class World:
             "feeds": {k: v for k, v in full["feeds"].items() if k == client_id},
             "notices": [n for n in full["notices"] if n["client_id"] == client_id][::-1],
         }
+
+    def _approval_service(self, a: "Approval") -> str:
+        try:
+            if a.kind == "booking":
+                return self._service_name(self.requests[a.request_id].service_id)
+            return self._service_name(self.store.get_appointment(a.appointment_id).service_type_id)
+        except KeyError:
+            return "Appointment"
 
     def _service_name(self, service_id: str) -> str:
         try:

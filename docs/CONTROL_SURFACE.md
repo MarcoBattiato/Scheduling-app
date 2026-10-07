@@ -261,7 +261,6 @@ called.
 | `urgency_hours` | `24` | A request wanted sooner than this earns its own run |
 | `retry_after_minutes` | `60` | How long before unsatisfied work is retried |
 | `scope_to_horizon` | `true` | Whether a run *selects* by horizon or merely plans within it |
-| `rehouse_orphans_on_run` | `false` | Whether a run raises rehousing requests itself |
 
 **H3 — Resource budget.** Governs tractability rather than preference. **This is
 the denial-of-service surface**, and the only group where a provider can hurt

@@ -207,3 +207,11 @@ def test_the_api_stops_waiting_on_request():
     client.post("/api/settings", json={"horizon_days": 10, "answer_within_hours": 0})
     out = client.post("/api/approvals/overdue/decline", json={}).json()
     assert out == {"declined": [], "plan_id": None}
+
+
+def test_an_offer_names_its_service_on_the_clients_own_screen(world):
+    """A client's screens get no plans, so the offer carries the name."""
+    carol = world.snapshot_for("carol")
+    (offer,) = [a for a in carol["approvals"] if a["status"] == "pending"]
+    assert offer["service"] != "Appointment" and offer["service"] == world._service_name(
+        world.requests[ask(world, "carol").request_id].service_id)

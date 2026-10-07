@@ -493,3 +493,35 @@ def test_nothing_is_called_off_silently(drawn):
     assert "to be moved" in carol and 'data-act="notice-seen"' in carol
     assert "cancelled by the clinic" in dan and 'data-act="notice-seen"' in dan
     assert "cancelled by the clinic" not in carol
+
+
+@node
+def test_cancelling_at_short_notice_warns_about_the_fee():
+    """Said before it applies: the practice's late-cancellation rule."""
+    import subprocess as sp
+    script = r"""
+      const vm = require("vm"), fs = require("fs");
+      const noop = () => {}, el = () => ({innerHTML: "", dataset: {}, style: {}, addEventListener: noop,
+        querySelector: () => null, querySelectorAll: () => [], classList: {add: noop, remove: noop, toggle: noop}});
+      const sandbox = {console, setInterval: noop, setTimeout, clearTimeout, URLSearchParams,
+        document: {addEventListener: noop, querySelectorAll: () => [], querySelector: () => null, getElementById: el},
+        location: {search: "", hash: ""}, history: {replaceState: noop},
+        localStorage: {getItem: () => null, setItem: noop}, fetch: () => new Promise(noop),
+        scrollTo: noop, addEventListener: noop};
+      sandbox.window = sandbox;
+      vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), vm.createContext(sandbox));
+      const soon = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 19);
+      const later = new Date(Date.now() + 72 * 3600e3).toISOString().slice(0, 19);
+      const P = sandbox.Phone;
+      const out = (billing, start) => { P.show("carol", "home", {clients: [{id: "carol", name: "Carol"}], billing, today: "2026-01-01",
+        appointments: [], requests: [], approvals: [], notices: []}, [{id: "carol", name: "Carol"}]);
+        return sandbox.lateCancelWarning({client_id: "carol", start}); };
+      const rules = {default_mode: "after_session", late_cancel_window_hours: 24, late_cancel_fee: "100%"};
+      console.log(JSON.stringify([out(rules, soon), out(rules, later),
+        out({...rules, late_cancel_fee: "0"}, soon), out({...rules, default_mode: "off"}, soon)]));
+    """
+    result = sp.run(["node", "-e", script, str(STATIC / "phone.js")], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    soon, later, no_fee, not_billed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert "less than 24 hours" in soon and "never charged automatically" in soon
+    assert later == no_fee == not_billed == ""

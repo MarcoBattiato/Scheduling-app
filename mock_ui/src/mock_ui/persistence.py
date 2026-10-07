@@ -125,7 +125,6 @@ def save(world: World, path: Path) -> None:
             "retry_after_minutes": world.policy.retry_after_minutes,
             "horizon_days": world.policy.horizon_days,
             "scope_to_horizon": world.policy.scope_to_horizon,
-            "rehouse_orphans_on_run": world.policy.rehouse_orphans_on_run,
             "min_notice_hours": world.policy.min_notice_hours,
             "reschedule_window": world.policy.reschedule_window,
             "reschedule_window_days": world.policy.reschedule_window_days,
@@ -277,8 +276,6 @@ def load(path: Path) -> World:
         "horizon_days", world.policy.horizon_days)
     world.policy.scope_to_horizon = scheduler.get(
         "scope_to_horizon", world.policy.scope_to_horizon)
-    world.policy.rehouse_orphans_on_run = scheduler.get(
-        "rehouse_orphans_on_run", world.policy.rehouse_orphans_on_run)
     for name in ("min_notice_hours", "reschedule_window", "reschedule_window_days",
                  "answer_within_hours", "decline_when_overdue"):
         setattr(world.policy, name, scheduler.get(name, getattr(world.policy, name)))

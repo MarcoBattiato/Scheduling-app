@@ -98,6 +98,7 @@ const openRequest = (r) => r.status === "pending" || r.status === "on_hold";
 const unsettled = (a) => !a.applied && (a.status === "pending" || a.status === "accepted");
 
 function approvalService(a) {
+  if (a.service) return a.service;
   if (a.kind === "reschedule") return (appointmentById(a.appointment_id) || {}).service || "Appointment";
   const plan = planById(a.plan_id);
   const placed = plan && plan.placements.find(
@@ -799,6 +800,21 @@ function clientBookings() {
   return html;
 }
 
+// The practice's own rule, said before it applies rather than after. Only a
+// warning: a fee is always the clinician's decision, never automatic.
+function lateCancelWarning(a) {
+  const b = state.billing || {};
+  const client = clientById(a.client_id) || {};
+  const mode = client.billing_mode || b.default_mode;
+  const fee = String(b.late_cancel_fee ?? "0").trim();
+  const hours = Number(b.late_cancel_window_hours || 0);
+  if (mode === "off" || !hours || fee === "0" || fee === "0%" || Number(fee) === 0) return "";
+  if ((parse(a.start) - Date.now()) / 3600000 > hours) return "";
+  return `<br><br><b>This is less than ${hours} hours before the appointment.</b> Your practice may charge
+    a late-cancellation fee (${esc(fee.endsWith("%") ? `${fee} of the session price` : sgd(Math.round(Number(fee) * 100)))}).
+    The clinician decides; it is never charged automatically.`;
+}
+
 function bookingSheet(id) {
   const a = appointmentById(id);
   if (!a) return `<h3>Gone</h3><p>This booking no longer exists.</p>`;
@@ -930,8 +946,9 @@ function exceptionSheet(presetDate) {
         <label class="field"><span>From</span><select name="from">${timeOptions("09:00", 0, 23 * 60 + 30)}</select></label>
         <label class="field"><span>Until</span><select name="to">${timeOptions("17:00", 0, 23 * 60 + 30)}</select></label>
       </div>
-      ${isProvider() && !available ? `<p class="hint" style="margin-top:0">Bookings already in that
-        time stay put and are flagged on Home. For more than a day, use <b>Time off</b> in More.</p>` : ""}
+      ${isProvider() && !available ? `<p class="hint" style="margin-top:0">If anyone is booked in that
+        time, you'll be asked whether to move them or keep the time. For more than a day, use
+        <b>Time off</b> in More.</p>` : ""}
       <div class="stack"><button class="btn block" type="submit">Save</button>
         <button class="btn ghost" type="button" data-act="close">Cancel</button></div>
     </form>`;
@@ -1863,8 +1880,6 @@ function settingsView() {
                "Someone asking for next month is not booked into this week.")}
       ${toggle("auto_run", s.auto_run, "Make schedules automatically",
                "Weekly, and when a request is getting urgent. Off: only when you ask.")}
-      ${toggle("rehouse_orphans_on_run", s.rehouse_orphans_on_run, "Find new times for stranded bookings",
-               "When a schedule is made, rather than waiting for you to decide.")}
     </div>
     <h2>When the clinic has to move a session</h2>
     <p class="hint">You away, or a repeating session on a closed day: where its new time may be.
@@ -2307,8 +2322,8 @@ const ACTIONS = {
   },
   "cancel-booking": async (d) => {
     const a = appointmentById(Number(d.id));
-    if (!await ask("Cancel this appointment?", `${esc(a.service)}, ${fmtWhen(a.start)}. This cannot be undone.`,
-                   "Cancel appointment", true)) return;
+    if (!await ask("Cancel this appointment?", `${esc(a.service)}, ${fmtWhen(a.start)}. This cannot be undone.${
+        lateCancelWarning(a)}`, "Cancel appointment", true)) return;
     await done(api(`/api/appointments/${d.id}/cancel`, {by_provider: false}), "Appointment cancelled");
   },
 

@@ -614,17 +614,6 @@ def test_a_run_says_so_when_bookings_are_stranded_and_leaves_them(world):
                 if r.origin is Origin.DISPLACED]
 
 
-def test_a_run_can_be_told_to_deal_with_them_and_says_that_it_did(world):
-    place(world, "alice", 60, 0, 9, 17)
-    _strand(world, 0)
-    world.policy.rehouse_orphans_on_run = True
-
-    outcome = world.propose()
-
-    assert any("queued to be rehoused" in w for w in outcome["warnings"])
-    assert [r for r in world.requests.values() if r.origin is Origin.DISPLACED]
-
-
 def test_being_away_can_still_do_it_all_in_one_breath(world):
     """"I am ill tomorrow, cancel everything" is one decision, not two."""
     place(world, "alice", 60, 0, 9, 17)

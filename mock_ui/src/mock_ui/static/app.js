@@ -223,7 +223,6 @@ function renderStranded() {
     (a) => a.orphaned && a.status === "booked");
   if (!isProvider() || !stranded.length) { $("stranded").innerHTML = ""; return; }
 
-  const onRun = (state.scheduler || {}).rehouse_orphans_on_run;
   const dealtWith = stranded.filter((a) => a.pending).length;
   const idle = stranded.filter((a) => !a.pending);
 
@@ -248,11 +247,6 @@ function renderStranded() {
         <button class="ghost warn" ${idle.length ? "" : "disabled"}
           onclick="fixStranded('cancel')">Cancel them</button>
       </div>
-      <label class="row hint" style="margin-top:6px">
-        <input type="checkbox" ${onRun ? "checked" : ""}
-               onchange="setRehouseOnRun(this.checked)">
-        Or let the next scheduler run queue them itself, and warn me it did
-      </label>
     </div>`;
 }
 
@@ -261,10 +255,6 @@ window.fixStranded = async (what) => {
       "Cancel every stranded booking outright?\n\n"
       + "Nobody is offered another slot.")) return;
   await api(`/api/orphans/${what}`, {});
-  refresh();
-};
-window.setRehouseOnRun = async (on) => {
-  await api("/api/settings", {rehouse_orphans_on_run: on});
   refresh();
 };
 
