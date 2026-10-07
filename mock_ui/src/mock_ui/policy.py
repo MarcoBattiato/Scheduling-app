@@ -66,6 +66,23 @@ class SchedulingPolicy:
     # Redundant with the explicit button on purpose: a provider who edits their
     # hours and then forgets is exactly who this is for.
     rehouse_orphans_on_run: bool = False
+    # How much warning a booked client gets before being asked to move.
+    # Asking someone at 07:00 to give up their 10:00 is not a real question.
+    min_notice_hours: int = 24
+    # Where a session the clinic has to move — the provider away, or a
+    # repeating session falling on a closed day — may be moved to:
+    #   "week"  — the same Monday-to-Sunday week (the default: a weekly
+    #             session moved into next week stacks on next week's own)
+    #   "month" — the same calendar month
+    #   "days"  — within `reschedule_window_days` of the original time
+    #   "any"   — anywhere the planning window reaches
+    # If nothing is found in time, a one-off booking is looked for further
+    # out ("if there is no alternative"); a repeating session lapses, since
+    # next week's session is the next one.
+    reschedule_window: str = "week"
+    reschedule_window_days: int = 7
+
+    RESCHEDULE_WINDOWS = ("week", "month", "days", "any")
 
 
 @dataclass(frozen=True)

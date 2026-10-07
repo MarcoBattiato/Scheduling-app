@@ -489,9 +489,7 @@ def test_the_provider_is_asked_about_fees_and_shown_what_is_owed(drawn):
 def test_nothing_is_called_off_silently(drawn):
     carol = screen(drawn, "called_off", "carol:home")
     dan = screen(drawn, "called_off", "dan:home")
-    provider = screen(drawn, "called_off", "provider:home")
 
-    assert "not happening" in carol and 'data-act="notice-seen"' in carol
+    assert "to be moved" in carol and 'data-act="notice-seen"' in carol
     assert "cancelled by the clinic" in dan and 'data-act="notice-seen"' in dan
-    assert "won't take place" in provider and "Carol" in provider
-    assert "not happening" not in dan, "only the person whose session it is"
+    assert "cancelled by the clinic" not in carol

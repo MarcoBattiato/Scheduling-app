@@ -292,13 +292,14 @@ def test_a_session_in_time_the_provider_has_off_is_skipped_not_raised(world):
     assert at(10).date() in series.raised, "and it is not tried again"
 
 
-def test_time_off_taken_after_a_session_was_raised_lapses_it(world):
+def test_time_off_taken_after_a_session_was_raised_offers_it_within_its_week(world):
     series = world.start_series("carol", "s60", at(3).isoformat(), every_weeks=1)
     one_off = world.submit_request("carol", "s60", at(3, 12).isoformat())
 
     world.provider_away(at(3, 0), at(4, 0))
 
-    assert sessions(world, series)[0].status == "lapsed"
+    session = sessions(world, series)[0]
+    assert session.status == "pending" and session.latest == world.reschedule_deadline(at(3))
     assert one_off.status == "pending", "a one-off request is still wanted"
 
 
@@ -333,15 +334,19 @@ def test_a_session_that_will_not_happen_is_shown_to_both_until_seen(world, tmp_p
     series = world.start_series("carol", "s60", at(3).isoformat(), every_weeks=1)
     result = world.provider_away(at(3, 0), at(4, 0))
     skipped = sessions(world, series)[0]
+    assert result["sessions_moved"] == [skipped.id], "the provider is told at once"
+    assert [n["kind"] for n in world.notices_for("carol")] == ["changed"]
 
-    assert result["sessions_skipped"] == [skipped.id], "the provider is told at once"
+    world.tick(now=skipped.latest)                 # its week ends with no time found
+
     shown = next(r for r in world.snapshot()["requests"] if r["id"] == skipped.id)
     assert shown["status"] == "lapsed" and shown["lapsed_reason"] == "away"
     assert "provider" not in shown["seen_by"], "the provider has still to see it"
     told = world.notices_for("carol")
-    assert [n["kind"] for n in told] == ["skipped"] and "closed that day" in told[0]["text"]
+    assert told[0]["kind"] == "skipped" and "closed then" in told[0]["text"]
 
-    world.acknowledge_notice(told[0]["id"], "carol")
+    for notice in told:
+        world.acknowledge_notice(notice["id"], "carol")
     path = tmp_path / "s.json"
     persistence.save(world, path)
     again = persistence.load(path)

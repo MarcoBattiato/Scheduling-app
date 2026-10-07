@@ -28,6 +28,7 @@ no longer than needed is part of the privacy design.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -324,9 +325,13 @@ def choose_brain(client=None):
 
 
 class Assistant:
-    def __init__(self, world, gate: control.Gate, client=None, brain=None) -> None:
+    def __init__(self, world, gate: control.Gate, client=None, brain=None, lock=None) -> None:
         self.world = world
         self.gate = gate
+        # Held around every touch of the World, and released while waiting on
+        # the model — which can take half a minute, during which every phone
+        # would otherwise stall on its poll.
+        self.lock = lock or contextlib.nullcontext()
         self.brain = brain or choose_brain(client)
         self.conversations: Dict[str, Conversation] = {}
 
@@ -407,10 +412,12 @@ class Assistant:
         convo.visible.append({"role": "user", "text": text})
         if not provider and DISTRESS.search(text):
             convo.handoff_offered = True          # shown whatever the model does
-        outbound = self._pseudonymise(session, text) if provider else text
-        note = f"Now: {datetime.now():%A %d %B %Y, %H:%M} (Singapore)."
-        if not provider:
-            note += "\n" + self._client_context(session)
+        with self.lock:
+            outbound = self._pseudonymise(session, text) if provider else text
+            note = f"Now: {datetime.now():%A %d %B %Y, %H:%M} (Singapore)."
+            if not provider:
+                note += "\n" + self._client_context(session)
+            system = _provider_prompt(self.world) if provider else _client_prompt(self.world)
         self.brain.add_user(convo.messages, outbound, note)
 
         tools = control.tools_for(session)
@@ -418,7 +425,6 @@ class Assistant:
         api_tools = [{k: t[k] for k in ("name", "description", "input_schema")} for t in tools]
         if not provider:
             api_tools.append(HANDOFF_TOOL)
-        system = _provider_prompt(self.world) if provider else _client_prompt(self.world)
 
         reply = ""
         for _ in range(MAX_STEPS):
@@ -429,14 +435,16 @@ class Assistant:
             if not step.calls:
                 reply = step.text
                 break
-            self.brain.add_results(convo.messages,
-                                   [(call, *self._tool(session, convo, by_name, call))
-                                    for call in step.calls])
+            with self.lock:
+                results = [(call, *self._tool(session, convo, by_name, call))
+                           for call in step.calls]
+            self.brain.add_results(convo.messages, results)
         else:
             reply = "That took too many steps. Could you ask in a simpler way?"
 
         if provider:
-            reply = self._restore_names(session, reply)
+            with self.lock:
+                reply = self._restore_names(session, reply)
         reply = reply.strip() or "Done."
         convo.visible.append({"role": "assistant", "text": reply})
         return self.view(convo)

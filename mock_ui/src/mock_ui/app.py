@@ -7,14 +7,18 @@ from __future__ import annotations
 
 import hashlib
 import mimetypes
+import asyncio
 import os
+import weakref
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import List, Optional
 
 import html as html_lib
 
+import anyio.from_thread
 from fastapi import FastAPI, Form, HTTPException, Query, Request as HttpRequest
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -39,6 +43,42 @@ def default_snapshot() -> Path:
 
 
 SNAPSHOT = Path(os.environ.get("MOCK_UI_SNAPSHOT", default_snapshot()))
+
+# One request at a time touches the World. Routes run on a thread pool, so
+# without this a phone's poll could read the plans while another poll's tick
+# was adding one ("dictionary changed size during iteration"), and a burst of
+# polls each saw the run as due and each started one. Held in the event loop
+# (see `autosave`), so waiting requests do not each tie up a worker
+# thread the request holding it needs. One lock per event loop: the test
+# client starts a loop per request.
+_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _world_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if loop not in _locks:
+        _locks[loop] = asyncio.Lock()
+    return _locks[loop]
+
+
+class _ThreadSideLock:
+    """The same lock, taken from a worker thread — for the assistant, which
+    holds it around each touch of the World and not while the model thinks
+    (half a minute, during which every phone would stall on its poll)."""
+
+    def __enter__(self):
+        async def take():
+            await _world_lock().acquire()
+        anyio.from_thread.run(take)
+
+    def __exit__(self, *exc):
+        anyio.from_thread.run_sync(lambda: _world_lock().release())
+
+
+# Waiting on the model can take half a minute; the assistant takes the lock
+# itself around each touch of the World instead.
+_UNLOCKED = {"/api/assistant/send"}
+
 
 app = FastAPI(title="Scheduling mock UI")
 world = persistence.load_or_new(SNAPSHOT)
@@ -134,10 +174,11 @@ class AwayIn(BaseModel):
     """The provider cannot work a stretch of time."""
     start: str
     end: str
-    # "flag" (the default) marks the time off and leaves the bookings in it
-    # alone for the provider to decide about; "reschedule" and "cancel" make
-    # that decision in the same breath.
-    action: str = "flag"
+    # "reschedule" (the default) offers everyone affected another time within
+    # the reschedule window; "flag" marks the time off and leaves the bookings
+    # in it for the provider to decide about (the clients are told); "cancel"
+    # cancels them, only when the provider says so explicitly.
+    action: str = "reschedule"
 
 
 class OrphansIn(BaseModel):
@@ -197,6 +238,9 @@ class SettingsIn(BaseModel):
     horizon_days: Optional[int] = None
     scope_to_horizon: Optional[bool] = None
     rehouse_orphans_on_run: Optional[bool] = None
+    min_notice_hours: Optional[int] = None
+    reschedule_window: Optional[str] = None
+    reschedule_window_days: Optional[int] = None
     practice_name: Optional[str] = None
     chat_enabled: Optional[bool] = None
     assistant_enabled: Optional[bool] = None
@@ -324,7 +368,7 @@ _assistant = None
 def assistant() -> assistant_mod.Assistant:
     global _assistant
     if _assistant is None or _assistant.world is not world:
-        _assistant = assistant_mod.Assistant(world, gate())
+        _assistant = assistant_mod.Assistant(world, gate(), lock=_ThreadSideLock())
     elif _assistant.gate is not gate():
         _assistant.gate = gate()
     return _assistant
@@ -850,6 +894,15 @@ def settings(payload: SettingsIn):
         world.policy.scope_to_horizon = payload.scope_to_horizon
     if payload.rehouse_orphans_on_run is not None:
         world.policy.rehouse_orphans_on_run = payload.rehouse_orphans_on_run
+    if payload.min_notice_hours is not None:
+        world.policy.min_notice_hours = max(0, payload.min_notice_hours)
+    if payload.reschedule_window is not None:
+        if payload.reschedule_window not in world.policy.RESCHEDULE_WINDOWS:
+            raise HTTPException(400, f"reschedule_window must be one of "
+                                     f"{list(world.policy.RESCHEDULE_WINDOWS)}")
+        world.policy.reschedule_window = payload.reschedule_window
+    if payload.reschedule_window_days is not None:
+        world.policy.reschedule_window_days = max(1, min(90, payload.reschedule_window_days))
     if payload.practice_name is not None:
         name = payload.practice_name.strip()
         if not name:
@@ -933,14 +986,21 @@ async def autosave(request, call_next):
     Losing an afternoon of hand-built history to a restart is a poor way to
     learn that saving was manual.
     """
-    response = await call_next(request)
-    if request.method == "POST" and response.status_code < 400 \
-            and not request.url.path.endswith("/reset"):
-        try:
-            persistence.save(world, SNAPSHOT)
-        except Exception as exc:                     # never break a request over it
-            world._note(f"could not save the session: {exc}")
+    if request.url.path in _UNLOCKED or not request.url.path.startswith(("/api/", "/calendar/", "/pay/")):
+        return await call_next(request)
+    async with _world_lock():                        # one at a time; see _world_lock
+        response = await call_next(request)
+        if request.method == "POST" and response.status_code < 400 \
+                and not request.url.path.endswith("/reset"):
+            await run_in_threadpool(_save)           # never a half-changed World
     return response
+
+
+def _save() -> None:
+    try:
+        persistence.save(world, SNAPSHOT)
+    except Exception as exc:                         # never break a request over it
+        world._note(f"could not save the session: {exc}")
 
 
 @app.middleware("http")

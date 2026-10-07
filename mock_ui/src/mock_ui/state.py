@@ -95,6 +95,12 @@ class Request:
     seen_by: set = field(default_factory=set)
     # The client has been told no time has been found yet (once, not per run).
     told_unplaced: bool = False
+    # A session the clinic has to move must find its new time before this
+    # (SchedulingPolicy.reschedule_window). When it passes: a one-off booking
+    # is looked for further out (`keep_looking`, "if there is no
+    # alternative"); a repeating session lapses — next week's is the next one.
+    latest: Optional[datetime] = None
+    keep_looking: bool = True
 
 
 def every(weeks: int) -> str:
@@ -253,6 +259,10 @@ class Plan:
     params: dict = field(default_factory=dict)
     metrics: dict = field(default_factory=dict)
     created_at: datetime = field(default_factory=datetime.now)
+    # The queue it was made from. An automatic run that would start from the
+    # same queue while this draft still waits for the provider is skipped:
+    # it would only make the same draft again, every hour.
+    queue: tuple = ()
 
     def item_key(self, kind: str, ident: int) -> str:
         return f"{'p' if kind == 'booking' else 'm'}:{ident}"
@@ -664,11 +674,20 @@ class World:
                     # have. A second request would book a second session.
                     series.raised.add(start.date())
                     continue
+                if self._away_at(series.client_id, start, series.service_id):
+                    # They said they are away; asking for it would only fail.
+                    self._skip_session(series, start, self.SKIP_CLIENT_AWAY)
+                    continue
                 if self._provider_away_at(start, series.service_id):
-                    # The provider has taken that time off. Raising it would
-                    # only park it, and a parked session gets placed in some
-                    # later week, on top of that week's own.
-                    self._skip_session(series, start, self.SKIP_AWAY)
+                    # The clinic is closed then: offered another time, not
+                    # called off — but only within the reschedule window, or
+                    # it would stack on a later week's own session.
+                    request = self.submit_request(
+                        series.client_id, series.service_id, start.isoformat())
+                    request.series_id = series.id
+                    series.raised.add(start.date())
+                    self._displace(request, start)
+                    raised.append(request)
                     continue
                 if self._week_is_full(series.client_id, start):
                     # Already as many sessions that week as they may have, so
@@ -691,8 +710,14 @@ class World:
     # Why a repeating session is off, as a code: each screen words it for its
     # own reader ("you're away" to the provider is not what the client reads).
     SKIP_AWAY, SKIP_FULL, SKIP_UNPLACED = "away", "week_full", "unplaced"
-    SKIP_WORDS = {"away": "the provider is away", "week_full": "the week is already full",
-                  "unplaced": "no time was found before the day"}
+    SKIP_CLIENT_AWAY = "client_away"
+    SKIP_WORDS = {"away": "the provider is away and no other time was found in time",
+                  "week_full": "the week is already full",
+                  "unplaced": "no time was found before the day",
+                  "client_away": "the client is away that day"}
+    # A new offer is never for a time sooner than this: the client needs a
+    # moment to answer, and a run at 13:00 must not offer 09:00 that morning.
+    OFFER_LEAD = timedelta(hours=1)
 
     def _skip_session(self, series: Series, start: datetime, reason: str) -> Request:
         """A repeating session that will not happen, kept on record.
@@ -713,9 +738,10 @@ class World:
         request.status = "lapsed"
         request.lapsed_reason = reason
         request.seen_by = {"client"}            # the client's copy is a Notice
-        why = {self.SKIP_AWAY: "the clinic is closed that day",
+        why = {self.SKIP_AWAY: "the clinic is closed then, and no other time could be found in time",
                self.SKIP_FULL: "you already have as many sessions that week as planned",
-               self.SKIP_UNPLACED: "no time could be found for it before the day"}[reason]
+               self.SKIP_UNPLACED: "no time could be found for it before the day",
+               self.SKIP_CLIENT_AWAY: "you told us you're away that day"}[reason]
         self._tell(request.client_id, "skipped",
                    f"Your repeating session on {self._when(request.preferred_start)} won't "
                    f"take place: {why}. Your other sessions carry on as usual.")
@@ -762,6 +788,49 @@ class World:
                         if agreed else f"{what}. ")
                        + f"Your appointment stays on {self._when(approval.was_start)}.")
 
+    def _expire_past_asks(self, now: datetime) -> List["Approval"]:
+        """Offers and move asks whose time has come without being settled.
+
+        Left alone, an unanswered offer for Tuesday 16:00 kept its hold, and a
+        "yes" on Wednesday then booked Tuesday — the past. A move ask for a
+        session that has already happened is equally meaningless. Each is
+        taken back, the client told, and a booking request goes back in the
+        queue (a repeating one lapses in the usual way once its day is gone).
+        """
+        expired = []
+        for a in list(self.approvals.values()):
+            if a.applied or a.status not in ("pending", "accepted"):
+                continue
+            gone = a.now_start <= now or (a.kind == "reschedule" and a.was_start
+                                         and a.was_start <= now)
+            if not gone:
+                continue
+            agreed = a.status == "accepted"
+            if a.kind == "booking":
+                self._tell(a.client_id, "withdrawn",
+                           f"The time {'you agreed to' if agreed else 'we offered you'}, "
+                           f"{self._when(a.now_start)}, passed before it could be confirmed. "
+                           f"Your request is still open, and the clinic will offer you another time.")
+            else:
+                self._tell(a.client_id, "withdrawn",
+                           f"We no longer need to move your appointment on "
+                           f"{self._when(a.was_start)}; it stays where it was.")
+            a.status = "withdrawn"
+            if a.kind == "booking":
+                request = self.requests.get(a.request_id)
+                if request and request.status not in ("placed", "withdrawn", "lapsed"):
+                    request.status = "on_hold"
+            self._note(f"{a.client_id}'s {a.kind} for {a.now_start:%a %d %b %H:%M} "
+                       f"expired before it was settled")
+            expired.append(a)
+            self._drop_moves_nobody_needs(a.plan_id)
+            self._settle_if_answered(a.plan_id)
+        return expired
+
+    def _queue_fingerprint(self) -> tuple:
+        return tuple(sorted((r.id, r.status) for r in self.requests.values()
+                            if r.status in ("pending", "on_hold")))
+
     def _tell_unplaced(self, request: "Request") -> None:
         if request.told_unplaced or request.status != "on_hold":
             return
@@ -774,8 +843,10 @@ class World:
     def _tell_closed(self) -> None:
         """Bookings left in time the clinic is closed. Flagged, not moved — so
         the client must hear it, or they may turn up to a closed door."""
+        being_moved = self._asked_to_move()
         for appointment in self.orphaned_appointments():
-            if appointment.id in self.told_closed or appointment.client_id == PROVIDER:
+            if appointment.id in self.told_closed or appointment.client_id == PROVIDER \
+                    or appointment.id in being_moved:
                 continue
             self.told_closed.add(appointment.id)
             self._tell(appointment.client_id, "closed",
@@ -792,6 +863,41 @@ class World:
             raise ValueError("who must be client or provider")
         request.seen_by.add(who)
 
+    def reschedule_deadline(self, original: datetime) -> Optional[datetime]:
+        """By when a session the clinic has to move must have its new time."""
+        kind = self.policy.reschedule_window
+        if kind == "week":
+            monday = original.date() - timedelta(days=original.weekday())
+            return datetime.combine(monday + timedelta(days=7), time.min)
+        if kind == "month":
+            first = original.date().replace(day=1)
+            following = (first + timedelta(days=32)).replace(day=1)
+            return datetime.combine(following, time.min)
+        if kind == "days":
+            return original + timedelta(days=max(1, self.policy.reschedule_window_days))
+        return None
+
+    def _window_words(self, deadline: Optional[datetime]) -> str:
+        if deadline is None:
+            return ""
+        return f" before {deadline - timedelta(minutes=1):%a %d %b}"
+
+    def _displace(self, request: Request, original: datetime) -> None:
+        """This session is the clinic's to move: find it another time inside
+        the reschedule window, and tell the client now."""
+        request.origin = Origin.DISPLACED
+        request.latest = self.reschedule_deadline(original)
+        request.keep_looking = request.series_id is None
+        request.note = "the clinic is closed then"
+        self._tell(request.client_id, "changed",
+                   f"The clinic is closed at the time of your session on {self._when(original)}. "
+                   f"You'll be offered another time{self._window_words(request.latest)}.")
+
+    def _away_at(self, client_id: str, start: datetime, service_id: str) -> bool:
+        """Has the client marked that time as away (an exception, not just
+        outside their usual hours)?"""
+        return self._time_off(client_id, start, service_id)
+
     def _already_covered(self, client_id: str, start: datetime) -> bool:
         """Has this client already a booking, or an open request, on that day?"""
         day = (datetime.combine(start.date(), time.min),
@@ -803,6 +909,9 @@ class World:
                    for r in self.requests.values())
 
     def _provider_away_at(self, start: datetime, service_id: str) -> bool:
+        return self._time_off(PROVIDER, start, service_id)
+
+    def _time_off(self, person: str, start: datetime, service_id: str) -> bool:
         """Has the provider marked this slot as time off?
 
         Time off specifically — an exception taking the hour away — not merely
@@ -815,7 +924,7 @@ class World:
         except KeyError:
             minutes = 60
         end = start + timedelta(minutes=minutes)
-        for e in self.store.exceptions_for(PROVIDER, start.date()):
+        for e in self.store.exceptions_for(person, start.date()):
             if e.kind.value != "remove":
                 continue
             e_end = time.max if e.end_time == time.min else e.end_time
@@ -835,11 +944,32 @@ class World:
         """
         lapsed = []
         for r in self.requests.values():
-            if r.series_id is not None and r.status in ("pending", "on_hold") \
-                    and r.preferred_start.date() < now.date():
-                self._lapse(r, self.SKIP_UNPLACED)
-                lapsed.append(r)
+            if r.status not in ("pending", "on_hold"):
+                continue
+            if r.latest is not None and r.latest <= now + self.OFFER_LEAD and r.keep_looking:
+                # Nothing inside the window: a one-off booking is looked for
+                # further out rather than dropped — there is no alternative.
+                r.latest = None
+                continue
+            if r.series_id is None or not self._session_gone(r, now):
+                continue
+            if r.latest is not None:
+                reason = self.SKIP_AWAY
+            elif self._away_at(r.client_id, r.preferred_start, r.service_id):
+                reason = self.SKIP_CLIENT_AWAY
+            else:
+                reason = self.SKIP_UNPLACED
+            self._lapse(r, reason)
+            lapsed.append(r)
         return lapsed
+
+    def _session_gone(self, r: Request, now: datetime) -> bool:
+        """A repeating session past the point it could still happen: its
+        reschedule window closed, or (if it has none) its day over."""
+        if r.series_id is None:
+            return False
+        deadline = r.latest or datetime.combine(r.preferred_start.date() + timedelta(days=1), time.min)
+        return deadline <= now + self.OFFER_LEAD
 
     def _next_session(self, series: Series) -> Optional[datetime]:
         """The next session not yet raised, for showing what happens next."""
@@ -1042,7 +1172,7 @@ class World:
     AWAY_ACTIONS = ("flag", "reschedule", "cancel")
 
     def provider_away(
-        self, start: datetime, end: datetime, action: str = "flag"
+        self, start: datetime, end: datetime, action: str = "reschedule"
     ) -> dict:
         """The provider cannot work a stretch of time.
 
@@ -1074,16 +1204,18 @@ class World:
         # Repeating sessions waiting for a time inside the stretch are not
         # carried into a later week (see _lapse_missed_sessions); a one-off
         # request is left in the queue, since the client still wants it.
+        # Repeating sessions waiting for a time inside the stretch are offered
+        # another time within the reschedule window, never just called off.
         skipped = []
         for r in self.requests.values():
             if r.series_id is not None and r.status in ("pending", "on_hold") \
-                    and start <= r.preferred_start < end:
-                self._lapse(r, self.SKIP_AWAY)
+                    and start <= r.preferred_start < end and r.latest is None:
+                self._displace(r, r.preferred_start)
                 skipped.append(r.id)
 
         stranded = [a.id for a in self.orphaned_appointments()
                     if a.range.start < end and start < a.range.end]
-        if action != "cancel":
+        if action == "flag":
             self._tell_closed()
         self._note(f"provider away {start:%a %d %b %H:%M} – {end:%a %d %b %H:%M}"
                    + (f": {len(stranded)} appointment(s) now stranded"
@@ -1092,13 +1224,13 @@ class World:
         if action == "cancel":
             return {"affected": len(stranded), "rehoused": [],
                     "cancelled": self.cancel_orphans(stranded),
-                    "sessions_skipped": skipped}
+                    "sessions_moved": skipped}
         if action == "reschedule":
             return {"affected": len(stranded), "cancelled": 0,
                     "rehoused": self.rehouse_orphans(stranded),
-                    "sessions_skipped": skipped}
+                    "sessions_moved": skipped}
         return {"affected": len(stranded), "rehoused": [], "cancelled": 0,
-                "flagged": stranded, "sessions_skipped": skipped}
+                "flagged": stranded, "sessions_moved": skipped}
 
     # -- bookings the provider no longer has time for --------------------
 
@@ -1150,6 +1282,13 @@ class World:
             request.replaces_appointment_id = appointment.id
             request.origin = Origin.DISPLACED
             request.note = "the provider is not available then"
+            request.latest = self.reschedule_deadline(appointment.range.start)
+            request.keep_looking = True
+            self.told_closed.add(appointment.id)
+            self._tell(appointment.client_id, "changed",
+                       f"The clinic is not available at the time of your appointment on "
+                       f"{self._when(appointment.range.start)}. You'll be offered another "
+                       f"time{self._window_words(request.latest)}; your booking stays until then.")
             raised.append(request.id)
         if raised:
             self._note(f"{len(raised)} stranded booking(s) queued to be rehoused")
@@ -1300,6 +1439,8 @@ class World:
         # Repeating bookings first, so a session that just came into the window
         # is in the queue the policy is about to look at.
         self.raise_due_sessions(now)
+        self._expire_past_asks(now)
+        self._lapse_missed_sessions(now)
         self._tell_closed()
         trigger = due(
             self.policy, now, self.last_run,
@@ -1308,6 +1449,11 @@ class World:
             any(r.status in ("pending", "on_hold") for r in self.requests.values()),
         )
         if trigger is None:
+            return None
+        queue = self._queue_fingerprint()
+        if any(p.status == "draft" and p.queue == queue for p in self.plans.values()):
+            # The same draft is already waiting for the provider; making it
+            # again every retry would only pile up identical drafts.
             return None
         return self.propose(now=now, reason=trigger.reason, detail=trigger.detail)
 
@@ -1449,11 +1595,11 @@ class World:
         window_end = window_start + timedelta(days=horizon_days)
 
         if not dry_run:
+            self._expire_past_asks(now)
             self._lapse_missed_sessions(now)
         open_requests = [r for r in self.requests.values()
                          if r.status in ("pending", "on_hold")
-                         and not (r.series_id is not None
-                                  and r.preferred_start.date() < now.date())]
+                         and not self._session_gone(r, now)]
         waiting, skipped = self._in_scope(open_requests, request_ids, window_end)
         if not waiting:
             return {"ran": False,
@@ -1477,23 +1623,34 @@ class World:
         # "lock and re-optimise": the engine is a pure function of the world it
         # is described, so planning around a commitment is a matter of
         # describing it, not of a reservation mechanism.
-        provider_free = free_time(availability, list(live) + self.pending_holds())
+        # Nothing is offered sooner than OFFER_LEAD from now: the window is
+        # counted in whole days, so without this a run at 13:00 offered 09:00
+        # that same morning.
+        earliest = now + self.OFFER_LEAD
+        provider_free = _from(free_time(availability, list(live) + self.pending_holds()),
+                              earliest)
 
         asked_to_move = self._asked_to_move()
+        # A booked client is not asked to give up a session that is about to
+        # happen (or already has): asking at 07:00 to move 10:00 is not a real
+        # question.
+        notice = now + timedelta(hours=self.policy.min_notice_hours)
         movable = []
         for appointment in live:
             if appointment.locked or appointment.id in self.immovable:
                 continue
             if appointment.id in asked_to_move:
                 continue        # already being asked about; do not ask twice
+            if appointment.range.start < notice:
+                continue
             current = TimeRange(appointment.range.start, appointment.range.end)
-            allowed = reschedule_windows(
+            allowed = _from(reschedule_windows(
                 current,
                 self.availability_segments(
                     appointment.client_id, window_start, window_end
                 ),
                 self.bounds,
-            )
+            ), earliest)
             if allowed:
                 movable.append(MovableAppointment(
                     id=str(appointment.id),
@@ -1511,8 +1668,10 @@ class World:
         result = solve_placements(
             [BookingRequest(
                 str(r.id), r.client_id, r.duration_minutes,
-                [TimeRange(s.start, s.end) for s in self.availability_segments(
-                    r.client_id, window_start, window_end)],
+                # From now on, and before its reschedule deadline if it has
+                # one (a session the clinic had to move stays in its window).
+                [TimeRange(x.start, x.end) for x in _from(_until(self.availability_segments(
+                    r.client_id, window_start, window_end), r.latest), earliest)],
                 preferred_start=r.preferred_start,
              )
              for r in waiting],
@@ -1563,6 +1722,7 @@ class World:
         plan = Plan(
             id=next(self._ids),
             status="draft",
+            queue=self._queue_fingerprint(),
             reason=reason,
             detail=detail,
             params={"alpha": alpha, "max_displacements": max_moves,
@@ -1731,6 +1891,9 @@ class World:
         plan = self.plans[plan_id]
         if plan.status not in ("awaiting_clients", "answered"):
             raise ValueError(f"plan {plan_id} is {plan.status}, not out with clients")
+        # A "yes" to a time that has since passed is not written down: it
+        # would book the past.
+        self._expire_past_asks(datetime.now())
 
         if how == "reoptimise":
             dropped = self._withdraw_outstanding(plan, "the provider rejected the plan")
@@ -1861,6 +2024,10 @@ class World:
         if answer not in self.ANSWERS:
             raise ValueError(f"answer must be one of {self.ANSWERS}, not {answer!r}")
         approval = self.approvals[approval_id]
+        if approval.status == "pending":
+            self._expire_past_asks(datetime.now())
+            if approval.status == "withdrawn":
+                raise ValueError("that time has passed; the clinic will offer you another")
         if approval.status != "pending":
             return
         if answer == "refuse" and approval.kind != "reschedule":
@@ -2299,6 +2466,9 @@ class World:
                 "horizon_days": self.policy.horizon_days,
                 "scope_to_horizon": self.policy.scope_to_horizon,
                 "rehouse_orphans_on_run": self.policy.rehouse_orphans_on_run,
+                "min_notice_hours": self.policy.min_notice_hours,
+                "reschedule_window": self.policy.reschedule_window,
+                "reschedule_window_days": self.policy.reschedule_window_days,
                 "last_run": self.last_run.isoformat() if self.last_run else None,
             },
             "log": self.log[-40:],
@@ -2358,6 +2528,28 @@ class World:
 
     def _note(self, message: str) -> None:
         self.log.append(f"{datetime.now():%H:%M:%S}  {message}")
+
+
+def _from(segments, earliest: datetime) -> list:
+    """The parts of these time ranges from `earliest` on."""
+    out = []
+    for x in segments:
+        if x.end <= earliest:
+            continue
+        out.append(x if x.start >= earliest else type(x)(earliest, x.end))
+    return out
+
+
+def _until(segments, latest: Optional[datetime]) -> list:
+    """The parts of these time ranges before `latest` (all of them if None)."""
+    if latest is None:
+        return list(segments)
+    out = []
+    for x in segments:
+        if x.start >= latest:
+            continue
+        out.append(x if x.end <= latest else type(x)(x.start, latest))
+    return out
 
 
 def _parse_time(text: str) -> time:

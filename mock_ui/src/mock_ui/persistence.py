@@ -86,7 +86,8 @@ def save(world: World, path: Path) -> None:
              "preferred_start": _dt(r.preferred_start),
              "series_id": r.series_id,
              "lapsed_reason": r.lapsed_reason, "seen_by": sorted(r.seen_by),
-             "told_unplaced": r.told_unplaced}
+             "told_unplaced": r.told_unplaced,
+             "latest": _dt(r.latest), "keep_looking": r.keep_looking}
             for r in world.requests.values()
         ],
         "series": [
@@ -98,7 +99,7 @@ def save(world: World, path: Path) -> None:
         ],
         "plans": [
             {"id": p.id, "status": p.status, "reason": p.reason, "detail": p.detail,
-             "params": p.params, "metrics": p.metrics,
+             "params": p.params, "metrics": p.metrics, "queue": list(p.queue),
              "placements": [{**x, "start": _dt(x["start"]), "end": _dt(x["end"])}
                             for x in p.placements],
              "displacements": [
@@ -124,6 +125,9 @@ def save(world: World, path: Path) -> None:
             "horizon_days": world.policy.horizon_days,
             "scope_to_horizon": world.policy.scope_to_horizon,
             "rehouse_orphans_on_run": world.policy.rehouse_orphans_on_run,
+            "min_notice_hours": world.policy.min_notice_hours,
+            "reschedule_window": world.policy.reschedule_window,
+            "reschedule_window_days": world.policy.reschedule_window_days,
             "last_run": _dt(world.last_run),
         },
         "practice_name": world.practice_name,
@@ -223,6 +227,8 @@ def load(path: Path) -> World:
             lapsed_reason=entry.get("lapsed_reason", ""),
             seen_by=set(entry.get("seen_by", [])),
             told_unplaced=entry.get("told_unplaced", False),
+            latest=_back(entry.get("latest")),
+            keep_looking=entry.get("keep_looking", True),
         )
     for entry in payload.get("series", []):
         world.series[entry["id"]] = Series(
@@ -238,6 +244,7 @@ def load(path: Path) -> World:
         world.plans[entry["id"]] = Plan(
             id=entry["id"], status=entry["status"], reason=entry["reason"],
             detail=entry["detail"], params=entry["params"], metrics=entry["metrics"],
+            queue=tuple(tuple(x) for x in entry.get("queue", [])),
             placements=[{**x, "start": _back(x["start"]), "end": _back(x["end"])}
                         for x in entry["placements"]],
             displacements=[
@@ -268,6 +275,8 @@ def load(path: Path) -> World:
         "scope_to_horizon", world.policy.scope_to_horizon)
     world.policy.rehouse_orphans_on_run = scheduler.get(
         "rehouse_orphans_on_run", world.policy.rehouse_orphans_on_run)
+    for name in ("min_notice_hours", "reschedule_window", "reschedule_window_days"):
+        setattr(world.policy, name, scheduler.get(name, getattr(world.policy, name)))
     world.last_run = _back(scheduler.get("last_run"))
 
     world.log = payload.get("log", [])

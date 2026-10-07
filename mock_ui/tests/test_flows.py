@@ -508,12 +508,13 @@ def test_a_client_can_see_whether_their_slot_is_settled(world):
 
 def test_changing_availability_never_reschedules_anybody(world):
     """The rule: a mistyped date must not put half the week's clients through
-    a rescheduling nobody asked for. Stranded bookings are flagged and stay
-    exactly where they are until the provider says otherwise."""
+    a rescheduling nobody asked for. Marked away with "just flag them",
+    stranded bookings stay exactly where they are until the provider says
+    otherwise. (Away's default is to offer them a move — see test_timing.)"""
     place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
 
-    outcome = world.provider_away(at(0, 0), at(0, 23))      # the default
+    outcome = world.provider_away(at(0, 0), at(0, 23), action="flag")
 
     assert outcome["flagged"] == [booked.id]
     assert outcome["rehoused"] == [] and outcome["cancelled"] == 0
@@ -549,7 +550,7 @@ def test_a_client_narrowing_their_own_hours_strands_nothing(world):
 def test_the_provider_can_then_ask_for_them_to_be_rehoused(world):
     place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
-    world.provider_away(at(0, 0), at(0, 23))
+    world.provider_away(at(0, 0), at(0, 23), action="flag")
 
     raised = world.rehouse_orphans()
 
@@ -565,7 +566,7 @@ def test_the_provider_can_then_ask_for_them_to_be_rehoused(world):
 def test_rehousing_can_be_asked_for_one_at_a_time(world):
     for day in (0, 1):
         place(world, "alice", 60, day, 9, 17)
-    world.provider_away(at(0, 0), at(1, 23))
+    world.provider_away(at(0, 0), at(1, 23), action="flag")
     stranded = sorted(a.id for a in world.orphaned_appointments())
     assert len(stranded) == 2
 
@@ -577,7 +578,7 @@ def test_rehousing_can_be_asked_for_one_at_a_time(world):
 
 def test_asking_twice_does_not_raise_the_same_request_twice(world):
     place(world, "alice", 60, 0, 9, 17)
-    world.provider_away(at(0, 0), at(0, 23))
+    world.provider_away(at(0, 0), at(0, 23), action="flag")
     world.rehouse_orphans()
 
     assert world.rehouse_orphans() == [], "already being dealt with"
@@ -587,7 +588,7 @@ def test_a_run_says_so_when_bookings_are_stranded_and_leaves_them(world):
     """Quiet is the one thing it must not be — but silence is not the same as
     action, and the default is to report only."""
     place(world, "alice", 60, 0, 9, 17)
-    world.provider_away(at(0, 0), at(0, 23))
+    world.provider_away(at(0, 0), at(0, 23), action="flag")
     ask(world, "bob", 60, 1, 9, 17)
 
     outcome = world.propose()
@@ -600,7 +601,7 @@ def test_a_run_says_so_when_bookings_are_stranded_and_leaves_them(world):
 
 def test_a_run_can_be_told_to_deal_with_them_and_says_that_it_did(world):
     place(world, "alice", 60, 0, 9, 17)
-    world.provider_away(at(0, 0), at(0, 23))
+    world.provider_away(at(0, 0), at(0, 23), action="flag")
     world.policy.rehouse_orphans_on_run = True
 
     outcome = world.propose()

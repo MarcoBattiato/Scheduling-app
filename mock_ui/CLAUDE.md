@@ -30,7 +30,15 @@ Layers, and the rule that keeps them apart:
 
 - `state.py` — the `World`: every behaviour lives here, and it is the only
   module that knows both packages.
-- `app.py` — HTTP only. If a route contains logic, it is in the wrong file;
+- `app.py` — HTTP only. **One request at a time touches the World**: the
+  `autosave` middleware holds an asyncio lock (per event loop) around every
+  `/api/`, `/calendar/` and `/pay/` request and its save. Routes run on a thread
+  pool; without it a poll read the plans while another poll's tick added one,
+  and a burst of polls each started a run. It is held in the event loop, not in
+  a dependency: FastAPI 0.128 releases a yield dependency only *after* the
+  response, so a save inside it deadlocked. The assistant's `/send` is outside
+  it and takes it itself around each touch of the World (`_ThreadSideLock`), not
+  while the model thinks. If a route contains logic, it is in the wrong file;
   the flow tests drive `World` directly and never go through HTTP.
 - `control.py` — **the gate**: the one way a command is meant to reach the
   World. Untrusted JSON → a typed `scheduling_contracts` command
@@ -114,6 +122,24 @@ either the provider asks (`rehouse_orphans` / `cancel_orphans`) or they have
 turned on `SchedulingPolicy.rehouse_orphans_on_run`. A run reports them either
 way. One mistyped date must not put half the week through a rescheduling
 nobody asked for.
+
+**Time moves on.** A run offers nothing sooner than `World.OFFER_LEAD` (an hour)
+from now — the window is whole days, so it used to offer that morning; a booked
+client is never asked to move a session less than `min_notice_hours` away
+(default 24); an offer or move ask whose time comes before it is settled
+expires (`_expire_past_asks`, on every tick, answer and settle), so a late "yes"
+can never book the past; and an automatic run is skipped while a draft made
+from the same queue (`Plan.queue`) still waits for the provider.
+
+**The provider being away is offered as a move, not a cancellation**, unless
+they choose "cancel" (or "just flag", which tells the clients and leaves the
+decision for later): `provider_away`'s default action is `reschedule`. A
+session the clinic has to move — a booking in the time, or a repeating session
+falling on it — gets `Request.latest` from `SchedulingPolicy.reschedule_window`
+(same week by default; same month, N days, or anywhere) and is only placed
+before it. When the window closes with nothing found, a one-off booking is
+looked for further out (`keep_looking`: there is no alternative), a repeating
+session lapses. A client who marked themselves away is told exactly that.
 
 `provider_away` is the newest way to get the *origin* wrong. A client rehoused because
 the provider fell ill will accept the slot they are offered, and the booking is

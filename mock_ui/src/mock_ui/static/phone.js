@@ -32,7 +32,7 @@ const ui = {
   alpha: null,
   moves: null,
   picked: {},           // plan id -> {item key -> ticked}
-  away: {mode: "days", action: "flag"},
+  away: {mode: "days", action: "reschedule"},   // a provider's absence is offered as a move
   exceptionAvailable: false,
 };
 
@@ -475,7 +475,11 @@ const skippedFor = (who, clientId) => (state.requests || []).filter((r) =>
   r.status === "lapsed" && !(r.seen_by || []).includes(who)
   && (clientId == null || r.client_id === clientId));
 
-const NOTICE_TAGS = {skipped: "not happening", cancelled: "cancelled by the clinic",
+const windowWords = () => ({week: "in the same week", month: "in the same month",
+  days: `within ${(state.scheduler || {}).reschedule_window_days || 7} days`, any: "as soon as one is free"})[
+  (state.scheduler || {}).reschedule_window || "week"];
+
+const NOTICE_TAGS = {skipped: "not happening", cancelled: "cancelled by the clinic", changed: "to be moved",
   withdrawn: "changed", booked: "booked for you", unplaced: "still looking", closed: "clinic not available"};
 
 function clientNotices() {
@@ -1670,8 +1674,8 @@ function awayView() {
         </div>`}
       <span class="hint" style="margin:0 0 6px;display:block">Bookings already in that time</span>
       <div class="choices">${[
-        ["flag", "Leave them, just flag them", "Nothing changes until you decide. Safest if you might have the date wrong."],
-        ["reschedule", "Find them a new time", "Each client keeps their hour until somewhere else is agreed."],
+        ["reschedule", "Find them a new time", `Each client is told and offered another time ${windowWords()}; they keep their hour until it is agreed.`],
+        ["flag", "Leave them for now", "Clients are told the clinic is closed then; you decide later. Safest if you might have the date wrong."],
         ["cancel", "Cancel them", "Nobody is offered anything else."],
       ].map(([id, title, meta]) => `<button type="button" class="choice" data-act="away-action" data-action="${id}" aria-pressed="${a.action === id}">
         <span><b>${title}</b><br><span class="meta">${meta}</span></span></button>`).join("")}</div>
@@ -1804,7 +1808,29 @@ function settingsView() {
                "Weekly, and when a request is getting urgent. Off: only when you ask.")}
       ${toggle("rehouse_orphans_on_run", s.rehouse_orphans_on_run, "Find new times for stranded bookings",
                "When a schedule is made, rather than waiting for you to decide.")}
-    </div>`;
+    </div>
+    <h2>When the clinic has to move a session</h2>
+    <p class="hint">You away, or a repeating session on a closed day: where its new time may be.
+      If nothing is free in time, a one-off booking is looked for further out; a weekly one is skipped that week.</p>
+    <div class="choices">${[
+      ["week", "Same week", "A weekly session never lands on top of next week's."],
+      ["month", "Same month", ""],
+      ["days", `Within ${s.reschedule_window_days || 7} days`, "Of the original time."],
+      ["any", "Anywhere", "As far as the planning window reaches."],
+    ].map(([id, title, meta]) => `<button type="button" class="choice" data-act="reschedule-window" data-window="${id}"
+        aria-pressed="${(s.reschedule_window || "week") === id}"><span><b>${title}</b>${meta ? `<br><span class="meta">${meta}</span>` : ""}</span></button>`).join("")}</div>
+    ${(s.reschedule_window || "week") === "days" ? `<div class="card"><div class="row" style="padding:0;border:0">
+        <div class="main"><div class="title">${s.reschedule_window_days || 7} days</div></div>
+        <button class="btn small secondary" data-act="window-days" data-delta="-1" aria-label="Fewer days">−</button>
+        <button class="btn small secondary" data-act="window-days" data-delta="1" aria-label="More days">+</button>
+      </div></div>` : ""}
+    <h2>Asking booked clients to move</h2><div class="card">
+      <div class="row" style="padding:0;border:0">
+        <div class="main"><div class="title">At least ${s.min_notice_hours ?? 24} hours' notice</div>
+          <div class="meta">Nobody is asked to give up a session sooner than this.</div></div>
+        <button class="btn small secondary" data-act="min-notice" data-delta="-12" aria-label="Less notice">−</button>
+        <button class="btn small secondary" data-act="min-notice" data-delta="12" aria-label="More notice">+</button>
+      </div></div>`;
 }
 
 // -- calendar sync ---------------------------------------------------
@@ -2323,6 +2349,17 @@ const ACTIONS = {
   "setting-toggle": async (d, el) => {
     await done(api("/api/settings", {[d.key]: el.checked}), "Saved");
   },
+  "reschedule-window": async (d) => {
+    await done(api("/api/settings", {reschedule_window: d.window}), "Saved");
+  },
+  "window-days": async (d) => {
+    const days = Math.max(1, Math.min(90, ((state.scheduler || {}).reschedule_window_days || 7) + Number(d.delta)));
+    await done(api("/api/settings", {reschedule_window_days: days}));
+  },
+  "min-notice": async (d) => {
+    const hours = Math.max(0, Math.min(168, ((state.scheduler || {}).min_notice_hours ?? 24) + Number(d.delta)));
+    await done(api("/api/settings", {min_notice_hours: hours}));
+  },
   horizon: async (d) => {
     const days = Math.max(1, Math.min(60, ((state.scheduler || {}).horizon_days || 7) + Number(d.delta)));
     await done(api("/api/settings", {horizon_days: days}));
@@ -2441,10 +2478,10 @@ const FORMS = {
     await refresh(true);
     if (!outcome) return;
     const affected = outcome.affected || 0;
-    const skipped = (outcome.sessions_skipped || []).length;
+    const skipped = (outcome.sessions_moved || []).length;
     toast((affected ? `Marked away · ${plural(affected, "booking")} ${
       {flag: "flagged", reschedule: "being moved", cancel: "cancelled"}[a.action]}` : "Marked away · nothing was booked")
-      + (skipped ? ` · ${plural(skipped, "repeating session")} won't take place (clients are told)` : ""));
+      + (skipped ? ` · ${plural(skipped, "repeating session")} to be offered another time (clients are told)` : ""));
     ui.away.day = null;
     go("home");
   },
