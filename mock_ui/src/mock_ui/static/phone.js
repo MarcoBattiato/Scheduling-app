@@ -454,6 +454,44 @@ function empty(title, body, action) {
   return `<div class="empty"><b>${title}</b>${body || ""}${action || ""}</div>`;
 }
 
+// -- things that are not happening -----------------------------------------
+// Nothing is ever called off silently. A repeating session that will not
+// happen, and a booking the practice cancelled, stay on the person's Home
+// until they have said they've seen it.
+
+const SKIP_WORDS = {
+  client: {away: "the clinic is closed that day",
+           week_full: "you already have as many sessions that week as planned",
+           unplaced: "no time could be found for it before the day"},
+  provider: {away: "you're away that day",
+             week_full: "their weekly limit is already reached",
+             unplaced: "no time was found before the day"},
+};
+const skipWhy = (who, r) => SKIP_WORDS[who][r.lapsed_reason] || "it could not go ahead";
+
+const skippedFor = (who, clientId) => (state.requests || []).filter((r) =>
+  r.status === "lapsed" && !(r.seen_by || []).includes(who)
+  && (clientId == null || r.client_id === clientId));
+
+function clientNotices() {
+  const skipped = skippedFor("client", me);
+  const cancelled = (state.appointments || []).filter((a) =>
+    a.client_id === me && (state.cancel_notices || []).includes(a.id));
+  return skipped.map((r) => `<div class="card warn">
+      <div class="main"><span class="tag warn">not happening</span>
+        <h3 style="margin-top:6px">${esc(r.service)} on ${fmtWhen(r.preferred)}</h3>
+        <p class="meta">This session (part of your repeating booking, ${esc(r.note || "regularly")}) won't take place: ${esc(skipWhy("client", r))}. Your other sessions carry on as usual.</p>
+        <div class="row-actions"><button class="btn small" data-act="skip-seen" data-id="${r.id}" data-who="client">OK</button>
+        <button class="btn small ghost" data-act="tab" data-tab="messages">Message the clinic</button></div></div>
+    </div>`).join("") + cancelled.map((a) => `<div class="card warn">
+      <div class="main"><span class="tag warn">cancelled by the clinic</span>
+        <h3 style="margin-top:6px">${esc(a.service)} on ${fmtWhen(a.start)}</h3>
+        <p class="meta">The clinic has cancelled this appointment.</p>
+        <div class="row-actions"><button class="btn small" data-act="cancel-seen" data-id="${a.id}">OK</button>
+        <button class="btn small ghost" data-act="tab" data-tab="messages">Message the clinic</button></div></div>
+    </div>`).join("");
+}
+
 // -- the client: home --------------------------------------------------
 
 function clientHome() {
@@ -485,6 +523,8 @@ function clientHome() {
       <p class="hint" style="margin:8px 0 0">PayNow (works with DBS PayLah! and any bank app), card or GrabPay.</p>
     </div>`;
   }
+
+  html += clientNotices();
 
   if (next) {
     html += `<h2>Next appointment</h2>
@@ -1040,6 +1080,18 @@ function providerHome() {
         <h3 style="margin-top:6px">${plural(stuck.length, "booking is", "bookings are")} in time you're not working</h3>
         <p class="meta">${idle ? "Nothing has been done about them yet." : "Already being moved."}</p></div>
       <span class="chev">›</span></button>`);
+  }
+  const skipped = skippedFor("provider");
+  if (skipped.length) {
+    cards.push(`<div class="card warn">
+      <div class="main"><span class="tag warn">not happening</span>
+        <h3 style="margin-top:6px">${plural(skipped.length, "repeating session")} won't take place</h3>
+        <div class="list" style="box-shadow:none;margin:8px 0 0">${skipped.map((r) => `<div class="row">
+          <div class="main"><div class="title">${esc(nameOf(r.client_id))} · ${fmtWhen(r.preferred)}</div>
+          <div class="meta">${esc(skipWhy("provider", r))}</div></div>
+          <button class="btn small" data-act="skip-seen" data-id="${r.id}" data-who="provider">OK</button></div>`).join("")}</div>
+        <p class="hint" style="margin:8px 0 0">The client is told on their Home too. Nothing booked was cancelled.</p></div>
+    </div>`);
   }
   const unreadThreads = chat.summary.filter((t) => t.unread);
   if (unreadThreads.length) {
@@ -2019,6 +2071,12 @@ const ACTIONS = {
                    refuse: "You're keeping your slot"};
     await done(api(`/api/approvals/${d.id}`, {answer: d.answer}), words[d.answer]);
   },
+  "skip-seen": async (d) => {
+    await done(api(`/api/requests/${d.id}/seen?who=${encodeURIComponent(d.who)}`, {}), "");
+  },
+  "cancel-seen": async (d) => {
+    await done(api(`/api/appointments/${d.id}/seen`, {}), "");
+  },
   withdraw: async (d) => {
     if (!await ask("Withdraw this request?", "You will not be offered a time for it.", "Withdraw", true)) return;
     await done(api(`/api/requests/${d.id}/withdraw`), "Request withdrawn");
@@ -2384,8 +2442,10 @@ const FORMS = {
     await refresh(true);
     if (!outcome) return;
     const affected = outcome.affected || 0;
-    toast(affected ? `Marked away · ${plural(affected, "booking")} ${
-      {flag: "flagged", reschedule: "being moved", cancel: "cancelled"}[a.action]}` : "Marked away · nothing was booked");
+    const skipped = (outcome.sessions_skipped || []).length;
+    toast((affected ? `Marked away · ${plural(affected, "booking")} ${
+      {flag: "flagged", reschedule: "being moved", cancel: "cancelled"}[a.action]}` : "Marked away · nothing was booked")
+      + (skipped ? ` · ${plural(skipped, "repeating session")} won't take place (clients are told)` : ""));
     ui.away.day = null;
     go("home");
   },

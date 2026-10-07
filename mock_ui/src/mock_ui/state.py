@@ -88,6 +88,11 @@ class Request:
     origin: Origin = Origin.CLIENT
     # The repeating booking this session belongs to, if any.
     series_id: Optional[int] = None
+    # Why a repeating session is not happening (status "lapsed"): a code from
+    # World.SKIP_WORDS. Never silent: it stays in front of the client and the
+    # provider until each has seen it (`seen_by`: "client", "provider").
+    lapsed_reason: str = ""
+    seen_by: set = field(default_factory=set)
 
 
 def every(weeks: int) -> str:
@@ -245,6 +250,9 @@ class World:
         # feed's address. The address is the only credential a subscribed
         # calendar app can present, so it has to be unguessable.
         self.feed_tokens: Dict[str, str] = {}
+        # Bookings the practice cancelled that the client has not yet been
+        # shown. A cancellation is never only a line in their history.
+        self.cancel_notices: set = set()
         # Every command that went through the gate (control.py): who, through
         # which channel, in which conversation, and what came of it.
         self.audit: List[dict] = []
@@ -630,17 +638,13 @@ class World:
                     # The provider has taken that time off. Raising it would
                     # only park it, and a parked session gets placed in some
                     # later week, on top of that week's own.
-                    series.raised.add(start.date())
-                    self._note(f"skipped {series.client_id}'s "
-                               f"{start:%a %d %b} session — the provider is away")
+                    self._skip_session(series, start, self.SKIP_AWAY)
                     continue
                 if self._week_is_full(series.client_id, start):
                     # Already as many sessions that week as they may have, so
                     # this one is skipped rather than raised to sit unplaceable
                     # in the queue. Recorded, so it is not tried again.
-                    series.raised.add(start.date())
-                    self._note(f"skipped {series.client_id}'s "
-                               f"{start:%a %d %b} session — the week is already full")
+                    self._skip_session(series, start, self.SKIP_FULL)
                     continue
                 request = self.submit_request(
                     series.client_id, series.service_id, start.isoformat())
@@ -653,6 +657,43 @@ class World:
                 self._note(f"{series.client_id}'s {every(series.every_weeks)} "
                            f"{self._service_name(series.service_id)} has had its last session")
         return raised
+
+    # Why a repeating session is off, as a code: each screen words it for its
+    # own reader ("you're away" to the provider is not what the client reads).
+    SKIP_AWAY, SKIP_FULL, SKIP_UNPLACED = "away", "week_full", "unplaced"
+    SKIP_WORDS = {"away": "the provider is away", "week_full": "the week is already full",
+                  "unplaced": "no time was found before the day"}
+
+    def _skip_session(self, series: Series, start: datetime, reason: str) -> Request:
+        """A repeating session that will not happen, kept on record.
+
+        Never just left out: it becomes a request marked "lapsed", with the
+        reason, which both the client and the provider are shown until they
+        have seen it. Nothing booked is ever cancelled here — these are
+        sessions that had not been given a time.
+        """
+        request = self.submit_request(series.client_id, series.service_id, start.isoformat())
+        request.series_id = series.id
+        request.note = every(series.every_weeks)
+        series.raised.add(start.date())
+        self._lapse(request, reason)
+        return request
+
+    def _lapse(self, request: Request, reason: str) -> None:
+        request.status = "lapsed"
+        request.lapsed_reason = reason
+        request.seen_by = set()
+        self._note(f"{request.client_id}'s {request.preferred_start:%a %d %b} session "
+                   f"will not happen — {self.SKIP_WORDS[reason]}")
+
+    def acknowledge_skipped(self, request_id: int, who: str) -> None:
+        """`who` ("client" or "provider") has seen that this session is off."""
+        request = self.requests[request_id]
+        if request.status != "lapsed":
+            raise ValueError("that session was not skipped")
+        if who not in ("client", "provider"):
+            raise ValueError("who must be client or provider")
+        request.seen_by.add(who)
 
     def _provider_away_at(self, start: datetime, service_id: str) -> bool:
         """Has the provider marked this slot as time off?
@@ -689,10 +730,8 @@ class World:
         for r in self.requests.values():
             if r.series_id is not None and r.status in ("pending", "on_hold") \
                     and r.preferred_start.date() < now.date():
-                r.status = "lapsed"
+                self._lapse(r, self.SKIP_UNPLACED)
                 lapsed.append(r)
-                self._note(f"{r.client_id}'s {r.preferred_start:%a %d %b} session "
-                           f"lapsed — it was not placed before its day")
         return lapsed
 
     def _next_session(self, series: Series) -> Optional[datetime]:
@@ -717,7 +756,13 @@ class World:
         )
         if by is Party.CLIENT and not as_move:
             self._maybe_propose_late_fee(appointment, now or datetime.now())
+        if by is not Party.CLIENT and not as_move and appointment.client_id != PROVIDER:
+            self.cancel_notices.add(appointment.id)
         return appointment
+
+    def acknowledge_cancellation(self, appointment_id: int) -> None:
+        """The client has seen that the practice cancelled this booking."""
+        self.cancel_notices.discard(appointment_id)
 
     def mark_attendance(self, appointment_id: int, attended: bool) -> Appointment:
         """The provider recording whether the client turned up."""
@@ -924,12 +969,12 @@ class World:
         # Repeating sessions waiting for a time inside the stretch are not
         # carried into a later week (see _lapse_missed_sessions); a one-off
         # request is left in the queue, since the client still wants it.
+        skipped = []
         for r in self.requests.values():
             if r.series_id is not None and r.status in ("pending", "on_hold") \
                     and start <= r.preferred_start < end:
-                r.status = "lapsed"
-                self._note(f"{r.client_id}'s {r.preferred_start:%a %d %b} session "
-                           f"skipped — the provider is away")
+                self._lapse(r, self.SKIP_AWAY)
+                skipped.append(r.id)
 
         stranded = [a.id for a in self.orphaned_appointments()
                     if a.range.start < end and start < a.range.end]
@@ -939,12 +984,14 @@ class World:
 
         if action == "cancel":
             return {"affected": len(stranded), "rehoused": [],
-                    "cancelled": self.cancel_orphans(stranded)}
+                    "cancelled": self.cancel_orphans(stranded),
+                    "sessions_skipped": skipped}
         if action == "reschedule":
             return {"affected": len(stranded), "cancelled": 0,
-                    "rehoused": self.rehouse_orphans(stranded)}
+                    "rehoused": self.rehouse_orphans(stranded),
+                    "sessions_skipped": skipped}
         return {"affected": len(stranded), "rehoused": [], "cancelled": 0,
-                "flagged": stranded}
+                "flagged": stranded, "sessions_skipped": skipped}
 
     # -- bookings the provider no longer has time for --------------------
 
@@ -2061,9 +2108,11 @@ class World:
                  # behalf should not be indistinguishable from one they asked
                  # for — in the queue least of all.
                  "origin": r.origin.value, "note": r.note,
-                 "series_id": r.series_id}
+                 "series_id": r.series_id,
+                 "lapsed_reason": r.lapsed_reason, "seen_by": sorted(r.seen_by)}
                 for r in self.requests.values()
             ],
+            "cancel_notices": sorted(self.cancel_notices),
             "series": [
                 {"id": x.id, "client_id": x.client_id, "service_id": x.service_id,
                  "service": self._service_name(x.service_id),

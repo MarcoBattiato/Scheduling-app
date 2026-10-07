@@ -11,10 +11,11 @@ import re
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 
 import pytest
+from calendar_store import Party
 
 from mock_ui import scenarios
 from mock_ui.state import World
@@ -79,8 +80,22 @@ def repeating():
     return world.snapshot()
 
 
+def called_off():
+    """Carol's weekly session falls on a day the practice is closed, and the
+    practice cancelled Dan's booking. Neither may happen silently."""
+    world = _small()
+    tuesday = scenarios._at(scenarios.next_monday(), 1, 9)
+    world.start_series("carol", "session-60", tuesday.isoformat(), every_weeks=1)
+    world.provider_away(tuesday.replace(hour=0), tuesday.replace(hour=23))
+    dans = next(a for a in world.store.appointments_for(
+        "dan", datetime.now(), datetime.now() + timedelta(days=28)))
+    world.cancel_appointment(dans.id, by=Party.PROVIDER)
+    return world.snapshot()
+
+
 STATES = {"untouched": untouched, "drafted": drafted, "asked": asked,
-          "blocked": carol_agreed_dan_has_not, "busy": busy, "repeating": repeating}
+          "blocked": carol_agreed_dan_has_not, "busy": busy, "repeating": repeating,
+          "called_off": called_off}
 
 
 # -- the harness ---------------------------------------------------------
@@ -443,3 +458,15 @@ def test_the_provider_is_asked_about_fees_and_shown_what_is_owed(drawn):
 
     assert "to confirm or waive" in home
     assert 'data-act="fee-confirm"' in payments and 'data-act="record-open"' in payments
+
+
+@node
+def test_nothing_is_called_off_silently(drawn):
+    carol = screen(drawn, "called_off", "carol:home")
+    dan = screen(drawn, "called_off", "dan:home")
+    provider = screen(drawn, "called_off", "provider:home")
+
+    assert "not happening" in carol and 'data-act="skip-seen"' in carol
+    assert "cancelled by the clinic" in dan and 'data-act="cancel-seen"' in dan
+    assert "won't take place" in provider and "Carol" in provider
+    assert "not happening" not in dan, "only the person whose session it is"

@@ -19,7 +19,7 @@ import json
 from datetime import datetime, timedelta
 
 import pytest
-from calendar_store import AppointmentStatus
+from calendar_store import AppointmentStatus, Party
 from scheduling_contracts import Principal, Role, Session, Tier, spec_of
 
 from mock_ui import control, persistence, scenarios
@@ -420,6 +420,42 @@ CLIENT_SCREENS = {
     "series.start", "series.stop",
     "service.list", "client.summary",
 }
+
+
+def _what_dans_assistant_sees(world, gate):
+    from mock_ui.assistant import Assistant
+    session = assistant(client("dan"))
+    now = datetime.now() - timedelta(days=21)
+    window = {"start": now.isoformat(), "end": (now + timedelta(days=60)).isoformat()}
+    seen = {}
+    for tool in tools_for(session):
+        if not tool["needs_confirmation"]:
+            args = {"window": window} if "window" in tool["input_schema"]["properties"] else {}
+            seen[tool["command"]] = flatten(
+                gate.execute(session, build_command(tool["command"], args, session)).result)
+    seen["diary sent with each message"] = Assistant(world, gate=gate)._client_context(session)
+    return seen
+
+
+def test_a_clients_assistant_learns_nothing_from_anybody_elses_diary(world, gate):
+    """Not only no names: nothing at all that depends on anybody else. Other
+    people's bookings change, and what the client's assistant can see must
+    not change by a single character — otherwise it could work out the
+    practice's diary ("is Tuesday 13:00 taken?") without ever being shown it."""
+    before = _what_dans_assistant_sees(world, gate)
+
+    others = [c for c in world.clients if c != "dan"]
+    theirs = booked(world, others[0])
+    world.cancel_appointment(theirs[0].id, by=Party.PROVIDER)
+    when = (datetime.now() + timedelta(days=2)).replace(hour=11, minute=0, second=0, microsecond=0)
+    world.submit_request(others[1], "session-60", when.isoformat())
+    world.store.book_appointment(others[1], "session-60", when.replace(hour=20),
+                                 when.replace(hour=21))
+    world.propose(max_displacements=2)
+
+    after = _what_dans_assistant_sees(world, gate)
+    changed = [name for name in before if before[name] != after[name]]
+    assert not changed, f"other clients' bookings changed what dan's assistant sees: {changed}"
 
 
 def test_a_clients_assistant_can_do_only_what_the_clients_screens_can(world):

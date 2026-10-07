@@ -83,7 +83,8 @@ def save(world: World, path: Path) -> None:
              "replaces_appointment_id": r.replaces_appointment_id,
              "origin": r.origin.value, "note": r.note,
              "preferred_start": _dt(r.preferred_start),
-             "series_id": r.series_id}
+             "series_id": r.series_id,
+             "lapsed_reason": r.lapsed_reason, "seen_by": sorted(r.seen_by)}
             for r in world.requests.values()
         ],
         "series": [
@@ -131,6 +132,7 @@ def save(world: World, path: Path) -> None:
         # payment in progress across a restart would read as expired.
         "simulated_outcomes": getattr(world.processor, "outcomes", {}),
         "feed_tokens": world.feed_tokens,
+        "cancel_notices": sorted(world.cancel_notices),
         "audit": world.audit,
         "messages": [{**vars(m), "at": _dt(m.at), "read_at": _dt(m.read_at)}
                      for m in world.messages],
@@ -215,6 +217,8 @@ def load(path: Path) -> World:
             note=entry.get("note", ""),
             preferred_start=_back(entry.get("preferred_start")),
             series_id=entry.get("series_id"),
+            lapsed_reason=entry.get("lapsed_reason", ""),
+            seen_by=set(entry.get("seen_by", [])),
         )
     for entry in payload.get("series", []):
         world.series[entry["id"]] = Series(
@@ -274,6 +278,7 @@ def load(path: Path) -> World:
             {k: tuple(v) for k, v in payload.get("simulated_outcomes", {}).items()})
     # Kept across restarts, or every subscribed calendar would break on each one.
     world.feed_tokens = dict(payload.get("feed_tokens", {}))
+    world.cancel_notices = set(payload.get("cancel_notices", []))
     world.audit = list(payload.get("audit", []))
     world.messages = [Message(**{**m, "at": _back(m["at"]), "read_at": _back(m.get("read_at"))})
                       for m in payload.get("messages", [])]

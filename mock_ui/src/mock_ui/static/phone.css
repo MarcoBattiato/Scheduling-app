@@ -448,3 +448,4 @@ p.because { margin: 8px 4px; }
 .view { padding-bottom: calc(var(--tabbar) + 96px + env(safe-area-inset-bottom)); }
 .bubble.typing { opacity: .7; font-style: italic; }
 .confirm-card p { font-size: 16px; }
+.row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }

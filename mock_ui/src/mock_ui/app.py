@@ -635,6 +635,25 @@ def withdraw_request(request_id: int):
     return {"ok": True}
 
 
+@app.post("/api/requests/{request_id}/seen")
+def skipped_seen(request_id: int, who: str):
+    """The client or the provider has seen that a repeating session is off."""
+    if request_id not in world.requests:
+        raise HTTPException(404, "no such request")
+    try:
+        world.acknowledge_skipped(request_id, who)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/appointments/{appointment_id}/seen")
+def cancellation_seen(appointment_id: int):
+    """The client has seen that the practice cancelled this booking."""
+    world.acknowledge_cancellation(appointment_id)
+    return {"ok": True}
+
+
 @app.post("/api/appointments/{appointment_id}/cancel")
 def cancel_appointment(appointment_id: int, payload: CancelIn = CancelIn()):
     try:

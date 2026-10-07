@@ -165,10 +165,14 @@ inside the planning window — on every `tick`, idempotently, tracked in
 like any other. Booking a year of Tuesdays up front would hold those hours
 against everyone else without the scheduler ever weighing them. A withdrawn
 session stays withdrawn (it is in `raised`, so it is not raised again); a
-session in time the provider has taken off is skipped, not raised; and one not
-placed before its day **lapses** (`Request.status = "lapsed"`) rather than
-being made up in a later week, where it would stack on that week's own session
-— a one-off request, by contrast, stays queued until placed;
+session in time the provider has taken off, or in a week already at the
+client's limit, is not queued; and one not placed before its day is not made up
+in a later week, where it would stack on that week's own session — a one-off
+request, by contrast, stays queued until placed. **None of these is silent**:
+each becomes a request with status `lapsed` and a reason code
+(`World.SKIP_WORDS`), shown on the client's Home and the provider's until each
+has pressed OK (`Request.seen_by`). Likewise a booking the *practice* cancels
+stays on the client's Home until seen (`World.cancel_notices`);
 stopping a series withdraws what is not yet booked and leaves what is. The
 series' slot is a real client preference — `Origin.CLIENT`, and exactly the
 habitual slot SPEC §10.1 wants to learn.
@@ -242,7 +246,11 @@ diary (`_client_context`: upcoming appointments with real ids, waiting
 requests, open questions), read through the gate exactly as the tools would;
 without it a small local model guessed date ranges and invented ids. **A client's assistant can do only what the client's own screens can,
 over data the client can already see** (`CLIENT_SCREENS` in `test_gate.py`
-pins the list). It cannot see the practice's diary, so it must never say a
+pins the list). Its own history and summary are fine; nothing that depends on
+another client or on the provider's diary is, because enough answers would let
+it be reverse-engineered — `test_a_clients_assistant_learns_nothing_from_anybody_elses_diary`
+changes other people's bookings and requires its view not to change by a
+character. It cannot see the practice's diary, so it must never say a
 time is free or would clash — it sends a request and says the practice will
 offer a time. A tool answering "is Tuesday 13:00 free?" would leak other
 people's bookings however it were worded; that is a privacy decision, not a

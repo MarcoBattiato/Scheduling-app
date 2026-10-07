@@ -10,7 +10,7 @@ leaving what is already booked alone.
 from datetime import date, datetime, time, timedelta
 
 import pytest
-from calendar_store import Origin
+from calendar_store import Origin, Party
 
 from mock_ui import persistence
 from mock_ui.state import PROVIDER, World
@@ -281,7 +281,10 @@ def test_a_session_in_time_the_provider_has_off_is_skipped_not_raised(world):
     world.tick(now=later(7))
     world.tick(now=later(14))
 
-    assert [r.preferred_start for r in sessions(world, series)] == [at(3), at(17)]
+    away = next(r for r in sessions(world, series) if r.preferred_start == at(10))
+    assert [r.preferred_start for r in sessions(world, series)] == [at(3), at(10), at(17)]
+    assert away.status == "lapsed" and away.lapsed_reason == World.SKIP_AWAY, \
+        "kept on record with the reason, never just left out"
     assert at(10).date() in series.raised, "and it is not tried again"
 
 
@@ -317,3 +320,42 @@ def test_a_preview_leaves_a_missed_session_alone(world):
     world.propose(now=later(5), dry_run=True)
 
     assert missed.status == "pending", "a preview changes nothing"
+
+
+# -- never silently ------------------------------------------------------------
+
+
+def test_a_session_that_will_not_happen_is_shown_to_both_until_seen(world, tmp_path):
+    series = world.start_series("carol", "s60", at(3).isoformat(), every_weeks=1)
+    result = world.provider_away(at(3, 0), at(4, 0))
+    skipped = sessions(world, series)[0]
+
+    assert result["sessions_skipped"] == [skipped.id], "the provider is told at once"
+    shown = next(r for r in world.snapshot()["requests"] if r["id"] == skipped.id)
+    assert shown["status"] == "lapsed" and shown["lapsed_reason"] and shown["seen_by"] == []
+
+    world.acknowledge_skipped(skipped.id, "client")
+    path = tmp_path / "s.json"
+    persistence.save(world, path)
+    again = persistence.load(path)
+    assert again.requests[skipped.id].seen_by == {"client"}, "the provider has still to see it"
+
+
+def test_a_booking_the_practice_cancels_is_shown_to_the_client_until_seen(world):
+    appointment = world.store.book_appointment("carol", "s60", at(2), at(2, 11))
+
+    world.cancel_appointment(appointment.id, by=Party.PROVIDER)
+    assert world.snapshot()["cancel_notices"] == [appointment.id]
+
+    world.acknowledge_cancellation(appointment.id)
+    assert world.snapshot()["cancel_notices"] == []
+
+
+def test_the_client_cancelling_or_a_move_needs_no_notice(world):
+    mine = world.store.book_appointment("carol", "s60", at(2), at(2, 11))
+    moving = world.store.book_appointment("carol", "s60", at(4), at(4, 11))
+
+    world.cancel_appointment(mine.id, by=Party.CLIENT)
+    world.cancel_appointment(moving.id, by=Party.PROVIDER, as_move=True)
+
+    assert world.cancel_notices == set()

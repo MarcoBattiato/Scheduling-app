@@ -108,9 +108,10 @@ def test_a_repeating_session_is_skipped_in_a_full_week(world):
 
     series = world.start_series("erin", "s60", at(2, 10).isoformat(), every_weeks=1)
 
-    assert not [r for r in world.requests.values() if r.series_id == series.id]
+    skipped = [r for r in world.requests.values() if r.series_id == series.id]
+    assert [r.status for r in skipped] == ["lapsed"], "not queued, but not silent either"
+    assert skipped[0].lapsed_reason == world.SKIP_FULL
     assert day(2) in series.raised, "recorded, so it is not tried again"
-    assert any("week is already full" in line for line in world.log)
 
 
 def test_a_limit_of_zero_is_refused(world):
