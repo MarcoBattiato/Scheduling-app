@@ -86,4 +86,6 @@ def test_phi_commands_are_reads_or_writes_we_expect():
     set is small and deliberate rather than accidental.
     """
     phi = {n for n in names() if spec_of(build(by_name(n))).phi}
-    assert phi == {"client.summary", "appointment.read", "view.snapshot"}
+    # charge.list: a charge names the service it is for, and service names
+    # are clinical (CONTROL_SURFACE.md §7) — a bill says what you were seen for.
+    assert phi == {"client.summary", "appointment.read", "view.snapshot", "charge.list"}

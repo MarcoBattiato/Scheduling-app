@@ -244,6 +244,12 @@ Then open a tab per person: `http://127.0.0.1:8000/?as=provider`,
 one engine, so an action in one tab shows up in the others within a couple of
 seconds.
 
+**Payments** are simulated unless told otherwise: clients pay on a stand-in
+checkout page served by the app itself, and no money moves. To use Stripe's
+test mode instead, install the extra (`pip install -e "../mock_ui[stripe]"`)
+and start the server with a Stripe **test** secret key in the environment —
+`STRIPE_SECRET_KEY=sk_test_... ./mock_ui/run.sh`. A live key is refused.
+
 **On a phone**, use `/phone` instead (`/phone?as=carol`). It is a separate page
 over the same API: a bottom tab bar, and taps, sheets and pickers in place of
 the desktop page's drag and hover. A narrow screen opening `/` is sent there
@@ -305,7 +311,7 @@ cd calendar_store   && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 cd mock_ui          && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 ```
 
-699 tests: 251 for the engine, 64 for the store, 355 for the mock UI, 29 for the
+747 tests: 251 for the engine, 64 for the store, 403 for the mock UI, 29 for the
 contracts. See the note on the one known failure below.
 
 ---

@@ -12,14 +12,16 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, Response
+import html as html_lib
+
+from fastapi import FastAPI, Form, HTTPException, Request as HttpRequest
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from calendar_store import Party
 
-from . import calendar_sync, persistence, scenarios
+from . import billing, calendar_sync, persistence, scenarios
 from .state import World
 
 STATIC = Path(__file__).parent / "static"
@@ -59,6 +61,30 @@ class RequestIn(BaseModel):
     client_id: str
     service_id: str
     preferred_start: str        # a wish; availability decides what is possible
+
+
+class BillingIn(BaseModel):
+    default_mode: Optional[str] = None
+    late_cancel_window_hours: Optional[int] = None
+    late_cancel_fee: Optional[str] = None
+    no_show_fee: Optional[str] = None
+    gst_registered: Optional[bool] = None
+    gst_number: Optional[str] = None
+    gst_rate_percent: Optional[float] = None
+
+
+class BillingModeIn(BaseModel):
+    mode: Optional[str] = None          # None = the practice default
+
+
+class CheckoutIn(BaseModel):
+    # A path on this app to come back to, e.g. "/phone?as=dan". Only a path:
+    # an absolute address here would let a link send a paying client anywhere.
+    return_to: str = "/phone"
+
+
+class RecordIn(BaseModel):
+    method: str = "cash"
 
 
 class LimitsIn(BaseModel):
@@ -229,6 +255,143 @@ def submit_request(payload: RequestIn):
     # Deliberately does NOT run the scheduler. A request arriving is not a
     # reason to re-plan the week — see policy.py.
     return {"request_id": request.id}
+
+
+# -- money --------------------------------------------------------------
+
+
+def _charge_or_404(charge_id: int):
+    if charge_id not in world.charges:
+        raise HTTPException(404, "no such charge")
+    return world.charges[charge_id]
+
+
+@app.post("/api/billing")
+def configure_billing(payload: BillingIn):
+    try:
+        settings = world.configure_billing(**payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return billing.settings_dict(settings)
+
+
+@app.post("/api/clients/{client_id}/billing-mode")
+def set_billing_mode(client_id: str, payload: BillingModeIn):
+    if client_id not in world.clients:
+        raise HTTPException(404, "no such client")
+    try:
+        world.set_billing_mode(client_id, payload.mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/charges/{charge_id}/confirm")
+def confirm_fee(charge_id: int):
+    _charge_or_404(charge_id)
+    try:
+        world.confirm_fee(charge_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/charges/{charge_id}/waive")
+def waive_charge(charge_id: int):
+    _charge_or_404(charge_id)
+    try:
+        world.waive_charge(charge_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/charges/{charge_id}/checkout")
+def start_checkout(charge_id: int, payload: CheckoutIn, request: HttpRequest):
+    _charge_or_404(charge_id)
+    if not payload.return_to.startswith("/") or payload.return_to.startswith("//"):
+        raise HTTPException(400, "return_to must be a path on this app")
+    back = str(request.base_url).rstrip("/") + payload.return_to
+    try:
+        payment = world.start_checkout(charge_id, back)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"payment_id": payment.id, "url": payment.checkout_url}
+
+
+@app.post("/api/payments/{payment_id}/check")
+def check_payment(payment_id: int):
+    if payment_id not in world.payments:
+        raise HTTPException(404, "no such payment")
+    payment = world.check_payment(payment_id)
+    return {"status": payment.status, "method": payment.method,
+            "charge_status": world.charges[payment.charge_id].status}
+
+
+@app.post("/api/charges/{charge_id}/record")
+def record_payment(charge_id: int, payload: RecordIn):
+    _charge_or_404(charge_id)
+    try:
+        world.record_payment(charge_id, payload.method)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
+_SIMULATED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Pay — simulated</title>
+<style>
+body{{font:16px/1.4 -apple-system,system-ui,sans-serif;margin:0;background:#f6f7f9;color:#16181d}}
+main{{max-width:420px;margin:0 auto;padding:24px 16px}}
+.banner{{background:#fff4d6;color:#7a5200;border-radius:12px;padding:10px 14px;font-size:14px}}
+.card{{background:#fff;border:1px solid #e3e6eb;border-radius:14px;padding:16px;margin:16px 0}}
+.amount{{font-size:34px;font-weight:700;margin:4px 0}}
+label{{display:flex;gap:10px;align-items:center;padding:12px;border:1.5px solid #e3e6eb;border-radius:12px;margin:8px 0}}
+button{{width:100%;min-height:50px;border-radius:12px;border:0;font:inherit;font-weight:600;margin-top:8px}}
+.pay{{background:#2f5bea;color:#fff}} .fail{{background:#fff;border:1px solid #e3e6eb;color:#c0322b}}
+@media (prefers-color-scheme:dark){{body{{background:#14161a;color:#eceef2}}.card,label,.fail{{background:#1d2026;border-color:#2f343c}}}}
+</style></head><body><main>
+<div class="banner">Simulated payment page. No real money moves — this stands in for
+Stripe until a Stripe test key is set up.</div>
+<div class="card"><div>{practice}</div><div class="amount">{amount}</div><div>{description}</div></div>
+{body}
+</main></body></html>"""
+
+
+@app.get("/pay/simulated/{reference}", response_class=HTMLResponse)
+def simulated_checkout(reference: str):
+    payment = world.payment_by_reference(reference)
+    if payment is None or payment.processor != "simulated":
+        raise HTTPException(404, "no such payment")
+    charge = world.charges[payment.charge_id]
+    if payment.status != "pending":
+        body = f'<p>This payment is already {payment.status}.</p><a href="{html_lib.escape(payment.return_url)}">Back</a>'
+    else:
+        options = "".join(
+            f'<label><input type="radio" name="method" value="{key}" {"checked" if key == "paynow" else ""}>'
+            f"{html_lib.escape(label)}</label>"
+            for key, label in billing.PAY_METHODS.items() if key not in billing.RECORDED_METHODS)
+        body = (f'<form method="post">{options}'
+                f'<button class="pay" name="outcome" value="succeeded">Pay</button>'
+                f'<button class="fail" name="outcome" value="failed">Decline the payment</button></form>')
+    return _SIMULATED_PAGE.format(
+        practice=html_lib.escape(world.practice_name),
+        amount=billing.money(charge.amount, world.billing.currency),
+        description=html_lib.escape(charge.description), body=body)
+
+
+@app.post("/pay/simulated/{reference}")
+def simulated_outcome(reference: str, outcome: str = Form(...), method: str = Form("paynow")):
+    payment = world.payment_by_reference(reference)
+    if payment is None or payment.processor != "simulated":
+        raise HTTPException(404, "no such payment")
+    if outcome not in ("succeeded", "failed") or method not in billing.PAY_METHODS:
+        raise HTTPException(400, "unknown outcome or method")
+    if payment.status == "pending":
+        world.processor.complete(reference, outcome, method)
+    # Back to the app, which then *asks* what happened rather than trusting
+    # the redirect — exactly as it will with Stripe.
+    return RedirectResponse(payment.return_url, status_code=303)
 
 
 @app.get("/calendar/{token}.ics")

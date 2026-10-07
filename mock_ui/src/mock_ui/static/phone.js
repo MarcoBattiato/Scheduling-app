@@ -134,6 +134,26 @@ const windowDays = () => {
   return days;
 };
 
+// -- money helpers ---------------------------------------------------
+
+const sgd = (cents) => `S$${(cents / 100).toLocaleString("en-SG", {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+const chargesOf = (who, status) => (state.charges || []).filter(
+  (c) => (!who || c.client_id === who) && (!status || c.status === status));
+const paymentOf = (charge) => (state.payments || []).find((p) => p.id === charge.paid_by);
+const methodWords = (m) => ((state.billing || {}).methods || {})[m] || m || "";
+const chargeForAppointment = (id, kind = "session") =>
+  (state.charges || []).find((c) => c.appointment_id === id && c.kind === kind);
+
+function payRow(c, action) {
+  const paid = c.status === "paid" ? paymentOf(c) : null;
+  return `<div class="row">
+    <div class="main"><div class="title">${sgd(c.amount)}</div>
+      <div class="meta">${esc(c.description)}</div>
+      ${paid ? `<div class="meta">Paid ${fmtDay(paid.created)} · ${esc(methodWords(paid.method))}</div>` : ""}
+      ${c.gst ? `<div class="meta">includes ${sgd(c.gst)} GST</div>` : ""}</div>
+    ${action || ""}</div>`;
+}
+
 const limitWords = (c) => [c.per_day ? `${c.per_day} a day` : "", c.per_week ? `${c.per_week} a week` : ""]
   .filter(Boolean).join(", ") || "no limit";
 const everyWords = (n) => (n === 1 ? "every week" : `every ${n} weeks`);
@@ -210,7 +230,8 @@ const TABS = {
 function badges() {
   if (!isProvider()) {
     return {home: (state.approvals || []).filter(
-      (a) => a.client_id === me && !a.applied && a.status === "pending").length};
+      (a) => a.client_id === me && !a.applied && a.status === "pending").length
+      + chargesOf(me, "due").length};
   }
   const plans = state.plans || [];
   const agreedWaiting = plans.filter((p) => {
@@ -221,7 +242,7 @@ function badges() {
   return {
     queue: (state.requests || []).filter(openRequest).length,
     plans: plans.filter((p) => p.status === "draft").length + agreedWaiting.length,
-    home: stranded().filter((a) => !a.pending).length,
+    home: stranded().filter((a) => !a.pending).length + chargesOf(null, "proposed").length,
   };
 }
 
@@ -350,13 +371,26 @@ function clientHome() {
   const waiting = (state.requests || []).filter((r) => r.client_id === me && openRequest(r));
   const next = upcoming[0];
 
+  const owes = chargesOf(me, "due").length > 0;
   let html = `<h1>Hi ${esc(client.name)}</h1>`;
-  html += asks.length
+  html += owes && !asks.some((a) => a.status === "pending")
+    ? `<p class="lead">You have something to pay.</p>`
+    : asks.length
     ? `<p class="lead">${asks.some((a) => a.status === "pending")
         ? "The clinic has a question for you." : "Nothing needs you right now."}</p>`
     : `<p class="lead">${next ? "You're all set." : "Nothing booked yet."}</p>`;
 
   html += asks.map(askCard).join("");
+
+  const owed = chargesOf(me, "due");
+  if (owed.length) {
+    html += `<div class="card attention"><span class="tag accent">to pay</span>
+      <h3 style="margin-top:8px">${sgd(owed.reduce((t, c) => t + c.amount, 0))} to pay</h3>
+      <div class="list" style="box-shadow:none;margin:8px 0 0">${owed.map((c) => payRow(c,
+        `<button class="btn small" data-act="pay" data-id="${c.id}">Pay</button>`)).join("")}</div>
+      <p class="hint" style="margin:8px 0 0">PayNow (works with DBS PayLah! and any bank app), card or GrabPay.</p>
+    </div>`;
+  }
 
   if (next) {
     html += `<h2>Next appointment</h2>
@@ -586,6 +620,13 @@ function clientBookings() {
       </div>`).join("")}</div>`;
   }
   if (waiting.length) html += `<h2>Requested</h2><div class="list">${waiting.map(requestRow).join("")}</div>`;
+  const due = chargesOf(me, "due"), paid = chargesOf(me, "paid");
+  if (due.length || paid.length) {
+    html += `<h2>Payments</h2><div class="list">${[
+      ...due.map((c) => payRow(c, `<button class="btn small" data-act="pay" data-id="${c.id}">Pay</button>`)),
+      ...paid.slice().reverse().map((c) => payRow(c, `<span class="tag ok">paid</span>`)),
+    ].join("")}</div>`;
+  }
   if (done.length) {
     html += `<h2>Earlier and cancelled</h2><div class="list">${done.map((a) => `
       <div class="row dim">${datebox(a.start)}
@@ -755,6 +796,14 @@ function providerHome() {
       <div class="main"><span class="tag warn">needs a decision</span>
         <h3 style="margin-top:6px">${plural(stuck.length, "booking is", "bookings are")} in time you're not working</h3>
         <p class="meta">${idle ? "Nothing has been done about them yet." : "Already being moved."}</p></div>
+      <span class="chev">›</span></button>`);
+  }
+  const fees = chargesOf(null, "proposed");
+  if (fees.length) {
+    cards.push(`<button class="card warn tap" data-act="more-open" data-page="payments">
+      <div class="main"><span class="tag warn">your decision</span>
+        <h3 style="margin-top:6px">${plural(fees.length, "fee")} to confirm or waive</h3>
+        <p class="meta">${fees.slice(0, 3).map((c) => esc(nameOf(c.client_id))).join(", ")} — nothing is charged until you confirm.</p></div>
       <span class="chev">›</span></button>`);
   }
   if (drafts.length) {
@@ -960,6 +1009,10 @@ function slotSheet(id) {
   if (a.origin === "displaced") facts.push(["Note", "Moved by you, not chosen"]);
   if (a.pending && a.pending.now) facts.push([a.pending.state === "agreed" ? "Agreed move" : "Asked to move", fmtWhen(a.pending.now)]);
   if (a.orphaned) facts.push(["Warning", "You are not working at this time"]);
+  const sessionCharge = chargeForAppointment(a.id);
+  if (sessionCharge) facts.push(["Payment", `${sgd(sessionCharge.amount)} — ${sessionCharge.status}`]);
+  const fee = chargeForAppointment(a.id, "no_show") || chargeForAppointment(a.id, "late_cancel");
+  if (fee) facts.push(["Fee", `${sgd(fee.amount)} — ${fee.status === "proposed" ? "to decide" : fee.status}`]);
   if (c) facts.push(["History", `${c.completed} attended · ${c.no_show} no-show · ${c.cancelled} cancelled · ${c.moved_by_us} moved by you`]);
   const started = isPast(a.start) && a.status === "booked" && !self;
 
@@ -1263,6 +1316,8 @@ const MORE = [
   ["clients", "Clients", "Everyone and their history"],
   ["services", "Services", "What can be booked, for how long"],
   ["calendar", "Calendar sync", "Your diary in Google, Apple or Outlook"],
+  ["payments", "Payments", "Fees to decide, what is owed, what is paid"],
+  ["billing", "Billing settings", "Fees, GST, how clients pay"],
   ["settings", "Scheduling", "How far ahead to plan, and when"],
   ["activity", "Activity", "Everything that has happened"],
 ];
@@ -1272,7 +1327,8 @@ const backLink = () => `<button class="link" data-act="tab" data-tab="more" styl
 function moreView() {
   const page = tab.split("/")[1];
   const pages = {hours: hoursView, away: awayView, clients: clientsView, services: servicesView,
-                 settings: settingsView, activity: activityView, calendar: calendarView};
+                 settings: settingsView, activity: activityView, calendar: calendarView,
+                 payments: paymentsView, billing: billingView};
   if (pages[page]) return pages[page]();
   return `<h1>More</h1><div class="list">${MORE.map(([id, title, meta]) => `
     <button class="row" data-act="more-open" data-page="${id}">
@@ -1347,6 +1403,11 @@ function clientSheet(id) {
     ["Booked", c.booked], ["Waiting", c.open_requests], ["Attended", c.completed],
     ["No-show", c.no_show], ["Cancelled", c.cancelled], ["Moved by you", c.moved_by_us], ["Free", hours],
   ])}
+  <h2>Billing</h2>
+  <div class="segmented">${[["", "Practice default"], ["after_session", "After each session"], ["off", "Not billed"]]
+    .map(([m, label]) => `<button type="button" data-act="billing-mode" data-client="${esc(id)}" data-mode="${m}"
+      aria-pressed="${(c.billing_mode || "") === m}">${label}</button>`).join("")}</div>
+  ${chargesOf(id, "due").length ? `<p class="hint">Owes ${sgd(chargesOf(id, "due").reduce((t, x) => t + x.amount, 0))}.</p>` : ""}
   <h2>Sessions allowed</h2>
   <p class="hint" style="margin-top:0">The scheduler never books or moves ${esc(c.name)} past these.</p>
   <div class="field"><span>A day</span>${choice("per_day", c.per_day, [[1, "1"], [2, "2"], [3, "3"], ["", "No limit"]])}</div>
@@ -1500,6 +1561,99 @@ function calendarView() {
     <h2>Your diary</h2><div class="card">${calendarBody()}</div>`;
 }
 
+// -- payments (provider) ---------------------------------------------
+
+function paymentsView() {
+  const fees = chargesOf(null, "proposed"), owed = chargesOf(null, "due");
+  const paid = chargesOf(null, "paid").slice().reverse().slice(0, 20);
+  const total = (list) => sgd(list.reduce((t, c) => t + c.amount, 0));
+  const who = (c) => `<div class="title">${esc(nameOf(c.client_id))} · ${sgd(c.amount)}</div>
+    <div class="meta">${esc(c.description)}</div>`;
+
+  let html = `${backLink()}<h1>Payments</h1>
+    <p class="lead">${(state.billing || {}).processor === "stripe"
+      ? "Stripe, test mode." : "Simulated payments — no real money moves."}</p>`;
+
+  html += `<h2>Fees to decide</h2>`;
+  html += fees.length ? `<div class="list">${fees.map((c) => `<div class="row" style="flex-wrap:wrap">
+      <div class="main">${who(c)}<div class="because">${esc(c.reason)}</div></div>
+      <div class="pair" style="width:100%;margin-top:6px">
+        <button class="btn small" data-act="fee-confirm" data-id="${c.id}">Charge it</button>
+        <button class="btn small secondary" data-act="charge-waive" data-id="${c.id}">Waive</button>
+      </div></div>`).join("")}</div>
+      <p class="hint">Proposed by your rules, never charged by them. The client sees nothing until you choose.</p>`
+    : `<p class="hint">None.</p>`;
+
+  html += `<h2>Owed · ${total(owed)}</h2>`;
+  html += owed.length ? `<div class="list">${owed.map((c) => `<div class="row">
+      <div class="main">${who(c)}</div>
+      <button class="btn small secondary" data-act="record-open" data-id="${c.id}">Record</button></div>`).join("")}</div>`
+    : `<p class="hint">Nothing owed.</p>`;
+
+  html += `<h2>Recently paid</h2>`;
+  html += paid.length ? `<div class="list">${paid.map((c) => {
+      const p = paymentOf(c);
+      return `<div class="row"><div class="main">${who(c)}
+        <div class="meta">${p ? `${fmtDay(p.created)} · ${esc(methodWords(p.method))}` : ""}</div></div>
+        <span class="tag ok">paid</span></div>`;
+    }).join("")}</div>` : `<p class="hint">Nothing yet.</p>`;
+  return html;
+}
+
+function recordSheet(id) {
+  const c = (state.charges || []).find((x) => x.id === id);
+  if (!c) return `<h3>Gone</h3>`;
+  const methods = (state.billing || {}).recorded_methods || [];
+  return `<h3>${esc(nameOf(c.client_id))} paid ${sgd(c.amount)}</h3>
+    <p class="hint" style="margin:0 0 8px">${esc(c.description)}. How?</p>
+    <div class="stack">${methods.map((m) => `
+      <button class="btn secondary block" data-act="record" data-id="${c.id}" data-method="${m}">${esc(methodWords(m))}</button>`).join("")}
+      <button class="btn danger block" data-act="charge-waive" data-id="${c.id}">Waive it instead</button>
+      <button class="btn ghost" data-act="close">Cancel</button></div>`;
+}
+
+function billingView() {
+  const b = state.billing || {};
+  const modes = b.modes || {};
+  return `${backLink()}<h1>Billing settings</h1>
+    <form data-form="billing" class="card">
+      <label class="field"><span>Clients pay</span>
+        <select name="default_mode">${Object.entries(modes).map(([k, v]) =>
+          `<option value="${k}" ${k === b.default_mode ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
+      <p class="hint" style="margin-top:-4px">Paying at booking, packages and monthly invoices are coming next.
+        Any client can be set differently on their card.</p>
+      <label class="field"><span>A cancellation is late if it is within (hours)</span>
+        <input name="late_cancel_window_hours" type="number" inputmode="numeric" min="0" max="336"
+          value="${b.late_cancel_window_hours}"></label>
+      <div class="field-row">
+        <label class="field"><span>Late-cancellation fee</span>
+          <input name="late_cancel_fee" value="${esc(b.late_cancel_fee)}" autocomplete="off"></label>
+        <label class="field"><span>No-show fee</span>
+          <input name="no_show_fee" value="${esc(b.no_show_fee)}" autocomplete="off"></label>
+      </div>
+      <p class="hint" style="margin-top:-4px">"100%" or "50%" of the session price, or an amount like "40.00".
+        "0" for none. Fees are always proposed to you first, never charged on their own.</p>
+      <label class="row" style="padding:0;min-height:44px;border:0">
+        <span class="main"><span class="title">GST-registered</span><br>
+          <span class="meta">Off: prices are final and GST is never mentioned.</span></span>
+        <input type="checkbox" name="gst_registered" ${b.gst_registered ? "checked" : ""}></label>
+      <div class="field-row" style="margin-top:8px">
+        <label class="field"><span>GST registration no.</span>
+          <input name="gst_number" value="${esc(b.gst_number)}" autocomplete="off"></label>
+        <label class="field"><span>Rate (%)</span>
+          <input name="gst_rate_percent" type="number" inputmode="decimal" step="0.1" min="0" max="30"
+            value="${b.gst_rate_percent}"></label>
+      </div>
+      <p class="hint" style="margin-top:-4px">Prices include GST, as Singapore requires for prices shown to
+        clients; receipts show the GST part.</p>
+      <button class="btn block" type="submit">Save</button>
+    </form>
+    <h2>Payment processor</h2>
+    <div class="card"><b>${esc(b.processor_label || "")}</b>
+      <p class="hint" style="margin:6px 0 0">To use Stripe's test mode, start the server with a Stripe
+        <b>test</b> secret key in <code>STRIPE_SECRET_KEY</code>. Live keys are refused until sign-in exists.</p></div>`;
+}
+
 function activityView() {
   return `${backLink()}<h1>Activity</h1><div class="list"><div class="log">${
     (state.log || []).slice().reverse().map(esc).join("\n")}</div></div>`;
@@ -1637,6 +1791,28 @@ const ACTIONS = {
   },
   "series-open": (d) => openSheet(() => seriesSheet(d.id)),
   "calendar-open": () => openSheet(calendarSheet),
+  pay: async (d) => {
+    const out = await api(`/api/charges/${d.id}/checkout`, {return_to: `/phone?as=${encodeURIComponent(me)}`});
+    if (out && out.url) location.href = out.url;          // the processor's own page
+  },
+  "fee-confirm": async (d) => {
+    const c = (state.charges || []).find((x) => x.id === Number(d.id));
+    if (!await ask(`Charge ${esc(nameOf(c.client_id))} ${sgd(c.amount)}?`,
+        `${esc(c.description)} — ${esc(c.reason)}. They will be asked to pay it.`, "Charge it")) return;
+    await done(api(`/api/charges/${d.id}/confirm`), "Charged — the client will see it");
+  },
+  "charge-waive": async (d) => {
+    await done(api(`/api/charges/${d.id}/waive`), "Waived");
+    closeSheet();
+  },
+  "record-open": (d) => openSheet(() => recordSheet(Number(d.id))),
+  record: async (d) => {
+    const ok = await done(api(`/api/charges/${d.id}/record`, {method: d.method}), "Recorded as paid");
+    if (ok) closeSheet();
+  },
+  "billing-mode": async (d) => {
+    await done(api(`/api/clients/${encodeURIComponent(d.client)}/billing-mode`, {mode: d.mode || null}), "Saved");
+  },
   "calendar-make": async () => {
     await done(api(`/api/calendar/${encodeURIComponent(calendarPerson())}`, {}), "Your calendar link is ready");
   },
@@ -1817,6 +1993,18 @@ const ACTIONS = {
 };
 
 const FORMS = {
+  billing: async (form) => {
+    const f = form.elements;
+    await done(api("/api/billing", {
+      default_mode: f.default_mode.value,
+      late_cancel_window_hours: Number(f.late_cancel_window_hours.value),
+      late_cancel_fee: f.late_cancel_fee.value.trim(),
+      no_show_fee: f.no_show_fee.value.trim(),
+      gst_registered: f.gst_registered.checked,
+      gst_number: f.gst_number.value.trim(),
+      gst_rate_percent: Number(f.gst_rate_percent.value),
+    }), "Billing settings saved");
+  },
   practice: async (form) => {
     await done(api("/api/settings", {practice_name: form.elements.name.value}), "Saved");
   },
@@ -1943,5 +2131,20 @@ window.Phone = {
   get state() { return state; },
 };
 
-refresh(true);
+// Back from a payment page. The redirect says nothing about whether money
+// moved — anyone can type an address — so the server asks the processor.
+async function returnedFromCheckout() {
+  const paid = params.get("paid"), cancelled = params.get("cancelled");
+  if (!paid) return;
+  try { history.replaceState({}, "", `?as=${encodeURIComponent(me)}#bookings`); } catch { /* sandbox */ }
+  tab = "bookings";
+  if (cancelled) { toast("Payment cancelled — nothing was charged"); return; }
+  const out = await api(`/api/payments/${encodeURIComponent(paid)}/check`, {});
+  if (!out) return;
+  toast(out.status === "succeeded" ? "Paid — thank you"
+    : out.status === "pending" ? "Still being confirmed — check back in a moment"
+    : "The payment did not go through. Nothing was charged.");
+}
+
+returnedFromCheckout().then(() => refresh(true));
 setInterval(() => refresh(false), 2500);

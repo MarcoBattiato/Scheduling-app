@@ -21,6 +21,8 @@ from calendar_store import (
     ServiceCatalogue,
     TimeSegment,
 )
+from . import billing
+from .billing import BillingSettings, Charge, Payment
 from .policy import SchedulingPolicy, due
 
 from scheduling_engine import (
@@ -49,6 +51,8 @@ class Client:
     # intensive week is a clinical decision. None means no limit.
     per_day: Optional[int] = 1
     per_week: Optional[int] = None
+    # billing.MODES key, or None for the practice default.
+    billing_mode: Optional[str] = None
 
 
 @dataclass
@@ -201,6 +205,13 @@ class World:
         # feed's address. The address is the only credential a subscribed
         # calendar app can present, so it has to be unguessable.
         self.feed_tokens: Dict[str, str] = {}
+        # Money — see billing.py.
+        self.billing = BillingSettings()
+        self.charges: Dict[int, Charge] = {}
+        self.payments: Dict[int, Payment] = {}
+        self.processor, warning = billing.processor_from_environment()
+        if warning:
+            self._note(warning)
         self.approvals: Dict[int, Approval] = {}
         self.plans: Dict[int, Plan] = {}
         self.log: List[str] = []
@@ -552,13 +563,19 @@ class World:
                      if s > now and s.date() not in series.raised), None)
 
     def cancel_appointment(
-        self, appointment_id: int, *, by: Party = Party.CLIENT
+        self, appointment_id: int, *, by: Party = Party.CLIENT,
+        as_move: bool = False, now: Optional[datetime] = None,
     ) -> Appointment:
+        """`as_move` marks the old slot of a booking that is moving rather than
+        going away. It is cancelled all the same, but it is not a cancellation
+        in the sense a fee cares about: nobody is charged for moving."""
         appointment = self.store.cancel_appointment(appointment_id, by=by)
         self._note(
             f"{by.value} cancelled {appointment.client_id}'s "
             f"{appointment.range.start:%a %d %b %H:%M}"
         )
+        if by is Party.CLIENT and not as_move:
+            self._maybe_propose_late_fee(appointment, now or datetime.now())
         return appointment
 
     def mark_attendance(self, appointment_id: int, attended: bool) -> Appointment:
@@ -568,7 +585,166 @@ class World:
             f"{marked.client_id} {'attended' if attended else 'did not show for'} "
             f"{marked.range.start:%a %d %b %H:%M}"
         )
+        if attended:
+            self._charge_for_session(marked)
+        else:
+            self._maybe_propose_no_show_fee(marked)
         return marked
+
+    # -- money ---------------------------------------------------------
+
+    def billing_mode(self, client_id: str) -> str:
+        client = self.clients.get(client_id)
+        return (client.billing_mode if client and client.billing_mode
+                else self.billing.default_mode)
+
+    def configure_billing(self, **changes) -> BillingSettings:
+        """Change the practice's billing rules; unknown fields are refused,
+        and nothing changes unless the result is valid as a whole."""
+        current = billing.settings_dict(self.billing)
+        unknown = set(changes) - set(current)
+        if unknown:
+            raise ValueError(f"no billing setting called {sorted(unknown)}")
+        candidate = BillingSettings(**{**current, **{k: v for k, v in changes.items()
+                                                      if v is not None}})
+        candidate.gst_number = candidate.gst_number.strip()
+        billing.validate(candidate)
+        self.billing = candidate
+        self._note("billing settings changed")
+        return candidate
+
+    def set_billing_mode(self, client_id: str, mode: Optional[str]) -> None:
+        if mode is not None and mode not in billing.MODES:
+            raise ValueError(f"billing mode must be one of {sorted(billing.MODES)}")
+        self.clients[client_id].billing_mode = mode
+        self._note(f"{client_id} is billed: {billing.MODES[mode] if mode else 'as the practice default'}")
+
+    def _new_charge(self, appointment: Appointment, kind: str, amount: int,
+                    status: str, reason: str = "") -> Optional[Charge]:
+        if amount <= 0:
+            return None
+        if any(c.appointment_id == appointment.id and c.kind == kind
+               for c in self.charges.values()):
+            return None                    # one of each per appointment, ever
+        when = f"{appointment.range.start:%a %d %b %Y}"
+        description = {
+            "session": f"Appointment on {when}",
+            "late_cancel": f"Late cancellation of {when}",
+            "no_show": f"Missed appointment on {when}",
+        }[kind]
+        charge = Charge(
+            id=next(self._ids), client_id=appointment.client_id, kind=kind,
+            amount=amount, gst=billing.gst_included(amount, self.billing),
+            description=description, created=datetime.now(),
+            appointment_id=appointment.id, status=status, reason=reason,
+        )
+        self.charges[charge.id] = charge
+        self._note(f"{'proposed' if status == 'proposed' else 'charged'} "
+                   f"{appointment.client_id} {billing.money(amount)} — {description}")
+        return charge
+
+    def _price_of(self, appointment: Appointment) -> int:
+        return self._service_price(appointment.service_type_id) or 0
+
+    def _charge_for_session(self, appointment: Appointment) -> Optional[Charge]:
+        if appointment.client_id == PROVIDER or self.billing_mode(appointment.client_id) != "after_session":
+            return None
+        return self._new_charge(appointment, "session", self._price_of(appointment), "due")
+
+    def _maybe_propose_no_show_fee(self, appointment: Appointment) -> Optional[Charge]:
+        if appointment.client_id == PROVIDER or self.billing_mode(appointment.client_id) == "off":
+            return None
+        amount = billing.fee_amount(self.billing.no_show_fee, self._price_of(appointment))
+        return self._new_charge(appointment, "no_show", amount, "proposed",
+                                reason="did not come and did not cancel")
+
+    def _maybe_propose_late_fee(self, appointment: Appointment, now: datetime) -> Optional[Charge]:
+        """Only ever *proposed*: the provider confirms or waives each one."""
+        if appointment.client_id == PROVIDER or self.billing_mode(appointment.client_id) == "off":
+            return None
+        notice = appointment.range.start - now
+        window = timedelta(hours=self.billing.late_cancel_window_hours)
+        if notice >= window:
+            return None
+        hours = max(0, int(notice.total_seconds() // 3600))
+        amount = billing.fee_amount(self.billing.late_cancel_fee, self._price_of(appointment))
+        return self._new_charge(
+            appointment, "late_cancel", amount, "proposed",
+            reason=(f"cancelled {hours} h before; the window is "
+                    f"{self.billing.late_cancel_window_hours} h"))
+
+    def confirm_fee(self, charge_id: int) -> Charge:
+        charge = self.charges[charge_id]
+        if charge.status != "proposed":
+            raise ValueError(f"charge {charge_id} is {charge.status}, not a proposed fee")
+        charge.status = "due"
+        self._note(f"provider confirmed {charge.client_id}'s fee of {billing.money(charge.amount)}")
+        return charge
+
+    def waive_charge(self, charge_id: int) -> Charge:
+        charge = self.charges[charge_id]
+        if charge.status not in ("proposed", "due"):
+            raise ValueError(f"charge {charge_id} is {charge.status}; only unpaid ones can be waived")
+        if any(p.charge_id == charge_id and p.status == "pending" for p in self.payments.values()):
+            raise ValueError("a payment for this is in progress; wait for it to finish")
+        charge.status = "waived"
+        self._note(f"provider waived {charge.client_id}'s {billing.money(charge.amount)} — {charge.description}")
+        return charge
+
+    def start_checkout(self, charge_id: int, return_url: str) -> Payment:
+        """Send the client to the processor's hosted page to pay one charge."""
+        charge = self.charges[charge_id]
+        if charge.status != "due":
+            raise ValueError(f"charge {charge_id} is {charge.status}, not owed")
+        payment = Payment(id=next(self._ids), charge_id=charge_id, amount=charge.amount,
+                          processor=self.processor.name, reference="")
+        joiner = "&" if "?" in return_url else "?"
+        back = f"{return_url}{joiner}paid={payment.id}"
+        payment.reference, payment.checkout_url = self.processor.start_checkout(
+            charge, f"{charge.description} — {self.practice_name}", back,
+            self.billing.currency)
+        payment.return_url = back
+        self.payments[payment.id] = payment
+        return payment
+
+    def payment_by_reference(self, reference: str) -> Optional[Payment]:
+        return next((p for p in self.payments.values() if p.reference == reference), None)
+
+    def check_payment(self, payment_id: int) -> Payment:
+        """Ask the processor what became of a checkout. Idempotent: a payment
+        already settled is not asked about again, and a charge is never paid
+        twice by the same money."""
+        payment = self.payments[payment_id]
+        if payment.status != "pending":
+            return payment
+        status, method = self.processor.check(payment.reference)
+        if status == "pending":
+            return payment
+        payment.status, payment.method = status, method or payment.method
+        if status == "succeeded":
+            self._settle(self.charges[payment.charge_id], payment)
+        return payment
+
+    def record_payment(self, charge_id: int, method: str) -> Payment:
+        """Money the provider took outside the processor."""
+        if method not in billing.RECORDED_METHODS:
+            raise ValueError(f"a recorded payment is one of {list(billing.RECORDED_METHODS)}")
+        charge = self.charges[charge_id]
+        if charge.status != "due":
+            raise ValueError(f"charge {charge_id} is {charge.status}, not owed")
+        payment = Payment(id=next(self._ids), charge_id=charge_id, amount=charge.amount,
+                          processor="manual", reference=f"recorded by the provider",
+                          status="succeeded", method=method)
+        self.payments[payment.id] = payment
+        self._settle(charge, payment)
+        return payment
+
+    def _settle(self, charge: Charge, payment: Payment) -> None:
+        if charge.status == "paid":
+            return
+        charge.status, charge.paid_by = "paid", payment.id
+        self._note(f"{charge.client_id} paid {billing.money(payment.amount)} "
+                   f"({billing.PAY_METHODS.get(payment.method, payment.method or payment.processor)})")
 
     # -- the provider's own diary ------------------------------------
 
@@ -775,7 +951,7 @@ class World:
             appointment.client_id, appointment.service_type_id, preferred_start
         )
         if release_slot:
-            self.cancel_appointment(appointment_id, by=Party.CLIENT)
+            self.cancel_appointment(appointment_id, by=Party.CLIENT, as_move=True)
             self._note(f"{appointment.client_id} gave up "
                        f"{appointment.range.start:%a %d %b %H:%M} to be rebooked")
         else:
@@ -1424,6 +1600,7 @@ class World:
                     request.replaces_appointment_id,
                     by=Party.PROVIDER if request.origin is Origin.DISPLACED
                     else Party.CLIENT,
+                    as_move=True,
                 )
 
     # An ask in one of these states is never going to happen.
@@ -1616,7 +1793,8 @@ class World:
             "horizon": end.isoformat(),
             "clients": [
                 {"id": c.id, "name": c.name, "per_day": c.per_day,
-                 "per_week": c.per_week, **self.client_summary(c.id)}
+                 "per_week": c.per_week, "billing_mode": c.billing_mode,
+                 **self.client_summary(c.id)}
                 for c in self.clients.values()
             ],
             "services": [
@@ -1626,6 +1804,25 @@ class World:
                 for s in self.catalogue.services(include_inactive=True)
             ],
             "practice_name": self.practice_name,
+            "billing": {**billing.settings_dict(self.billing),
+                        "modes": billing.MODES, "methods": billing.PAY_METHODS,
+                        "recorded_methods": list(billing.RECORDED_METHODS),
+                        "processor": self.processor.name,
+                        "processor_label": self.processor.label},
+            "charges": [
+                {"id": c.id, "client_id": c.client_id, "kind": c.kind,
+                 "amount": c.amount, "gst": c.gst, "description": c.description,
+                 "status": c.status, "reason": c.reason,
+                 "created": c.created.isoformat(),
+                 "appointment_id": c.appointment_id, "paid_by": c.paid_by}
+                for c in self.charges.values()
+            ],
+            "payments": [
+                {"id": p.id, "charge_id": p.charge_id, "amount": p.amount,
+                 "processor": p.processor, "status": p.status, "method": p.method,
+                 "created": p.created.isoformat()}
+                for p in self.payments.values()
+            ],
             # Every person's feed secret, to anyone who asks. No worse than the
             # rest of this payload until sign-in exists — CONTROL_SURFACE.md §8
             # — but the phone only ever shows a person their own.

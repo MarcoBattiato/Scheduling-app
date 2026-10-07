@@ -23,6 +23,7 @@ ClientId = str
 AppointmentId = int
 RequestId = int
 SeriesId = int
+ChargeId = int
 ApprovalId = int
 PlanId = int
 ServiceId = str
@@ -77,6 +78,7 @@ class TargetKind(Enum):
     APPROVAL = "approval"
     PLAN = "plan"
     SERIES = "series"
+    CHARGE = "charge"
 
 
 class Access(Enum):

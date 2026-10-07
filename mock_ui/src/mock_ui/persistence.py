@@ -25,6 +25,7 @@ from calendar_store import (
     TimeSegment,
 )
 
+from .billing import BillingSettings, Charge, Payment
 from .state import Approval, Client, Plan, Request, Series, World
 
 
@@ -39,7 +40,8 @@ def _back(value):
 def save(world: World, path: Path) -> None:
     payload = {
         "clients": [{"id": c.id, "name": c.name, "per_day": c.per_day,
-                     "per_week": c.per_week} for c in world.clients.values()],
+                     "per_week": c.per_week, "billing_mode": c.billing_mode}
+                    for c in world.clients.values()],
         "settings": {
             "alpha": world.alpha,
             "max_displacements": world.max_displacements,
@@ -122,6 +124,12 @@ def save(world: World, path: Path) -> None:
             "last_run": _dt(world.last_run),
         },
         "practice_name": world.practice_name,
+        "billing": vars(world.billing),
+        "charges": [{**vars(c), "created": _dt(c.created)} for c in world.charges.values()],
+        "payments": [{**vars(p), "created": _dt(p.created)} for p in world.payments.values()],
+        # A simulated checkout's outcome lives in the processor; without it a
+        # payment in progress across a restart would read as expired.
+        "simulated_outcomes": getattr(world.processor, "outcomes", {}),
         "feed_tokens": world.feed_tokens,
         "log": world.log,
     }
@@ -141,7 +149,8 @@ def load(path: Path) -> World:
         world.clients[entry["id"]] = Client(
             id=entry["id"], name=entry["name"],
             # Sessions saved before limits existed get the defaults.
-            per_day=entry.get("per_day", 1), per_week=entry.get("per_week"))
+            per_day=entry.get("per_day", 1), per_week=entry.get("per_week"),
+            billing_mode=entry.get("billing_mode"))
 
     settings = payload.get("settings", {})
     world.alpha = settings.get("alpha", world.alpha)
@@ -249,6 +258,14 @@ def load(path: Path) -> World:
 
     world.log = payload.get("log", [])
     world.practice_name = payload.get("practice_name", world.practice_name)
+    world.billing = BillingSettings(**payload.get("billing", {}))
+    for entry in payload.get("charges", []):
+        world.charges[entry["id"]] = Charge(**{**entry, "created": _back(entry["created"])})
+    for entry in payload.get("payments", []):
+        world.payments[entry["id"]] = Payment(**{**entry, "created": _back(entry["created"])})
+    if hasattr(world.processor, "outcomes"):
+        world.processor.outcomes.update(
+            {k: tuple(v) for k, v in payload.get("simulated_outcomes", {}).items()})
     # Kept across restarts, or every subscribed calendar would break on each one.
     world.feed_tokens = dict(payload.get("feed_tokens", {}))
 
@@ -265,7 +282,7 @@ def load(path: Path) -> World:
     # are now restored too, so it must start above them as well.
     world._ids = itertools.count(max(
         [highest] + list(world.requests) + list(world.plans) + list(world.approvals)
-        + list(world.series)
+        + list(world.series) + list(world.charges) + list(world.payments)
     ) + 1)
     return world
 

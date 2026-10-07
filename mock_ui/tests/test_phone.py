@@ -24,7 +24,7 @@ node = pytest.mark.skipif(shutil.which("node") is None, reason="node not install
 
 CLIENT_TABS = ["home", "book", "bookings", "hours"]
 PROVIDER_TABS = ["home", "diary", "queue", "plans", "more", "more/hours", "more/away",
-                 "more/clients", "more/services", "more/settings", "more/activity", "more/calendar"]
+                 "more/clients", "more/services", "more/settings", "more/activity", "more/calendar", "more/payments", "more/billing"]
 
 
 # -- states worth drawing --------------------------------------------------
@@ -403,3 +403,27 @@ def test_each_clients_limit_is_shown_to_the_provider(drawn):
     clients = screen(drawn, "untouched", "provider:more/clients")
 
     assert "1 a day" in clients
+
+
+@node
+def test_a_client_who_owes_is_shown_it_with_a_way_to_pay(drawn):
+    home = screen(drawn, "busy", "dan:home")
+
+    assert "to pay" in home and 'data-act="pay"' in home
+
+
+@node
+def test_a_client_never_sees_a_fee_the_provider_has_not_confirmed(drawn):
+    """Frank's no-show fee is only proposed: until the provider decides, it is
+    not his to see."""
+    for tab in CLIENT_TABS:
+        assert "Missed appointment" not in screen(drawn, "busy", f"frank:{tab}")
+
+
+@node
+def test_the_provider_is_asked_about_fees_and_shown_what_is_owed(drawn):
+    home = screen(drawn, "busy", "provider:home")
+    payments = screen(drawn, "busy", "provider:more/payments")
+
+    assert "to confirm or waive" in home
+    assert 'data-act="fee-confirm"' in payments and 'data-act="record-open"' in payments

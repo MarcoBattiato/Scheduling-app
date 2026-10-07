@@ -215,9 +215,19 @@ def busy(world: World) -> None:
         ("carol", 1, 9), ("frank", 2, 15), ("gina", 3, 10),
     ])
     for appointment_id in attended[:-2]:
-        world.store.mark_attendance(appointment_id, attended=True)
-    world.store.mark_attendance(attended[-2], attended=False)          # a no-show
-    world.cancel_appointment(attended[-1], by=Party.CLIENT)            # dropped it
+        world.mark_attendance(appointment_id, attended=True)           # charged
+    world.mark_attendance(attended[-2], attended=False)                # a no-show
+    # Dropped it with three days' notice — a cancellation, not a late one.
+    dropped = world.store.get_appointment(attended[-1])
+    world.cancel_appointment(attended[-1], by=Party.CLIENT,
+                             now=dropped.range.start - timedelta(days=3))
+
+    # Most of last fortnight is paid; Dan and Carol still owe, and Frank's
+    # no-show fee is waiting for the provider to decide on it.
+    for charge in list(world.charges.values()):
+        if charge.kind == "session" and charge.client_id in ("alice", "erin"):
+            world.record_payment(charge.id, "paynow_direct" if charge.client_id == "alice"
+                                 else "cash")
 
     # Hugo was moved by the clinic once. Recorded as DISPLACED, so nothing
     # downstream mistakes a slot he was pushed into for one he likes.
@@ -225,7 +235,7 @@ def busy(world: World) -> None:
         "hugo", "session-60", _at(last, 1, 15), _at(last, 1, 16),
         preferred_start=_at(last, 3, 16), origin=Origin.DISPLACED,
     )
-    world.store.mark_attendance(moved.id, attended=True)
+    world.mark_attendance(moved.id, attended=True)
 
     # -- the week in front of them --------------------------------------
     _book(world, monday, [

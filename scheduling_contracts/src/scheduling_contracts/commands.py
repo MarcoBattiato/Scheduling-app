@@ -31,6 +31,7 @@ from .values import (
     PlanId,
     RequestId,
     SeriesId,
+    ChargeId,
     ServiceId,
     Target,
     TargetKind,
@@ -252,6 +253,70 @@ class StopSeries:
     """No more sessions raised. Sessions already booked stay booked; ones
     still being placed are withdrawn."""
     series_id: SeriesId
+
+
+# ---------------------------------------------------------------- K. payments
+#
+# Money. Every write here is FINANCIAL, which makes it undelegable: no
+# assistant may take, waive or even draft a charge (CONTROL_SURFACE.md §K).
+# Card data never appears — a processor holds it, and the domain sees only
+# the processor's reference.
+
+@command("billing.configure", Tier.FINANCIAL)
+@dataclass(frozen=True)
+class ConfigureBilling:
+    """The practice's billing rules. Unset fields are left as they are."""
+    default_mode: Optional[str] = None          # after_session | at_booking | monthly | package
+    late_cancel_window_hours: Optional[int] = None
+    late_cancel_fee: Optional[str] = None       # "50%" or "40.00"; "0" = none
+    no_show_fee: Optional[str] = None
+    gst_registered: Optional[bool] = None
+    gst_number: Optional[str] = None
+    gst_rate_percent: Optional[float] = None
+
+
+@command("billing.set_mode", Tier.FINANCIAL, TargetKind.CLIENT, "client_id")
+@dataclass(frozen=True)
+class SetBillingMode:
+    client_id: ClientId
+    mode: Optional[str] = None                  # None = the practice default
+
+
+@command("charge.list", Tier.READ, TargetKind.CLIENT, "client_id", phi=True)
+@dataclass(frozen=True)
+class ListCharges:
+    # None means every client's, which only a practice-wide role may ask for.
+    client_id: Optional[ClientId] = None
+
+
+@command("charge.confirm_fee", Tier.FINANCIAL, TargetKind.CHARGE, "charge_id")
+@dataclass(frozen=True)
+class ConfirmFee:
+    """A late-cancellation or no-show fee is only ever proposed by the rules;
+    it becomes owed when the provider confirms it, case by case."""
+    charge_id: ChargeId
+
+
+@command("charge.waive", Tier.FINANCIAL, TargetKind.CHARGE, "charge_id")
+@dataclass(frozen=True)
+class WaiveCharge:
+    charge_id: ChargeId
+
+
+@command("payment.checkout", Tier.FINANCIAL, TargetKind.CHARGE, "charge_id")
+@dataclass(frozen=True)
+class StartCheckout:
+    """Pay a charge through the processor's own hosted page."""
+    charge_id: ChargeId
+
+
+@command("payment.record", Tier.FINANCIAL, TargetKind.CHARGE, "charge_id")
+@dataclass(frozen=True)
+class RecordPayment:
+    """Money taken outside the processor: cash, a bank transfer, PayNow
+    straight to the practice. The provider's word is the record."""
+    charge_id: ChargeId
+    method: str = "cash"
 
 
 # ------------------------------------------------------------- D. appointments

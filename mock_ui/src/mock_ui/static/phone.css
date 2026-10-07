@@ -342,7 +342,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); min-height: 36px; 
 .change:first-of-type { border-top: 0; }
 .change input { width: 22px; height: 22px; margin-top: 2px; accent-color: var(--accent); flex: none; }
 .change .because { font-size: 13px; color: var(--warn); margin-top: 2px; }
-p.because { font-size: 14px; color: var(--warn); margin: 8px 4px; }
+.because { font-size: 14px; color: var(--warn); margin-top: 2px; }
+p.because { margin: 8px 4px; }
 
 /* -- weekly hours editor -------------------------------------------- */
 

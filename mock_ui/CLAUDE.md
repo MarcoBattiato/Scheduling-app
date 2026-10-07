@@ -175,6 +175,21 @@ by a POST** (`/api/calendar/{person}`), never during a read: the session is
 saved after POSTs, and a link handed out but not saved would change on
 restart and break every calendar subscribed to it.
 
+**Money** (`billing.py`; plan stages 1–2). The app keeps its own ledger —
+`Charge` (owed) and `Payment` (received) — and a processor only moves money.
+A session is charged when the provider marks it attended; a no-show or a
+client's late cancellation **proposes** a fee, and nothing is owed until the
+provider confirms it. Fees key off facts already recorded: only
+`cancel_appointment(by=CLIENT)` can propose one, and both move paths pass
+`as_move=True`, so neither the clinic cancelling or moving someone nor a
+client moving their own booking is ever charged. A payment counts only when
+`check_payment` has asked the processor — the redirect back is never trusted.
+`SimulatedProcessor` (default; its "hosted page" is `/pay/simulated/…`) and
+`StripeProcessor` (Checkout, chosen when `STRIPE_SECRET_KEY` holds a **test**
+key; a live key is refused) share one interface. Descriptions sent to the
+processor and shown to clients carry no service name. GST is off by default;
+when on, prices *include* it and the included part is recorded.
+
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider
 says so, and the decision is a pure function so it is testable without waiting
