@@ -105,7 +105,7 @@ def test_a_yes_to_a_time_that_has_passed_is_never_written_down(world):
     world.settle_plan(plan.id, "agreed")
 
     assert world.store.appointments_for("alice", on(-1, 0), on(0, 0)) == []
-    assert "passed before it could be confirmed" in world.notices_for("alice")[0]["text"]
+    assert "passed before it was confirmed" in world.notices_for("alice")[0]["text"]
 
 
 def test_waiting_offers_expire_on_their_own(world):
@@ -244,3 +244,37 @@ def test_many_phones_polling_at_once_neither_crash_nor_run_twice(world, monkeypa
 
     assert codes == [200] * 30
     assert len(world.plans) == 1, "one run, not one per poll"
+
+
+# -- a move for a session that has since happened -------------------------------------
+
+
+def test_a_move_for_a_session_that_has_happened_ends_and_never_rewrites_it(world):
+    """The session went ahead before a new time was found. Placing the move
+    afterwards added a session and cancelled the one that took place."""
+    booked = world.store.book_appointment("bob", "s60", on(1, 10), on(1, 11))
+    world.provider_away(on(1, 0), on(1, 23, 59), action="flag")
+    (request_id,) = world.rehouse_orphans()
+    request = world.requests[request_id]
+    world.store.mark_attendance(booked.id, attended=True)       # it happened after all
+
+    world.tick()
+
+    assert request.status == "withdrawn"
+    assert world.store.get_appointment(booked.id).status.value == "completed"
+    assert "no longer being moved" in world.notices_for("bob")[-1]["text"] \
+        or "no longer being moved" in world.notices_for("bob")[0]["text"]
+
+
+def test_a_solver_that_runs_out_of_time_changes_nothing(world, monkeypatch):
+    from mock_ui import state as state_module
+    world.submit_request("alice", "s60", on(2, 10).isoformat())
+
+    def gives_up(*args, **kwargs):
+        raise RuntimeError("placement solve returned UNKNOWN — expected at least a feasible solution")
+    monkeypatch.setattr(state_module, "solve_placements", gives_up)
+
+    out = world.propose()
+
+    assert out["ran"] is False and "ran out of time" in out["reason"]
+    assert not world.plans and all(r.status == "pending" for r in world.requests.values())

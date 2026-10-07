@@ -215,6 +215,8 @@ class Approval:
     # engine rather than inferred here: guessing from overlap is only right
     # while chains are forbidden.
     depends_on: tuple = ()
+    # When the client was asked — what an answer deadline counts from.
+    asked_at: Optional[datetime] = None
 
 
 @dataclass
@@ -373,6 +375,8 @@ class World:
             f"{client_id} is {'available' if available else 'away'} "
             f"{on_date:%a %d %b} {start:%H:%M}-{end:%H:%M}"
         )
+        if not available:
+            self._withdraw_asks_they_can_no_longer_make(client_id)
 
     def client_summary(self, client_id: str) -> dict:
         """Enough about a client to be worth showing on hover."""
@@ -416,6 +420,7 @@ class World:
                 effective_from=_EPOCH,
             )
         self._note(f"{client_id} updated availability")
+        self._withdraw_asks_they_can_no_longer_make(client_id)
 
     def availability_segments(
         self, client_id: str, start: date, end: date
@@ -779,14 +784,13 @@ class World:
         if approval.kind == "booking":
             what = ("The time you agreed to" if agreed else "The time we offered you")
             self._tell(approval.client_id, "withdrawn",
-                       f"{what}, {self._when(approval.now_start)}, can't go ahead after all. "
-                       f"Your request is still open, and the clinic will offer you another time.")
+                       f"{what}, {self._when(approval.now_start)}, has been withdrawn. "
+                       f"Your request is still open.")
         else:
-            what = ("The move you agreed to" if agreed else "We no longer need to move your appointment")
             self._tell(approval.client_id, "withdrawn",
-                       (f"{what}, to {self._when(approval.now_start)}, won't happen. "
-                        if agreed else f"{what}. ")
-                       + f"Your appointment stays on {self._when(approval.was_start)}.")
+                       f"The {'move you agreed to' if agreed else 'proposed move'}, to "
+                       f"{self._when(approval.now_start)}, has been withdrawn. "
+                       f"Your appointment stays on {self._when(approval.was_start)}.")
 
     def _expire_past_asks(self, now: datetime) -> List["Approval"]:
         """Offers and move asks whose time has come without being settled.
@@ -809,12 +813,12 @@ class World:
             if a.kind == "booking":
                 self._tell(a.client_id, "withdrawn",
                            f"The time {'you agreed to' if agreed else 'we offered you'}, "
-                           f"{self._when(a.now_start)}, passed before it could be confirmed. "
-                           f"Your request is still open, and the clinic will offer you another time.")
+                           f"{self._when(a.now_start)}, passed before it was confirmed. "
+                           f"Your request is still open.")
             else:
                 self._tell(a.client_id, "withdrawn",
-                           f"We no longer need to move your appointment on "
-                           f"{self._when(a.was_start)}; it stays where it was.")
+                           f"The proposed move of your appointment on {self._when(a.was_start)} "
+                           f"has been withdrawn; it stays where it was.")
             a.status = "withdrawn"
             if a.kind == "booking":
                 request = self.requests.get(a.request_id)
@@ -827,6 +831,129 @@ class World:
             self._settle_if_answered(a.plan_id)
         return expired
 
+    # -- answers that are not coming ------------------------------------
+
+    def overdue_asks(self, now: Optional[datetime] = None) -> List["Approval"]:
+        """Questions out with a client longer than the practice allows."""
+        hours = self.policy.answer_within_hours
+        if not hours:
+            return []
+        now = now or datetime.now()
+        return [a for a in self.approvals.values()
+                if a.status == "pending" and a.asked_at is not None
+                and now - a.asked_at >= timedelta(hours=hours)]
+
+    def decline_overdue(self, approval_ids: Optional[Sequence[int]] = None,
+                        now: Optional[datetime] = None, replan: bool = True) -> dict:
+        """Take no answer as "not that time", and plan the rest again.
+
+        A decline, not a refusal: a refusal pins an appointment for good,
+        which silence does not say. The client is told what happened.
+        """
+        now = now or datetime.now()
+        wanted = None if approval_ids is None else {int(i) for i in approval_ids}
+        declined = []
+        for a in self.overdue_asks(now):
+            if wanted is not None and a.id not in wanted:
+                continue
+            what = ("the time offered to you, " + self._when(a.now_start) if a.kind == "booking"
+                    else f"moving your appointment on {self._when(a.was_start)}")
+            self._tell(a.client_id, "withdrawn",
+                       f"No answer was received about {what}, so it has been withdrawn."
+                       + (" Your request is still open." if a.kind == "booking"
+                          else " Your appointment stays where it was."))
+            a.status = "declined"
+            self._record_refusal(a, pin=False)
+            self._settle_if_answered(a.plan_id)
+            declined.append(a.id)
+            self._note(f"no answer from {a.client_id} — treated as declined")
+        run = None
+        if declined and replan:
+            # What was waiting on the silence is back in the queue; a fresh
+            # draft plans around everything still promised. Writing down what
+            # others agreed stays the provider's decision (settle).
+            run = self.propose(now=now, reason="no answer",
+                               detail=f"{len(declined)} answer(s) overdue")
+        return {"declined": declined, "run": run}
+
+    def _handle_overdue_answers(self, now: datetime) -> None:
+        if self.policy.decline_when_overdue and self.overdue_asks(now):
+            self.decline_overdue(now=now)
+
+    def _withdraw_asks_they_can_no_longer_make(self, client_id: str) -> None:
+        """A client marking a time unavailable takes back any offer or move to
+        it still in the air — agreed to or not, since it is not written down.
+        Left alone, it was booked anyway into time they had said they were away."""
+        if client_id == PROVIDER or client_id not in self.clients:
+            return
+        for a in list(self.approvals.values()):
+            if a.client_id != client_id or a.applied or a.status not in ("pending", "accepted"):
+                continue
+            free = self.availability_segments(client_id, a.now_start.date(),
+                                              a.now_start.date() + timedelta(days=1))
+            if any(x.start <= a.now_start and a.now_end <= x.end for x in free):
+                continue
+            if a.kind == "booking":
+                text = (f"You marked {self._when(a.now_start)} as unavailable, so that offered "
+                        f"time has been withdrawn. Your request is still open.")
+            else:
+                text = (f"You marked {self._when(a.now_start)} as unavailable, so the proposed "
+                        f"move there has been withdrawn. Your appointment stays on "
+                        f"{self._when(a.was_start)}.")
+            self._tell(client_id, "withdrawn", text)
+            a.status = "declined"                  # "not that time" — theirs to say
+            self._record_refusal(a, pin=False)
+            self._settle_if_answered(a.plan_id)
+
+    def _replaced_gone(self, request: "Request", now: datetime) -> bool:
+        """Is the appointment this request was to move no longer movable —
+        started, over, or not booked any more?"""
+        if request.replaces_appointment_id is None:
+            return False
+        try:
+            old = self.store.get_appointment(request.replaces_appointment_id)
+        except KeyError:
+            return True
+        return old.status is not AppointmentStatus.BOOKED or old.range.start <= now
+
+    def _end_replacement(self, request: "Request", now: datetime) -> None:
+        """Stop looking for a new time for an appointment that has gone."""
+        old = None
+        try:
+            old = self.store.get_appointment(request.replaces_appointment_id)
+        except KeyError:
+            pass
+        for a in self.approvals.values():
+            if a.kind == "booking" and a.request_id == request.id and self._outstanding(a):
+                a.status = "withdrawn"
+                self._drop_moves_nobody_needs(a.plan_id)
+                self._settle_if_answered(a.plan_id)
+        request.status = "withdrawn"
+        if old is not None:
+            happened = (f"has passed" if old.range.start <= now
+                        and old.status is not AppointmentStatus.CANCELLED_BY_CLIENT
+                        and old.status is not AppointmentStatus.CANCELLED_BY_PROVIDER
+                        else "is no longer booked")
+            self._tell(request.client_id, "withdrawn",
+                       f"Your appointment on {self._when(old.range.start)} {happened}, "
+                       f"so it is no longer being moved.")
+        self._note(f"stopped looking for a new time for {request.client_id}'s "
+                   f"appointment — it has gone")
+
+    def _end_stale_replacements(self, now: datetime) -> None:
+        for r in list(self.requests.values()):
+            if r.status in ("pending", "on_hold", "awaiting_client") and self._replaced_gone(r, now):
+                self._end_replacement(r, now)
+
+    @staticmethod
+    def _solve(*args, **kwargs):
+        try:
+            return solve_placements(*args, **kwargs)
+        except RuntimeError as exc:
+            if "UNKNOWN" in str(exc):
+                raise SolverGaveUp(str(exc)) from None
+            raise
+
     def _queue_fingerprint(self) -> tuple:
         return tuple(sorted((r.id, r.status) for r in self.requests.values()
                             if r.status in ("pending", "on_hold")))
@@ -835,10 +962,14 @@ class World:
         if request.told_unplaced or request.status != "on_hold":
             return
         request.told_unplaced = True
+        if request.replaces_appointment_id is not None:
+            what = (f"a new time for your appointment on "
+                    f"{self._when(self.store.get_appointment(request.replaces_appointment_id).range.start)}")
+        else:
+            what = f"a time for your request around {self._when(request.preferred_start)}"
         self._tell(request.client_id, "unplaced",
-                   f"We haven't found a time yet for your request around "
-                   f"{self._when(request.preferred_start)}. It stays open, and the clinic "
-                   f"will offer a time as soon as one comes up.")
+                   f"No time has been found yet for {what[2:] if what.startswith('a ') else what}. "
+                   f"It is still open.")
 
     def _tell_closed(self) -> None:
         """Bookings left in time the clinic is closed. Flagged, not moved — so
@@ -851,8 +982,7 @@ class World:
             self.told_closed.add(appointment.id)
             self._tell(appointment.client_id, "closed",
                        f"The clinic is not available at the time of your appointment on "
-                       f"{self._when(appointment.range.start)}. It stays booked for now; "
-                       f"the clinic will be in touch about another time.")
+                       f"{self._when(appointment.range.start)}. It is still booked.")
 
     def acknowledge_skipped(self, request_id: int, who: str) -> None:
         """`who` ("client" or "provider") has seen that this session is off."""
@@ -891,7 +1021,7 @@ class World:
         request.note = "the clinic is closed then"
         self._tell(request.client_id, "changed",
                    f"The clinic is closed at the time of your session on {self._when(original)}. "
-                   f"You'll be offered another time{self._window_words(request.latest)}.")
+                   f"Another time is being looked for{self._window_words(request.latest)}.")
 
     def _away_at(self, client_id: str, start: datetime, service_id: str) -> bool:
         """Has the client marked that time as away (an exception, not just
@@ -1286,9 +1416,9 @@ class World:
             request.keep_looking = True
             self.told_closed.add(appointment.id)
             self._tell(appointment.client_id, "changed",
-                       f"The clinic is not available at the time of your appointment on "
-                       f"{self._when(appointment.range.start)}. You'll be offered another "
-                       f"time{self._window_words(request.latest)}; your booking stays until then.")
+                       f"The clinic has asked for your appointment on "
+                       f"{self._when(appointment.range.start)} to be moved. It stays booked "
+                       f"as it is until you agree to a new time.")
             raised.append(request.id)
         if raised:
             self._note(f"{len(raised)} stranded booking(s) queued to be rehoused")
@@ -1440,8 +1570,12 @@ class World:
         # is in the queue the policy is about to look at.
         self.raise_due_sessions(now)
         self._expire_past_asks(now)
+        self._end_stale_replacements(now)
         self._lapse_missed_sessions(now)
-        self._tell_closed()
+        self._handle_overdue_answers(now)
+        # Bookings stranded by a change to the provider's hours are NOT
+        # announced here: the provider is asked first (a mistyped hour must
+        # not tell anybody anything). They are told once the provider decides.
         trigger = due(
             self.policy, now, self.last_run,
             [r.preferred_start
@@ -1596,6 +1730,7 @@ class World:
 
         if not dry_run:
             self._expire_past_asks(now)
+            self._end_stale_replacements(now)
             self._lapse_missed_sessions(now)
         open_requests = [r for r in self.requests.values()
                          if r.status in ("pending", "on_hold")
@@ -1665,23 +1800,33 @@ class World:
         # Their stated wish is only a cost, so naming a slot cannot make them
         # unplaceable elsewhere, and cannot turn a narrow ask into a claim on
         # somebody else's hour.
-        result = solve_placements(
-            [BookingRequest(
-                str(r.id), r.client_id, r.duration_minutes,
-                # From now on, and before its reschedule deadline if it has
-                # one (a session the clinic had to move stays in its window).
-                [TimeRange(x.start, x.end) for x in _from(_until(self.availability_segments(
-                    r.client_id, window_start, window_end), r.latest), earliest)],
-                preferred_start=r.preferred_start,
-             )
-             for r in waiting],
-            provider_free, config,
-            movable=movable, max_displacements=max_moves,
-            allow_chains=chains,
-            client_limits=self._client_limits(
-                {r.client_id for r in waiting} | {m.client_id for m in movable},
-                window_start, window_end, {m.id for m in movable}),
-        )
+        try:
+            result = self._solve(
+                [BookingRequest(
+                    str(r.id), r.client_id, r.duration_minutes,
+                    # From now on, and before its reschedule deadline if it has
+                    # one (a session the clinic had to move stays in its window).
+                    [TimeRange(x.start, x.end) for x in _from(_until(self.availability_segments(
+                        r.client_id, window_start, window_end), r.latest), earliest)],
+                    preferred_start=r.preferred_start,
+                 )
+                 for r in waiting],
+                provider_free, config,
+                movable=movable, max_displacements=max_moves,
+                allow_chains=chains,
+                client_limits=self._client_limits(
+                    {r.client_id for r in waiting} | {m.client_id for m in movable},
+                    window_start, window_end, {m.id for m in movable}),
+            )
+        except SolverGaveUp:
+            # Out of time before finding anything (a busy machine, a big
+            # problem). Nothing is changed or parked — the requests were not
+            # really tried — and the provider is told rather than shown an error.
+            warnings.append("the scheduler ran out of time before finding a plan; "
+                            "nothing was changed — try again, or plan fewer days ahead")
+            self._note("scheduler ran out of time; nothing was changed")
+            return {"ran": False, "reason": "the scheduler ran out of time",
+                    "warnings": warnings, "out_of_scope": len(skipped)}
 
         # Anything the engine could not place is parked, so its approaching
         # date stops demanding a fresh run on every tick.
@@ -1892,8 +2037,9 @@ class World:
         if plan.status not in ("awaiting_clients", "answered"):
             raise ValueError(f"plan {plan_id} is {plan.status}, not out with clients")
         # A "yes" to a time that has since passed is not written down: it
-        # would book the past.
+        # would book the past. Nor is a replacement for a session that has gone.
         self._expire_past_asks(datetime.now())
+        self._end_stale_replacements(datetime.now())
 
         if how == "reoptimise":
             dropped = self._withdraw_outstanding(plan, "the provider rejected the plan")
@@ -1983,7 +2129,7 @@ class World:
     def _ask(self, plan: Plan, kind: str, client_id: str, **fields) -> None:
         approval = Approval(
             id=next(self._ids), plan_id=plan.id, kind=kind, client_id=client_id,
-            **fields,
+            asked_at=datetime.now(), **fields,
         )
         self.approvals[approval.id] = approval
 
@@ -2069,6 +2215,9 @@ class World:
             approval.applied = True
             self._note(f"{approval.client_id} moved to "
                        f"{approval.now_start:%a %d %b %H:%M}")
+            self._tell(approval.client_id, "confirmed",
+                       f"Your appointment on {self._when(approval.was_start)} has been moved "
+                       f"to {self._when(approval.now_start)}.")
             self._apply_dependent_bookings(approval)
         else:
             self._book(approval)
@@ -2098,6 +2247,12 @@ class World:
             # wanted" outranks an earlier "yes".
             approval.status = "withdrawn"
             return
+        if self._replaced_gone(request, datetime.now()):
+            # A replacement for a session that has since happened (or been
+            # cancelled) must not be booked: it would add a session, and
+            # cancelling the "old" one would rewrite one that took place.
+            self._end_replacement(request, datetime.now())
+            return
         self.store.book_appointment(
             approval.client_id, request.service_id,
             approval.now_start, approval.now_end,
@@ -2108,6 +2263,9 @@ class World:
         approval.applied = True
         self._note(f"booked {approval.client_id} at "
                    f"{approval.now_start:%a %d %b %H:%M}")
+        self._tell(approval.client_id, "confirmed",
+                   f"Your {self._service_name(request.service_id)} on "
+                   f"{self._when(approval.now_start)} is confirmed.")
 
         # The old slot goes only now — the point of not releasing it was that
         # they would never be left with neither. Who cancelled it follows who
@@ -2115,7 +2273,7 @@ class World:
         # not give their hour up.
         if request.replaces_appointment_id is not None:
             old = self.store.get_appointment(request.replaces_appointment_id)
-            if old.occupies_slot:
+            if old.status is AppointmentStatus.BOOKED:     # never one that took place
                 self.cancel_appointment(
                     request.replaces_appointment_id,
                     by=Party.PROVIDER if request.origin is Origin.DISPLACED
@@ -2269,6 +2427,7 @@ class World:
         window = (datetime.combine(start, time.min), datetime.combine(end, time.min))
 
         stranded = {a.id for a in self.orphaned_appointments(horizon_days)}
+        overdue = {a.id for a in self.overdue_asks()}
 
         # What is hanging over each booking, so a client can see at a glance
         # whether their slot is settled — the question they actually have.
@@ -2428,7 +2587,9 @@ class World:
                  "appointment_id": a.appointment_id,
                  "was": a.was_start.isoformat() if a.was_start else None,
                  "was_end": a.was_end.isoformat() if a.was_end else None,
-                 "now": a.now_start.isoformat(), "now_end": a.now_end.isoformat()}
+                 "now": a.now_start.isoformat(), "now_end": a.now_end.isoformat(),
+                 "asked_at": a.asked_at.isoformat() if a.asked_at else None,
+                 "overdue": a.id in overdue}
                 for a in self.approvals.values()
             ],
             "plans": [
@@ -2469,6 +2630,8 @@ class World:
                 "min_notice_hours": self.policy.min_notice_hours,
                 "reschedule_window": self.policy.reschedule_window,
                 "reschedule_window_days": self.policy.reschedule_window_days,
+                "answer_within_hours": self.policy.answer_within_hours,
+                "decline_when_overdue": self.policy.decline_when_overdue,
                 "last_run": self.last_run.isoformat() if self.last_run else None,
             },
             "log": self.log[-40:],
@@ -2528,6 +2691,10 @@ class World:
 
     def _note(self, message: str) -> None:
         self.log.append(f"{datetime.now():%H:%M:%S}  {message}")
+
+
+class SolverGaveUp(Exception):
+    """The solver stopped without even a feasible answer."""
 
 
 def _from(segments, earliest: datetime) -> list:

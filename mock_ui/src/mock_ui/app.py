@@ -241,6 +241,8 @@ class SettingsIn(BaseModel):
     min_notice_hours: Optional[int] = None
     reschedule_window: Optional[str] = None
     reschedule_window_days: Optional[int] = None
+    answer_within_hours: Optional[int] = None
+    decline_when_overdue: Optional[bool] = None
     practice_name: Optional[str] = None
     chat_enabled: Optional[bool] = None
     assistant_enabled: Optional[bool] = None
@@ -698,6 +700,19 @@ def skipped_seen(request_id: int, who: str):
     return {"ok": True}
 
 
+class OverdueIn(BaseModel):
+    approval_ids: Optional[List[int]] = None     # None: every overdue answer
+
+
+@app.post("/api/approvals/overdue/decline")
+def decline_overdue(payload: OverdueIn = OverdueIn()):
+    """The provider: "stop waiting for them" — take no answer as "not that
+    time" and plan again around it."""
+    out = world.decline_overdue(payload.approval_ids)
+    return {"declined": out["declined"],
+            "plan_id": (out["run"] or {}).get("plan_id")}
+
+
 @app.post("/api/notices/{notice_id}/seen")
 def notice_seen(notice_id: int, as_: str = Query(..., alias="as")):
     """A client has seen a notice about their own booking."""
@@ -903,6 +918,10 @@ def settings(payload: SettingsIn):
         world.policy.reschedule_window = payload.reschedule_window
     if payload.reschedule_window_days is not None:
         world.policy.reschedule_window_days = max(1, min(90, payload.reschedule_window_days))
+    if payload.answer_within_hours is not None:
+        world.policy.answer_within_hours = max(0, min(24 * 14, payload.answer_within_hours))
+    if payload.decline_when_overdue is not None:
+        world.policy.decline_when_overdue = payload.decline_when_overdue
     if payload.practice_name is not None:
         name = payload.practice_name.strip()
         if not name:

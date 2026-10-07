@@ -42,7 +42,8 @@ def test_an_offer_agreed_to_and_then_dropped_is_not_silent(world):
 
     notes = told(world, "bob")
     assert [n["kind"] for n in notes] == ["withdrawn"]
-    assert "you agreed to" in notes[0]["text"] and "another time" in notes[0]["text"]
+    assert "you agreed to" in notes[0]["text"] and "withdrawn" in notes[0]["text"]
+    assert "will offer" not in notes[0]["text"], "says what happened, promises nothing"
 
 
 def test_an_offer_taken_back_never_says_who_was_in_the_way(world):
@@ -149,3 +150,60 @@ def test_declining_an_offer_stops_asking_whoever_was_moving_for_it(world):
     assert ask(world, "dan").status == "withdrawn", "Dan was only moving to make room for Carol"
     assert [n["kind"] for n in told(world, "dan")] == ["withdrawn"]
     assert ask(world, "bob").status == "pending", "Bob's offer did not depend on it"
+
+
+# -- confirmations, unmakeable offers, and answers that do not come -----------
+
+
+def test_a_booking_written_down_is_confirmed_to_the_client(world):
+    world.respond_to_approval(ask(world, "bob").id, "accept")
+
+    world.settle_plan(world.plan_id, "agreed")
+
+    assert "confirmed" in [n["kind"] for n in told(world, "bob")]
+
+
+def test_an_offer_the_client_then_marks_unavailable_is_withdrawn(world):
+    offer = ask(world, "bob")
+    world.respond_to_approval(offer.id, "accept")
+
+    world.set_exception("bob", offer.now_start.date(), offer.now_start.time(),
+                        offer.now_end.time(), available=False)
+    world.settle_plan(world.plan_id, "agreed")
+
+    assert offer.status == "declined" and not offer.applied
+    assert world.store.appointments_for("bob", offer.now_start, offer.now_end) == []
+    assert "You marked" in told(world, "bob")[0]["text"]
+
+
+def test_no_answer_past_the_deadline_warns_and_can_be_taken_as_declined(world):
+    world.policy.answer_within_hours = 48
+    bob = ask(world, "bob")
+    later = bob.asked_at + timedelta(hours=49)
+
+    assert bob.id in [a.id for a in world.overdue_asks(later)]
+    assert world.overdue_asks(bob.asked_at + timedelta(hours=1)) == []
+
+    out = world.decline_overdue([bob.id], now=later)
+
+    assert bob.status == "declined" and bob.id not in world.immovable
+    assert "No answer was received" in told(world, "bob")[0]["text"]
+    assert out["declined"] == [bob.id]
+
+
+def test_stopping_waiting_can_be_automatic(world):
+    world.policy.answer_within_hours = 1
+    world.policy.decline_when_overdue = True
+    bob = ask(world, "bob")
+
+    world.tick(now=bob.asked_at + timedelta(hours=2))
+
+    assert bob.status == "declined"
+
+
+def test_the_api_stops_waiting_on_request():
+    client = TestClient(app_module.app)
+    client.post("/api/reset")
+    client.post("/api/settings", json={"horizon_days": 10, "answer_within_hours": 0})
+    out = client.post("/api/approvals/overdue/decline", json={}).json()
+    assert out == {"declined": [], "plan_id": None}

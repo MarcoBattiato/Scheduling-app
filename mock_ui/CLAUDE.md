@@ -296,7 +296,26 @@ repeating session called off, a booking the clinic cancels or makes by hand, a
 request still without a time after a run (once), and a booking left in time
 the clinic is closed (checked on every tick, once per booking) each leave a
 notice on the client's Home — phone and desktop — until they press OK. Notices
-are worded for the client and never give the reason in terms of anybody else.
+are worded for the client, **say only what happened** — never an explanation
+or a promise that might not hold ("the clinic will offer you another time") —
+and never give the reason in terms of anybody else. Confirmations too: a booking
+or move written down is confirmed to the client.
+
+**A change to the provider's hours that strands bookings asks the provider
+first** (the phone opens the stranded-bookings sheet: find new times / cancel /
+not now) and tells nobody until they choose; a mistyped hour must not start a
+rebooking. Choosing "find a new time" (or "leave them" from the away screen)
+is what tells the clients. A move for a session that has since happened or
+been cancelled ends (`_end_stale_replacements`), and `_book` never cancels an
+appointment that is not still booked — that rewrote a session that took place.
+A client marking a time unavailable takes back any offer to it still in the air.
+
+**Answers that do not come**: `answer_within_hours` (48 by default) puts a "no
+answer" card on the provider's Home; "stop waiting" (or
+`decline_when_overdue`, automatically) takes the silence as *declined* — not
+refused, which would pin the appointment for good — tells the client, and makes
+a new draft. A solver that runs out of time (`SolverGaveUp`) changes nothing
+and says so, rather than failing the request.
 
 **A client's screens are sent only their own slice** (`World.snapshot_for`,
 `/api/state?as=<client>`): their bookings, requests, questions, hours, charges

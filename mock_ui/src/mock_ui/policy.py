@@ -82,6 +82,13 @@ class SchedulingPolicy:
     reschedule_window: str = "week"
     reschedule_window_days: int = 7
 
+    # How long a client has to answer an offer or a request to move before
+    # the provider is warned (0: never). With `decline_when_overdue`, no
+    # answer is taken as "not that time" and the rest is re-planned — a
+    # decline, not a refusal: they can still be asked again another time.
+    answer_within_hours: int = 48
+    decline_when_overdue: bool = False
+
     RESCHEDULE_WINDOWS = ("week", "month", "days", "any")
 
 

@@ -114,7 +114,8 @@ def save(world: World, path: Path) -> None:
              "request_id": a.request_id, "appointment_id": a.appointment_id,
              "depends_on": list(a.depends_on),
              "was_start": _dt(a.was_start), "was_end": _dt(a.was_end),
-             "now_start": _dt(a.now_start), "now_end": _dt(a.now_end)}
+             "now_start": _dt(a.now_start), "now_end": _dt(a.now_end),
+             "asked_at": _dt(a.asked_at)}
             for a in world.approvals.values()
         ],
         "immovable": sorted(world.immovable),
@@ -128,6 +129,8 @@ def save(world: World, path: Path) -> None:
             "min_notice_hours": world.policy.min_notice_hours,
             "reschedule_window": world.policy.reschedule_window,
             "reschedule_window_days": world.policy.reschedule_window_days,
+            "answer_within_hours": world.policy.answer_within_hours,
+            "decline_when_overdue": world.policy.decline_when_overdue,
             "last_run": _dt(world.last_run),
         },
         "practice_name": world.practice_name,
@@ -260,6 +263,7 @@ def load(path: Path) -> World:
             depends_on=tuple(entry["depends_on"]),
             was_start=_back(entry["was_start"]), was_end=_back(entry["was_end"]),
             now_start=_back(entry["now_start"]), now_end=_back(entry["now_end"]),
+            asked_at=_back(entry.get("asked_at")),
         )
     world.immovable = set(payload.get("immovable", []))
 
@@ -275,7 +279,8 @@ def load(path: Path) -> World:
         "scope_to_horizon", world.policy.scope_to_horizon)
     world.policy.rehouse_orphans_on_run = scheduler.get(
         "rehouse_orphans_on_run", world.policy.rehouse_orphans_on_run)
-    for name in ("min_notice_hours", "reschedule_window", "reschedule_window_days"):
+    for name in ("min_notice_hours", "reschedule_window", "reschedule_window_days",
+                 "answer_within_hours", "decline_when_overdue"):
         setattr(world.policy, name, scheduler.get(name, getattr(world.policy, name)))
     world.last_run = _back(scheduler.get("last_run"))
 

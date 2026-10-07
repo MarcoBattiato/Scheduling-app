@@ -480,17 +480,20 @@ const windowWords = () => ({week: "in the same week", month: "in the same month"
   (state.scheduler || {}).reschedule_window || "week"];
 
 const NOTICE_TAGS = {skipped: "not happening", cancelled: "cancelled by the clinic", changed: "to be moved",
-  withdrawn: "changed", booked: "booked for you", unplaced: "still looking", closed: "clinic not available"};
+  withdrawn: "changed", booked: "booked for you", confirmed: "confirmed", unplaced: "still looking", closed: "clinic not available"};
 
 function clientNotices() {
   // Everything that happened to their bookings without them doing it. Each
   // stays until they press OK — nothing is changed behind their back.
-  return (state.notices || []).filter((n) => n.client_id === me).map((n) => `<div class="card warn">
-      <div class="main"><span class="tag warn">${esc(NOTICE_TAGS[n.kind] || "update")}</span>
+  return (state.notices || []).filter((n) => n.client_id === me).map((n) => {
+    const good = n.kind === "confirmed" || n.kind === "booked";
+    return `<div class="card ${good ? "" : "warn"}">
+      <div class="main"><span class="tag ${good ? "ok" : "warn"}">${esc(NOTICE_TAGS[n.kind] || "update")}</span>
         <p style="margin:8px 0 0">${esc(n.text)}</p>
         <div class="row-actions"><button class="btn small" data-act="notice-seen" data-id="${n.id}">OK</button>
         <button class="btn small ghost" data-act="tab" data-tab="messages">Message the clinic</button></div></div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 // -- the client: home --------------------------------------------------
@@ -511,6 +514,8 @@ function clientHome() {
     : asks.length
     ? `<p class="lead">${asks.some((a) => a.status === "pending")
         ? "The clinic has a question for you." : "Nothing needs you right now."}</p>`
+    : (state.notices || []).some((n) => n.client_id === me)
+    ? `<p class="lead">There's news about your appointments.</p>`
     : `<p class="lead">${next ? "You're all set." : "Nothing booked yet."}</p>`;
 
   html += asks.map(askCard).join("");
@@ -1082,6 +1087,20 @@ function providerHome() {
         <p class="meta">${idle ? "Nothing has been done about them yet." : "Already being moved."}</p></div>
       <span class="chev">›</span></button>`);
   }
+  const overdue = (state.approvals || []).filter((a) => a.overdue);
+  if (overdue.length) {
+    cards.push(`<div class="card warn">
+      <div class="main"><span class="tag warn">no answer</span>
+        <h3 style="margin-top:6px">${plural(overdue.length, "client has", "clients have")} not answered in ${
+          (state.scheduler || {}).answer_within_hours} hours</h3>
+        <div class="list" style="box-shadow:none;margin:8px 0 0">${overdue.map((a) => `<div class="row">
+          <div class="main"><div class="title">${esc(nameOf(a.client_id))}</div>
+          <div class="meta">${a.kind === "reschedule" ? `asked to move ${fmtWhen(a.was)} → ${fmtWhen(a.now)}`
+            : `offered ${fmtWhen(a.now)}`}</div></div></div>`).join("")}</div>
+        <div class="row-actions"><button class="btn small" data-act="decline-overdue">Stop waiting and re-plan</button></div>
+        <p class="hint" style="margin:8px 0 0">Treated as "not that time": the client is told, and a new draft plans around it.</p></div>
+    </div>`);
+  }
   const skipped = skippedFor("provider");
   if (skipped.length) {
     cards.push(`<div class="card warn">
@@ -1187,7 +1206,8 @@ function strandedSheet() {
       <button class="btn ghost" data-act="close">Not now</button>
     </div>
     <p class="hint">Finding a new time keeps each client's hour until there is
-      somewhere to move it, and goes through the queue — they are asked, not told.</p>`;
+      somewhere to move it, and goes through the queue — they are asked, not told.
+      Nobody is told anything until you choose.</p>`;
 }
 
 // -- the provider: diary -----------------------------------------------
@@ -1824,6 +1844,15 @@ function settingsView() {
         <button class="btn small secondary" data-act="window-days" data-delta="-1" aria-label="Fewer days">−</button>
         <button class="btn small secondary" data-act="window-days" data-delta="1" aria-label="More days">+</button>
       </div></div>` : ""}
+    <h2>Waiting for answers</h2><div class="card">
+      <div class="row" style="padding:0;border:0">
+        <div class="main"><div class="title">${s.answer_within_hours ? `Warn after ${s.answer_within_hours} hours` : "Never warn"}</div>
+          <div class="meta">When a client has not answered an offer or a request to move.</div></div>
+        <button class="btn small secondary" data-act="answer-hours" data-delta="-12" aria-label="Sooner">−</button>
+        <button class="btn small secondary" data-act="answer-hours" data-delta="12" aria-label="Later">+</button>
+      </div></div>
+    <div class="list">${toggle("decline_when_overdue", s.decline_when_overdue, "Stop waiting automatically",
+      "Past the deadline, take no answer as \"not that time\" and make a new draft.")}</div>
     <h2>Asking booked clients to move</h2><div class="card">
       <div class="row" style="padding:0;border:0">
         <div class="main"><div class="title">At least ${s.min_notice_hours ?? 24} hours' notice</div>
@@ -2071,9 +2100,16 @@ function switchTo(who) {
 }
 
 async function done(promise, message) {
+  const strandedBefore = isProvider() && state ? stranded().filter((a) => !a.pending).length : 0;
   const result = await promise;
   if (result !== null && message) toast(message);
   await refresh(true);
+  // A change to the provider's hours that leaves bookings outside them asks
+  // straight away what to do — and does nothing until they answer, so a
+  // mistyped hour reschedules nobody.
+  if (isProvider() && state && stranded().filter((a) => !a.pending).length > strandedBefore) {
+    openSheet(strandedSheet);
+  }
   return result;
 }
 
@@ -2348,6 +2384,16 @@ const ACTIONS = {
   },
   "setting-toggle": async (d, el) => {
     await done(api("/api/settings", {[d.key]: el.checked}), "Saved");
+  },
+  "decline-overdue": async () => {
+    if (!await ask("Stop waiting for them?", "Each is told the offer has been withdrawn, and a new draft is made.",
+                   "Stop waiting")) return;
+    const out = await done(api("/api/approvals/overdue/decline", {}), "");
+    if (out) toast(out.plan_id ? "Withdrawn · a new draft is ready" : "Withdrawn");
+  },
+  "answer-hours": async (d) => {
+    const hours = Math.max(0, Math.min(336, ((state.scheduler || {}).answer_within_hours ?? 48) + Number(d.delta)));
+    await done(api("/api/settings", {answer_within_hours: hours}));
   },
   "reschedule-window": async (d) => {
     await done(api("/api/settings", {reschedule_window: d.window}), "Saved");
