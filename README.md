@@ -253,8 +253,11 @@ and start the server with a Stripe **test** secret key in the environment —
 **On a phone**, use `/phone` instead (`/phone?as=carol`). It is a separate page
 over the same API: a bottom tab bar, and taps, sheets and pickers in place of
 the desktop page's drag and hover. A narrow screen opening `/` is sent there
-automatically (`?desktop=1` opts out). To reach it from a real phone the server
-has to listen beyond this machine:
+automatically (`?desktop=1` opts out). On an iPhone, **Share → Add to Home
+Screen** installs it with its own icon, opening full-screen like an app; the
+page offers the tip itself. Push notifications to it are possible (iOS 16.4+)
+but need HTTPS, so they arrive with hosting. To reach it from a real phone the
+server has to listen beyond this machine:
 
 ```bash
 ./mock_ui/run.sh --host 0.0.0.0
@@ -311,7 +314,7 @@ cd calendar_store   && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 cd mock_ui          && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 ```
 
-747 tests: 251 for the engine, 64 for the store, 403 for the mock UI, 29 for the
+748 tests: 251 for the engine, 64 for the store, 404 for the mock UI, 29 for the
 contracts. See the note on the one known failure below.
 
 ---

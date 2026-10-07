@@ -356,6 +356,25 @@ function renderTabs() {
     </button>`).join("");
 }
 
+// On an iPhone in Safari, say once how to make this an app. Not shown once
+// it is installed (navigator.standalone), nor anywhere else.
+const isIOSSafari = () => {
+  const nav = typeof navigator === "undefined" ? {} : navigator;
+  return /iPhone|iPad|iPod/.test(nav.userAgent || "") && nav.standalone === false;
+};
+const tipDismissed = () => { try { return localStorage.getItem("install-tip") === "no"; } catch { return false; } };
+
+function installTip() {
+  if (!isIOSSafari() || tipDismissed()) return "";
+  return `<div class="install-tip"><img src="/static/icon-180.png" alt="">
+    <div class="main"><b>Use it like an app.</b> Tap <b>Share</b>
+      <svg viewBox="0 0 24 24" width="16" height="16" style="vertical-align:-3px" aria-label="the Share icon"
+        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3v12M8 7l4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>,
+      then <b>Add to Home Screen</b>.</div>
+    <button data-act="install-tip-dismiss" aria-label="Dismiss">×</button></div>`;
+}
+
 function empty(title, body, action) {
   return `<div class="empty"><b>${title}</b>${body || ""}${action || ""}</div>`;
 }
@@ -372,7 +391,7 @@ function clientHome() {
   const next = upcoming[0];
 
   const owes = chargesOf(me, "due").length > 0;
-  let html = `<h1>Hi ${esc(client.name)}</h1>`;
+  let html = `${installTip()}<h1>Hi ${esc(client.name)}</h1>`;
   html += owes && !asks.some((a) => a.status === "pending")
     ? `<p class="lead">You have something to pay.</p>`
     : asks.length
@@ -788,7 +807,7 @@ function providerHome() {
   const queue = (state.requests || []).filter(openRequest);
   const stuck = stranded();
 
-  let html = `<h1>${fmtDay(todayKey())}</h1>`;
+  let html = `${installTip()}<h1>${fmtDay(todayKey())}</h1>`;
   const cards = [];
   if (stuck.length) {
     const idle = stuck.filter((a) => !a.pending).length;
@@ -1791,6 +1810,10 @@ const ACTIONS = {
   },
   "series-open": (d) => openSheet(() => seriesSheet(d.id)),
   "calendar-open": () => openSheet(calendarSheet),
+  "install-tip-dismiss": () => {
+    try { localStorage.setItem("install-tip", "no"); } catch { /* private mode */ }
+    render(true);
+  },
   pay: async (d) => {
     const out = await api(`/api/charges/${d.id}/checkout`, {return_to: `/phone?as=${encodeURIComponent(me)}`});
     if (out && out.url) location.href = out.url;          // the processor's own page

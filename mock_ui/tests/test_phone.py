@@ -327,7 +327,23 @@ def test_it_can_be_added_to_a_home_screen(client):
     body = manifest.json()
     assert body["start_url"] == "/phone"
     assert body["display"] == "standalone"
-    assert client.get(body["icons"][0]["src"]).status_code == 200
+    for icon in body["icons"]:
+        assert client.get(icon["src"]).status_code == 200, icon["src"]
+    assert any(i["type"] == "image/png" and i["sizes"] == "512x512" for i in body["icons"]), (
+        "Android wants a PNG at 512; SVG alone is not enough"
+    )
+
+
+def test_an_iphone_gets_a_home_screen_icon_it_can_use(client):
+    """iOS ignores SVG and manifest icons on the Home Screen and uses the
+    apple-touch-icon — and turns transparent corners black, so it must be a
+    full-bleed PNG."""
+    page = client.get("/phone").text
+    href = re.search(r'rel="apple-touch-icon" href="([^"]+)"', page).group(1)
+    icon = client.get(href)
+
+    assert icon.status_code == 200
+    assert icon.content[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_the_phone_page_reports_a_broken_script():

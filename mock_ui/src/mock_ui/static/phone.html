@@ -8,10 +8,19 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Appointments">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<!-- iOS ignores SVG and manifest icons on the Home Screen; it wants this. -->
+<link rel="apple-touch-icon" href="/static/icon-180.png">
 <link rel="manifest" href="/static/phone.webmanifest">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <title>Appointments</title>
 <link rel="stylesheet" href="/static/phone.css">
+<!-- Inline, so the very first frame of a Home Screen launch already has the
+     app's background instead of a white flash while the stylesheet loads. -->
+<style>
+html, body { background: #f6f7f9; }
+@media (prefers-color-scheme: dark) { html, body { background: #14161a; } }
+</style>
 </head>
 <body>
 <!-- First, as on the desktop page: a script that fails to load otherwise
