@@ -166,6 +166,7 @@ button.row:active { background: var(--surface-2); }
   border: 1px solid transparent; background: var(--accent); color: #fff;
   font-weight: 600; cursor: pointer;
 }
+a.btn { text-decoration: none; }
 .btn:active { filter: brightness(.92); }
 .btn[disabled] { opacity: .45; cursor: default; }
 .btn.secondary { background: var(--surface-2); color: var(--text); border-color: var(--line); }
@@ -341,6 +342,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); min-height: 36px; 
 .change:first-of-type { border-top: 0; }
 .change input { width: 22px; height: 22px; margin-top: 2px; accent-color: var(--accent); flex: none; }
 .change .because { font-size: 13px; color: var(--warn); margin-top: 2px; }
+p.because { font-size: 14px; color: var(--warn); margin: 8px 4px; }
 
 /* -- weekly hours editor -------------------------------------------- */
 

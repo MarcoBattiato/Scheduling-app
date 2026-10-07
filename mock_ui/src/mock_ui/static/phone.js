@@ -556,7 +556,11 @@ function clientBookings() {
   const done = mine.filter((a) => a.status !== "booked" || isPast(a.end));
   const waiting = (state.requests || []).filter((r) => r.client_id === me && openRequest(r));
 
-  let html = `<h1>Bookings</h1>`;
+  let html = `<h1>Bookings</h1>
+    <button class="card tap" data-act="calendar-open">
+      <div class="main"><div class="title">Put these in your calendar</div>
+        <div class="meta">Google, Apple, Outlook — kept up to date when anything moves</div></div>
+      <span class="chev">›</span></button>`;
   if (!upcoming.length && !waiting.length) {
     html += empty("Nothing coming up", "", `<button class="btn" data-act="tab" data-tab="book">Book an appointment</button>`);
   }
@@ -1258,6 +1262,7 @@ const MORE = [
   ["away", "Time off", "Ill, on holiday, or just not in"],
   ["clients", "Clients", "Everyone and their history"],
   ["services", "Services", "What can be booked, for how long"],
+  ["calendar", "Calendar sync", "Your diary in Google, Apple or Outlook"],
   ["settings", "Scheduling", "How far ahead to plan, and when"],
   ["activity", "Activity", "Everything that has happened"],
 ];
@@ -1267,7 +1272,7 @@ const backLink = () => `<button class="link" data-act="tab" data-tab="more" styl
 function moreView() {
   const page = tab.split("/")[1];
   const pages = {hours: hoursView, away: awayView, clients: clientsView, services: servicesView,
-                 settings: settingsView, activity: activityView};
+                 settings: settingsView, activity: activityView, calendar: calendarView};
   if (pages[page]) return pages[page]();
   return `<h1>More</h1><div class="list">${MORE.map(([id, title, meta]) => `
     <button class="row" data-act="more-open" data-page="${id}">
@@ -1436,6 +1441,65 @@ function settingsView() {
     </div>`;
 }
 
+// -- calendar sync ---------------------------------------------------
+
+const calendarPerson = () => (isProvider() ? "provider" : me);
+
+// A subscribed calendar fetches from wherever it runs. Google fetches from its
+// own servers, so an address only this Wi-Fi can reach will never work there.
+const reachableFromInternet = () => !/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1)/
+  .test(location.hostname);
+
+function calendarBody() {
+  const token = (state.feeds || {})[calendarPerson()];
+  if (!token) {
+    return `<p>Get a private link that keeps your calendar app in step with
+      ${isProvider() ? "the diary" : "your appointments"}: new bookings appear,
+      moves move, cancellations disappear.</p>
+      <div class="stack"><button class="btn block" data-act="calendar-make">Create my calendar link</button></div>`;
+  }
+  const path = `${location.host}/calendar/${token}.ics`;
+  const https = `${location.protocol}//${path}`;
+  return `
+    <div class="stack" style="margin-top:0">
+      <a class="btn block" href="webcal://${path}">Add to Apple Calendar</a>
+    </div>
+    <label class="field" style="margin-top:14px"><span>Your private link</span>
+      <input readonly value="${esc(https)}" data-role="feed-link"></label>
+    <button class="btn secondary block" data-act="calendar-copy">Copy link</button>
+    <h2>Google Calendar</h2>
+    <p class="hint" style="margin-top:0">On a computer: Google Calendar → <b>Other calendars +</b> →
+      <b>From URL</b> → paste the link. It then appears on your phone too.
+      Google checks for changes every few hours, not instantly.</p>
+    ${reachableFromInternet() ? "" : `<p class="because">This address only works on this Wi-Fi, so Google
+      cannot read it yet. It will once the app has a public address.</p>`}
+    <h2>Outlook</h2>
+    <p class="hint" style="margin-top:0">Add calendar → <b>Subscribe from web</b> → paste the link.</p>
+    <h2>Privacy</h2>
+    <p class="hint" style="margin-top:0">${isProvider()
+      ? "Your diary shows client names and services, never notes."
+      : "Each entry says only \"Appointment\" and the practice name — nothing about what it is for."}
+      Anyone with the link can see these, so keep it to yourself.</p>
+    <button class="btn danger block" data-act="calendar-reset">Replace the link</button>
+    <p class="hint">If it was shared by mistake. The old link stops working at once.</p>`;
+}
+
+function calendarSheet() {
+  return `<h3>Put these in your calendar</h3>${calendarBody()}
+    <div class="stack"><button class="btn ghost" data-act="close">Done</button></div>`;
+}
+
+function calendarView() {
+  return `${backLink()}<h1>Calendar sync</h1>
+    <form data-form="practice" class="card">
+      <label class="field"><span>Practice name</span>
+        <input name="name" value="${esc(state.practice_name || "")}" autocomplete="off"></label>
+      <p class="hint" style="margin-top:-4px">The only thing clients' calendars say about an appointment.</p>
+      <button class="btn secondary block" type="submit">Save name</button>
+    </form>
+    <h2>Your diary</h2><div class="card">${calendarBody()}</div>`;
+}
+
 function activityView() {
   return `${backLink()}<h1>Activity</h1><div class="list"><div class="log">${
     (state.log || []).slice().reverse().map(esc).join("\n")}</div></div>`;
@@ -1572,6 +1636,28 @@ const ACTIONS = {
     await done(api(`/api/series/${d.id}/stop`), "Stopped");
   },
   "series-open": (d) => openSheet(() => seriesSheet(d.id)),
+  "calendar-open": () => openSheet(calendarSheet),
+  "calendar-make": async () => {
+    await done(api(`/api/calendar/${encodeURIComponent(calendarPerson())}`, {}), "Your calendar link is ready");
+  },
+  "calendar-copy": async () => {
+    const field = document.querySelector('[data-role="feed-link"]');
+    if (!field) return;
+    try {
+      await navigator.clipboard.writeText(field.value);
+      toast("Copied");
+    } catch {
+      // No clipboard over plain http on a phone: select it for a long-press copy.
+      field.focus(); field.select();
+      toast("Selected — press and hold to copy");
+    }
+  },
+  "calendar-reset": async () => {
+    if (!await ask("Replace your calendar link?",
+        "The old link stops working at once, and any calendar using it stops updating until you add the new one.",
+        "Replace it", true)) return;
+    await done(api(`/api/calendar/${encodeURIComponent(calendarPerson())}/reset`, {}), "New link made");
+  },
   limit: async (d) => {
     const c = clientById(d.client);
     const next = {per_day: c.per_day ?? null, per_week: c.per_week ?? null};
@@ -1731,6 +1817,9 @@ const ACTIONS = {
 };
 
 const FORMS = {
+  practice: async (form) => {
+    await done(api("/api/settings", {practice_name: form.elements.name.value}), "Saved");
+  },
   // Fields only, read by the button beside them; Enter in one does nothing.
   "book-until": () => {},
   "series-until": () => {},

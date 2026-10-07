@@ -24,7 +24,7 @@ node = pytest.mark.skipif(shutil.which("node") is None, reason="node not install
 
 CLIENT_TABS = ["home", "book", "bookings", "hours"]
 PROVIDER_TABS = ["home", "diary", "queue", "plans", "more", "more/hours", "more/away",
-                 "more/clients", "more/services", "more/settings", "more/activity"]
+                 "more/clients", "more/services", "more/settings", "more/activity", "more/calendar"]
 
 
 # -- states worth drawing --------------------------------------------------

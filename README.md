@@ -305,7 +305,7 @@ cd calendar_store   && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 cd mock_ui          && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 ```
 
-682 tests: 251 for the engine, 64 for the store, 338 for the mock UI, 29 for the
+699 tests: 251 for the engine, 64 for the store, 355 for the mock UI, 29 for the
 contracts. See the note on the one known failure below.
 
 ---

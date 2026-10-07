@@ -6,8 +6,9 @@ against the interface-first approach in [INTERFACE_PLAN.md](INTERFACE_PLAN.md):
 each is a **port** the domain asks for, with adapters behind it, so the
 scheduler never learns that Google or Stripe exist.
 
-Status: **proposal**. Nothing here is built. Decisions still needed are
-collected at the end.
+Status: calendar steps 1–2 **built** (event rules and the subscription feed,
+in `mock_ui/calendar_sync.py`); everything else is a proposal. Decisions still
+needed are collected at the end.
 
 ---
 
@@ -70,10 +71,14 @@ as much as a courtesy.
 
 - A new port, `CalendarPublisher`, beside the planned `NotificationPort`:
   `publish(event_id, change)` where change is created / updated / cancelled.
-- An **outbox**: every settled change writes a row in the same step as the
-  booking; a worker sends it and retries on failure. A Google outage must
-  never block or lose a booking, and a retry must never create a duplicate
-  (each event carries a stable UID and a sequence number).
+- **Reconciliation, not hooks.** A booking changes in a dozen places (the
+  solver, a settlement, a client's own move, the provider's time off…), and a
+  missed hook is a calendar that silently drifts. Instead, `events_for(person)`
+  says what a calendar *should* hold, and each push channel keeps what it last
+  sent and sends `changes(before, after)` — created, updated, cancelled. A
+  failed send is simply still different next time, so retrying is free, and
+  each event's stable UID and sequence number mean a retry cannot duplicate.
+  A Google outage therefore never blocks or loses a booking.
 - Per person: which channels are on, their tokens (encrypted), and the
   external event ids, so updates and cancellations reach the right event.
 
@@ -88,8 +93,10 @@ as much as a courtesy.
 
 ### Order
 
-1. Outbox and the event-identity rule (chain root → UID). Pure domain work.
-2. **A** — the feed. No third party; proves the event mapping end to end.
+1. ✅ The event rules: what each person's calendar holds, identity by chain
+   root, and `changes` for push channels.
+2. ✅ **A** — the feed, with a per-person secret link that survives restarts
+   and can be replaced if leaked.
 3. **B** — email invitations. Also delivers the first real **notifications**,
    which the app does not have at all today.
 4. **C** — Google for the provider.
@@ -122,6 +129,15 @@ Available in Singapore, and covers everything above:
 | Monthly invoices | Stripe Invoicing, payable by card or PayNow |
 | Refunds | Refunds API |
 | Testing | Test mode, test cards; local webhooks via the Stripe CLI |
+
+**Ways to pay**, all offered side by side on the payment page:
+
+| Method | Notes |
+|---|---|
+| Cards (Visa, Mastercard, Amex), Apple Pay, Google Pay | The only methods that can be **saved and charged later**, which fees and after-session charges need |
+| **PayNow** | A QR code scanned in any participating app — the bank apps and **DBS PayLah!** among them — so PayLah is covered through PayNow rather than as a separate method. Lower fee than cards; no chargebacks; QR valid for an hour |
+| **GrabPay** | Redirect to Grab to approve; no recurring payments |
+| **Recorded by the provider** | Cash, bank transfer, or PayNow straight to the practice's own number — no processor and no fee. The provider marks it paid; the ledger records it like any other payment. |
 
 The PayNow point matters: a client who only pays by PayNow can be sent a
 payment link for a fee, but cannot be charged automatically. So

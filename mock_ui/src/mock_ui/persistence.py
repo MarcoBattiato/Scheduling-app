@@ -121,6 +121,8 @@ def save(world: World, path: Path) -> None:
             "rehouse_orphans_on_run": world.policy.rehouse_orphans_on_run,
             "last_run": _dt(world.last_run),
         },
+        "practice_name": world.practice_name,
+        "feed_tokens": world.feed_tokens,
         "log": world.log,
     }
     path.write_text(json.dumps(payload, indent=2))
@@ -246,6 +248,9 @@ def load(path: Path) -> World:
     world.last_run = _back(scheduler.get("last_run"))
 
     world.log = payload.get("log", [])
+    world.practice_name = payload.get("practice_name", world.practice_name)
+    # Kept across restarts, or every subscribed calendar would break on each one.
+    world.feed_tokens = dict(payload.get("feed_tokens", {}))
 
     # Restart id issuing above everything restored, so a reloaded session
     # cannot mint an id that already exists.

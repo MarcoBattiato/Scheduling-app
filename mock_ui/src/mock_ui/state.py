@@ -7,6 +7,7 @@ of JSON to method calls.
 from __future__ import annotations
 
 import itertools
+import secrets
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Sequence
@@ -193,6 +194,13 @@ class World:
         self.clients: Dict[str, Client] = {}
         self.requests: Dict[int, Request] = {}
         self.series: Dict[int, Series] = {}
+        # Shown in every client's calendar instead of anything about the
+        # appointment itself — see calendar_sync.py.
+        self.practice_name = "the practice"
+        # Person ("provider" or a client id) -> the secret in their calendar
+        # feed's address. The address is the only credential a subscribed
+        # calendar app can present, so it has to be unguessable.
+        self.feed_tokens: Dict[str, str] = {}
         self.approvals: Dict[int, Approval] = {}
         self.plans: Dict[int, Plan] = {}
         self.log: List[str] = []
@@ -416,6 +424,31 @@ class World:
                    if r.client_id == client_id and span[0] <= r.preferred_start < span[1]
                    and r.status in ("pending", "on_hold", "awaiting_client")]
         return len(booked) + len(waiting) >= client.per_week
+
+    # -- calendar feeds -------------------------------------------------
+
+    def feed_token(self, person: str) -> str:
+        """The secret for `person`'s calendar feed, made on first use."""
+        if person != "provider" and person not in self.clients:
+            raise KeyError(f"no client called {person!r}")
+        if person not in self.feed_tokens:
+            self.feed_tokens[person] = secrets.token_urlsafe(18)
+        return self.feed_tokens[person]
+
+    def reset_feed_token(self, person: str) -> str:
+        """A new address; the old one stops working at once. For a link that
+        was shared by mistake — every calendar subscribed to it goes quiet
+        and has to be given the new one."""
+        self.feed_tokens.pop(person, None)
+        token = self.feed_token(person)
+        self._note(f"{person}'s calendar link was replaced")
+        return token
+
+    def person_for_feed(self, token: str) -> Optional[str]:
+        for person, known in self.feed_tokens.items():
+            if secrets.compare_digest(known, token):
+                return person
+        return None
 
     # -- repeating bookings --------------------------------------------
 
@@ -1592,6 +1625,14 @@ class World:
                  "client_bookable": s.client_bookable}
                 for s in self.catalogue.services(include_inactive=True)
             ],
+            "practice_name": self.practice_name,
+            # Every person's feed secret, to anyone who asks. No worse than the
+            # rest of this payload until sign-in exists — CONTROL_SURFACE.md §8
+            # — but the phone only ever shows a person their own.
+            # Only links already made: making one is a change, and must happen
+            # in a request that saves the session, or a restart would hand out
+            # a different address and every subscribed calendar would break.
+            "feeds": dict(self.feed_tokens),
             "settings": {"alpha": self.alpha,
                          "max_displacements": self.max_displacements,
                          "bounds": {"earlier": self.bounds.max_days_earlier,

@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from calendar_store import Party
 
-from . import persistence, scenarios
+from . import calendar_sync, persistence, scenarios
 from .state import World
 
 STATIC = Path(__file__).parent / "static"
@@ -170,6 +170,7 @@ class SettingsIn(BaseModel):
     horizon_days: Optional[int] = None
     scope_to_horizon: Optional[bool] = None
     rehouse_orphans_on_run: Optional[bool] = None
+    practice_name: Optional[str] = None
 
 
 # -- routes ---------------------------------------------------------
@@ -228,6 +229,39 @@ def submit_request(payload: RequestIn):
     # Deliberately does NOT run the scheduler. A request arriving is not a
     # reason to re-plan the week — see policy.py.
     return {"request_id": request.id}
+
+
+@app.get("/calendar/{token}.ics")
+def calendar_feed(token: str):
+    """A person's appointments as a subscribable calendar — see
+    calendar_sync.py. The token in the address is the only credential: a
+    calendar app cannot sign in, so an unknown one is simply not found."""
+    person = world.person_for_feed(token)
+    if person is None:
+        raise HTTPException(404, "no such calendar")
+    name = (f"{world.practice_name} — diary" if person == "provider"
+            else f"Appointments — {world.practice_name}")
+    body = calendar_sync.to_ics(calendar_sync.events_for(world, person), name)
+    return Response(body, media_type="text/calendar; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/calendar/{person}")
+def calendar_link(person: str):
+    """The secret part of a person's calendar address, made if need be. A
+    POST so the new secret is saved with the session before anyone uses it."""
+    try:
+        return {"token": world.feed_token(person)}
+    except KeyError:
+        raise HTTPException(404, "no such person") from None
+
+
+@app.post("/api/calendar/{person}/reset")
+def reset_calendar_link(person: str):
+    try:
+        return {"token": world.reset_feed_token(person)}
+    except KeyError:
+        raise HTTPException(404, "no such person") from None
 
 
 @app.post("/api/clients/{client_id}/limits")
@@ -477,6 +511,11 @@ def settings(payload: SettingsIn):
         world.policy.scope_to_horizon = payload.scope_to_horizon
     if payload.rehouse_orphans_on_run is not None:
         world.policy.rehouse_orphans_on_run = payload.rehouse_orphans_on_run
+    if payload.practice_name is not None:
+        name = payload.practice_name.strip()
+        if not name:
+            raise HTTPException(400, "the practice needs a name")
+        world.practice_name = name[:80]
     return {"ok": True}
 
 

@@ -163,6 +163,18 @@ reach. A booking being asked to move counts where it is going, not where it
 is. A day already over the limit is left alone — nobody is moved to satisfy
 it — and a repeating session is skipped, not raised, in a week already full.
 
+**Calendar sync** (`calendar_sync.py`): `events_for(world, person)` is the one
+place that decides what belongs in someone's calendar app — settled bookings
+only (an offer is not an event), identity by the root of the `supersedes`
+chain so a move updates one event instead of cancelling it, and client events
+titled only "Appointment — {practice}" because their calendars are shared.
+Push channels will send `changes(before, after)` rather than hook every place
+a booking can change. The subscription feed is `/calendar/{token}.ics`; the
+token is the only credential a calendar app can present. **Links are made only
+by a POST** (`/api/calendar/{person}`), never during a read: the session is
+saved after POSTs, and a link handed out but not saved would change on
+restart and break every calendar subscribed to it.
+
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider
 says so, and the decision is a pure function so it is testable without waiting
