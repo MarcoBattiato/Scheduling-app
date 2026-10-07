@@ -164,7 +164,11 @@ inside the planning window — on every `tick`, idempotently, tracked in
 `Series.raised` — and goes through the scheduler and the client's agreement
 like any other. Booking a year of Tuesdays up front would hold those hours
 against everyone else without the scheduler ever weighing them. A withdrawn
-session stays withdrawn (it is in `raised`, so it is not raised again);
+session stays withdrawn (it is in `raised`, so it is not raised again); a
+session in time the provider has taken off is skipped, not raised; and one not
+placed before its day **lapses** (`Request.status = "lapsed"`) rather than
+being made up in a later week, where it would stack on that week's own session
+— a one-off request, by contrast, stays queued until placed;
 stopping a series withdraws what is not yet booked and leaves what is. The
 series' slot is a real client preference — `Origin.CLIENT`, and exactly the
 habitual slot SPEC §10.1 wants to learn.
@@ -236,7 +240,15 @@ hand-off card whatever the model does — a model noticing is not reliable
 enough to be the only way to a person. Each client message carries their own
 diary (`_client_context`: upcoming appointments with real ids, waiting
 requests, open questions), read through the gate exactly as the tools would;
-without it a small local model guessed date ranges and invented ids. Off
+without it a small local model guessed date ranges and invented ids. **A client's assistant can do only what the client's own screens can,
+over data the client can already see** (`CLIENT_SCREENS` in `test_gate.py`
+pins the list). It cannot see the practice's diary, so it must never say a
+time is free or would clash — it sends a request and says the practice will
+offer a time. A tool answering "is Tuesday 13:00 free?" would leak other
+people's bookings however it were worded; that is a privacy decision, not a
+missing feature. The gate also refuses a booking for an unknown service before
+drafting, so no card is shown that can only fail. Money (`charge.*`) is
+forbidden to every assistant, reads included. Off
 until the practice offers it; each client opts in after the notice. Conversations are in memory only. Model and effort from
 `ASSISTANT_MODEL` / `ASSISTANT_EFFORT` (default Opus 5.5, medium), with
 server-side refusal fallbacks on. `tests/test_assistant.py` replaces Claude

@@ -72,6 +72,9 @@ class Request:
     #            an unplaceable request whose date is approaching from firing
     #            the urgency trigger on every tick
     # placed / withdrawn — done with
+    # lapsed   — a repeating session whose day passed, or whose time the
+    #            provider took off, before it was placed. Not made up later:
+    #            next week's session is the next one
     status: str = "pending"
     note: str = ""
     # Set when a booking is being moved but its slot is held until there is
@@ -611,6 +614,7 @@ class World:
         """
         now = now or datetime.now()
         window_end = now.date() + timedelta(days=self.policy.horizon_days)
+        self._lapse_missed_sessions(now)
         raised = []
         for series in self.series.values():
             if series.status != "active":
@@ -621,6 +625,14 @@ class World:
                     exhausted = False
                     break
                 if start <= now or start.date() in series.raised:
+                    continue
+                if self._provider_away_at(start, series.service_id):
+                    # The provider has taken that time off. Raising it would
+                    # only park it, and a parked session gets placed in some
+                    # later week, on top of that week's own.
+                    series.raised.add(start.date())
+                    self._note(f"skipped {series.client_id}'s "
+                               f"{start:%a %d %b} session — the provider is away")
                     continue
                 if self._week_is_full(series.client_id, start):
                     # Already as many sessions that week as they may have, so
@@ -641,6 +653,47 @@ class World:
                 self._note(f"{series.client_id}'s {every(series.every_weeks)} "
                            f"{self._service_name(series.service_id)} has had its last session")
         return raised
+
+    def _provider_away_at(self, start: datetime, service_id: str) -> bool:
+        """Has the provider marked this slot as time off?
+
+        Time off specifically — an exception taking the hour away — not merely
+        outside the usual hours: a series wished for at an odd time is still a
+        wish the scheduler can place nearby, and skipping it every week would
+        quietly stop the series.
+        """
+        try:
+            minutes = self.catalogue.get_service(service_id).duration_minutes
+        except KeyError:
+            minutes = 60
+        end = start + timedelta(minutes=minutes)
+        for e in self.store.exceptions_for(PROVIDER, start.date()):
+            if e.kind.value != "remove":
+                continue
+            e_end = time.max if e.end_time == time.min else e.end_time
+            if e.start_time < (end.time() if end.date() == start.date() else time.max) \
+                    and start.time() < e_end:
+                return True
+        return False
+
+    def _lapse_missed_sessions(self, now: datetime) -> List[Request]:
+        """Repeating sessions that were never placed, once their day is gone.
+
+        A one-off request stays in the queue until it is placed — the client
+        still wants it. A weekly session does not: last Friday's session placed
+        next Tuesday is a second session that week, and a week's backlog
+        carried forward keeps the practice a week behind for good. Next week's
+        session is the next one.
+        """
+        lapsed = []
+        for r in self.requests.values():
+            if r.series_id is not None and r.status in ("pending", "on_hold") \
+                    and r.preferred_start.date() < now.date():
+                r.status = "lapsed"
+                lapsed.append(r)
+                self._note(f"{r.client_id}'s {r.preferred_start:%a %d %b} session "
+                           f"lapsed — it was not placed before its day")
+        return lapsed
 
     def _next_session(self, series: Series) -> Optional[datetime]:
         """The next session not yet raised, for showing what happens next."""
@@ -867,6 +920,16 @@ class World:
                 end.time() if on == end.date() else time.max,
                 available=False,
             )
+
+        # Repeating sessions waiting for a time inside the stretch are not
+        # carried into a later week (see _lapse_missed_sessions); a one-off
+        # request is left in the queue, since the client still wants it.
+        for r in self.requests.values():
+            if r.series_id is not None and r.status in ("pending", "on_hold") \
+                    and start <= r.preferred_start < end:
+                r.status = "lapsed"
+                self._note(f"{r.client_id}'s {r.preferred_start:%a %d %b} session "
+                           f"skipped — the provider is away")
 
         stranded = [a.id for a in self.orphaned_appointments()
                     if a.range.start < end and start < a.range.end]
@@ -1219,8 +1282,12 @@ class World:
         window_start = now.date()
         window_end = window_start + timedelta(days=horizon_days)
 
+        if not dry_run:
+            self._lapse_missed_sessions(now)
         open_requests = [r for r in self.requests.values()
-                         if r.status in ("pending", "on_hold")]
+                         if r.status in ("pending", "on_hold")
+                         and not (r.series_id is not None
+                                  and r.preferred_start.date() < now.date())]
         waiting, skipped = self._in_scope(open_requests, request_ids, window_end)
         if not waiting:
             return {"ran": False,

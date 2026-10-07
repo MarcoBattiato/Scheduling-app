@@ -269,3 +269,51 @@ def test_the_api_refuses_a_bad_series(client):
         "first_start": "2030-01-01T09:00", "every_weeks": 0})
 
     assert response.status_code == 400
+
+
+# -- weeks the provider is away, and sessions that were never placed ---------
+
+
+def test_a_session_in_time_the_provider_has_off_is_skipped_not_raised(world):
+    world.provider_away(at(10, 0), at(11, 0))      # all of day 10, before it is raised
+    series = world.start_series("carol", "s60", at(3).isoformat(), every_weeks=1)
+
+    world.tick(now=later(7))
+    world.tick(now=later(14))
+
+    assert [r.preferred_start for r in sessions(world, series)] == [at(3), at(17)]
+    assert at(10).date() in series.raised, "and it is not tried again"
+
+
+def test_time_off_taken_after_a_session_was_raised_lapses_it(world):
+    series = world.start_series("carol", "s60", at(3).isoformat(), every_weeks=1)
+    one_off = world.submit_request("carol", "s60", at(3, 12).isoformat())
+
+    world.provider_away(at(3, 0), at(4, 0))
+
+    assert sessions(world, series)[0].status == "lapsed"
+    assert one_off.status == "pending", "a one-off request is still wanted"
+
+
+def test_a_session_not_placed_before_its_day_is_not_made_up_later(world):
+    """Last Friday's session placed next Tuesday is a second session that week."""
+    series = world.start_series("carol", "s60", at(3).isoformat(), every_weeks=1)
+    missed = sessions(world, series)[0]
+
+    world.tick(now=later(5))
+    world.propose(now=later(5), max_displacements=0)
+
+    assert missed.status == "lapsed"
+    assert not any(int(p["request_id"]) == missed.id
+                   for plan in world.plans.values() for p in plan.placements)
+    assert [r.status for r in sessions(world, series)][1:] == ["pending"], \
+        "the next session is raised as usual"
+
+
+def test_a_preview_leaves_a_missed_session_alone(world):
+    series = world.start_series("carol", "s60", at(3).isoformat(), every_weeks=1)
+    missed = sessions(world, series)[0]
+
+    world.propose(now=later(5), dry_run=True)
+
+    assert missed.status == "pending", "a preview changes nothing"

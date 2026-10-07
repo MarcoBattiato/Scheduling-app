@@ -267,6 +267,11 @@ class Gate:
             self._audit(session, spec.name, target, "refused", "no handler")
             raise Invalid(f"{spec.name} is not available here yet")
 
+        problem = self._precheck(session, command)
+        if problem:
+            self._audit(session, spec.name, target, "refused", problem)
+            raise Invalid(problem)
+
         if isinstance(decision, NeedsConfirmation):
             draft = Draft(
                 token=secrets.token_urlsafe(18), principal=session.principal,
@@ -382,6 +387,30 @@ class Gate:
                 return False
         return False
 
+    def _precheck(self, session: Session, command) -> Optional[str]:
+        """What can be known wrong before anything is drafted.
+
+        A draft is a card the person is asked to confirm; one that can only
+        fail ("Ask for a 1 around…") is worse than an error now, which the
+        assistant can read and correct. Only things that are not anybody's to
+        hide — the catalogue is public — so this cannot leak what the
+        ownership check disguises.
+        """
+        if not isinstance(command, (sc.SubmitRequest, sc.StartSeries)):
+            return None
+        service_id = command.service_id
+        if service_id is None:
+            return None
+        try:
+            service = self.world.catalogue.get_service(service_id)
+        except KeyError:
+            return f"no service called {service_id!r}; use service_list for what can be booked"
+        offered = service.active and (service.client_bookable
+                                      or session.principal.role is not Role.CLIENT)
+        if not offered:
+            return f"{service_id!r} cannot be booked; use service_list for what can be"
+        return None
+
     @staticmethod
     def _missing(target: Optional[Target]) -> str:
         kind = target.kind.value if target and target.kind is not TargetKind.NONE else "thing"
@@ -394,7 +423,11 @@ class Gate:
             result = HANDLERS[type(command)](self.world, command, session.principal)
         except KeyError as exc:
             self._audit(session, name, target, "failed", f"not found: {exc}")
-            raise NotFound(self._missing(target)) from None
+            # The target's existence was already checked, so a KeyError here
+            # is about something else the command named; say what, rather
+            # than blaming the target ("no such client" for a missing service).
+            said = exc.args[0] if exc.args and isinstance(exc.args[0], str) else ""
+            raise NotFound(said if said.startswith("no ") else self._missing(target)) from None
         except ValueError as exc:
             self._audit(session, name, target, "failed", str(exc))
             raise Invalid(str(exc)) from None
@@ -831,7 +864,7 @@ def _schema_for(tp) -> dict:
 # "four weeks ahead" one asked for "upcoming appointments" within today only.
 TOOL_HINTS = {
     "appointment.read": "Appointments in a time window. For 'next' or 'upcoming', use a window from now to four weeks ahead. Set include_history to see past and cancelled ones.",
-    "availability.read": "When someone is free, as time ranges, within a window. Use from now to two weeks ahead unless asked about specific dates.",
+    "availability.read": "The usual hours of the person named (for a client's assistant: the client's OWN hours, when they can come), as time ranges within a window. Not the practice's diary: it says nothing about whether the clinician is free. Use from now to two weeks ahead unless asked about specific dates.",
     "request.list": "Booking requests still waiting for a time.",
     "approval.list": "Questions waiting for an answer: offered times and proposed moves. Answer with approval_respond.",
     "service.list": "What can be booked, with how long each takes. Use a service_id from here when booking.",
@@ -839,10 +872,10 @@ TOOL_HINTS = {
     "plan.preview": "What a schedule WOULD look like at given settings. Changes nothing, so use it freely to compare. alpha 0 = closest to the times people asked for, 1 = fewest unusable gaps. max_displacements = how many booked clients may be asked to move.",
     "charge.list": "What is owed and what has been paid.",
     "client.summary": "A client's history at a glance: bookings, attendance, cancellations.",
-    "availability.set_weekly": "Replace the usual weekly hours entirely. Include every window to keep, not only the change. weekday 0 is Monday.",
+    "availability.set_weekly": "Replace the usual weekly hours entirely. Include every window to keep, not only the change. weekday 0 is Monday. Use it whenever someone describes when they can usually come (\"evenings Tue and Thu\"): without usual hours a request can never be given a time.",
     "availability.set_exception": "Change one date only: available true to add free time, false to mark time away.",
     "availability.clear_exception": "Undo a one-date change, giving its exact date, start and end.",
-    "request.submit": "Ask for a booking: a service and the time that would suit best. The practice then offers a time.",
+    "request.submit": "Ask for a booking: a service and the time that would suit best. This is a wish, not a reservation: the practice then offers a time, which may differ.",
     "request.withdraw": "Take back a waiting request.",
     "series.start": "Book the same service every week (or every_weeks weeks) from first_start, optionally until a date.",
     "series.stop": "Stop a repeating booking. Sessions already booked stay.",

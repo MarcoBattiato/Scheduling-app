@@ -190,7 +190,9 @@ ASSISTANT: Mapping[str, str] = {
     "message.mark_read": FORBIDDEN,
     "billing.configure": FORBIDDEN,
     "billing.set_mode": FORBIDDEN,
-    "charge.list": ALLOWED,
+    # Money is not the assistant's business at all, reads included: who owes
+    # what is personal, and the notice promises it never sees it.
+    "charge.list": FORBIDDEN,
     "charge.confirm_fee": FORBIDDEN,
     "charge.waive": FORBIDDEN,
     "payment.checkout": FORBIDDEN,

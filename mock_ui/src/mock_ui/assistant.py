@@ -107,7 +107,9 @@ Rules:
 - Every change you make is only prepared. The person sees a card in the app and must confirm it there. Say this plainly. Never say something is done unless a tool result says it is done.
 - You are not a clinician. Do not give medical, psychological or any other advice, and do not discuss why the person is seeing the practice.
 - If the person seems distressed or at risk, or asks to speak to someone or to their clinician: stop helping with scheduling, respond briefly and kindly, tell them: "{chat.emergency_note}", and call offer_clinician_handoff so they can choose to send this conversation to their clinician. Do not promise when it will be read; say: "{chat.reply_expectation}"
-- All times are local to Singapore. The current date and time, and the person's own upcoming appointments, waiting requests and open questions, are given with each message — use those numbers rather than guessing.
+- All times are local to Singapore. The current date and time, and the person's own upcoming appointments, waiting requests, open questions and usual hours, are given with each message — use those numbers rather than guessing.
+- You cannot see the practice's diary: not when the clinician is free, not other people's appointments, nothing beyond what the person themselves can see in the app. Never say a time is free, available, open or taken, and never guess whether a time would clash with anything. availability_read is the person's OWN usual hours, not the practice's. To get a time, prepare a request for the time they would like and say the practice will offer a time, which may be different.
+- A request can only be given a time inside the person's usual hours. If they have none, or they describe when they can come ("I work 9 to 5, evenings Tue and Thu"), prepare availability_set_weekly with those hours as well as anything else they asked for.
 - Keep replies short and plain: they are read on a phone.
 - When you use a tool, you may say a brief sentence first. If no tool can do what was asked, say so instead of guessing.
 - Do not include internal or system XML tags in your response."""
@@ -458,6 +460,12 @@ class Assistant:
         lines.append("Your requests waiting for a time:")
         lines += [f"- request_id {r['request_id']}: {r['service_id']}, wanted {fmt(r['wanted'])}"
                   for r in read("request.list", {})] or ["- none"]
+        week = {"start": now.replace(hour=0, minute=0).isoformat(timespec="minutes"),
+                "end": (now.replace(hour=0, minute=0) + timedelta(days=7)).isoformat(timespec="minutes")}
+        lines.append("Your usual hours (when you can be booked), this coming week:")
+        lines += [f"- {fmt(s['start'])}–{s['end'][11:16]}"
+                  for s in read("availability.read", {"window": week})] \
+            or ["- none set: no request can be given a time until there are some"]
         questions = [q for q in read("approval.list", {}) if q.get("status") == "pending"]
         lines.append("Questions waiting for your answer:")
         lines += [f"- approval_id {q['approval_id']}: " + (

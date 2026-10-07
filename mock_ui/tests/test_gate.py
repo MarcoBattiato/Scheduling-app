@@ -176,10 +176,43 @@ def test_a_preview_is_a_read_and_changes_nothing(world, gate, tmp_path):
     assert state_of(world, tmp_path) == before
 
 
-def test_money_is_never_offered_to_an_assistant(world):
+def test_money_is_never_offered_to_an_assistant(world, gate):
+    """Reads included: the notice promises the assistant never sees money."""
     for principal in (PROVIDER, client("dan")):
-        names = {t["command"] for t in tools_for(assistant(principal))}
-        assert not {n for n in names if n.startswith(("billing.", "payment.", "charge.confirm", "charge.waive"))}
+        session = assistant(principal)
+        names = {t["command"] for t in tools_for(session)}
+        assert not {n for n in names if n.startswith(("billing.", "payment.", "charge."))}
+        with pytest.raises(Forbidden):
+            gate.execute(session, build_command("charge.list", {}, session))
+    # The person themselves still sees their own.
+    assert isinstance(gate.execute(human(client("dan")),
+                                   build_command("charge.list", {}, human(client("dan")))).result, list)
+
+
+@pytest.mark.parametrize("name, field", [("request.submit", "preferred_start"),
+                                         ("series.start", "first_start")])
+def test_a_booking_for_a_service_that_does_not_exist_is_refused_not_drafted(world, gate, name, field):
+    """A card that can only fail on confirm is worse than an error the
+    assistant can read and correct."""
+    session = assistant(client("dan"))
+    when = (datetime.now() + timedelta(days=3)).replace(hour=10, minute=0).isoformat()
+
+    with pytest.raises(Invalid, match="service_list"):
+        gate.execute(session, build_command(name, {"service_id": "1", field: when}, session))
+
+    assert gate.pending(client("dan")) == []
+
+
+def test_a_failure_on_confirm_names_what_was_missing(world, gate):
+    session = assistant(client("dan"))
+    when = (datetime.now() + timedelta(days=3)).replace(hour=10, minute=0).isoformat()
+    outcome = gate.execute(session, build_command(
+        "request.submit", {"service_id": "session-60", "preferred_start": when}, session))
+    world.catalogue._services.pop("session-60")      # gone between drafting and confirming
+
+    with pytest.raises(NotFound) as caught:
+        gate.confirm(human(client("dan")), outcome.token)
+    assert "client" not in str(caught.value)
 
 
 # -- confirming ---------------------------------------------------------------
@@ -312,7 +345,7 @@ def flatten(value):
 
 
 @pytest.mark.parametrize("name", ["appointment.read", "availability.read", "request.list",
-                                  "approval.list", "charge.list", "client.summary", "service.list"])
+                                  "approval.list", "client.summary", "service.list"])
 def test_a_clients_assistant_sees_no_identifiers_at_all(world, gate, name):
     session = assistant(client("dan"))
     args = {"window": SPAN()} if name in ("appointment.read", "availability.read") else {}
@@ -323,8 +356,7 @@ def test_a_clients_assistant_sees_no_identifiers_at_all(world, gate, name):
     assert not leaked, f"{name} told the assistant {leaked}"
 
 
-@pytest.mark.parametrize("name", ["request.list", "approval.list", "plan.list", "plan.preview",
-                                  "charge.list"])
+@pytest.mark.parametrize("name", ["request.list", "approval.list", "plan.list", "plan.preview"])
 def test_the_providers_assistant_sees_pseudonyms_not_people(world, gate, name):
     world.propose(max_displacements=2)
     out = gate.execute(assistant(PROVIDER), build_command(name, {})).result
@@ -372,6 +404,34 @@ def test_the_screens_still_see_everything(world, gate):
 def test_a_clients_assistant_is_never_asked_who_it_acts_for(world):
     for tool in tools_for(assistant(client("dan"))):
         assert "client_id" not in tool["input_schema"]["properties"], tool["name"]
+
+
+# Everything a client's assistant can do, each one something the client can
+# already do or see on their own screens, about their own things. A tool that
+# answers from data the client cannot see — the practice's free time, whether a
+# time clashes with someone else — would let the assistant reveal it however
+# carefully it is worded. Adding to this list is a decision, not a side effect.
+CLIENT_SCREENS = {
+    "appointment.read", "appointment.cancel", "appointment.request_reschedule",
+    "approval.list", "approval.respond",
+    "availability.read", "availability.set_weekly", "availability.set_exception",
+    "availability.clear_exception",
+    "request.list", "request.submit", "request.withdraw",
+    "series.start", "series.stop",
+    "service.list", "client.summary",
+}
+
+
+def test_a_clients_assistant_can_do_only_what_the_clients_screens_can(world):
+    session = assistant(client("dan"))
+    assert {t["command"] for t in tools_for(session)} == CLIENT_SCREENS
+
+
+def test_a_clients_assistant_is_told_it_cannot_see_the_practices_diary(world):
+    from mock_ui.assistant import _client_prompt
+    prompt = _client_prompt(world)
+    assert "cannot see the practice's diary" in prompt
+    assert "Never say a time is free" in prompt
 
 
 def test_a_clients_assistant_is_not_told_provider_commands_exist(world):
