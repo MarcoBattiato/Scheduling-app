@@ -66,11 +66,11 @@ def test_a_booking_left_in_time_the_clinic_is_closed_is_told_once(world):
         "dan", datetime.now(), datetime.now() + timedelta(days=28)))
     day = dans.range.start.replace(hour=0, minute=0)
 
-    world.provider_away(day, day + timedelta(hours=23), action="flag")
+    world.provider_away(day, day + timedelta(hours=23), action="reschedule")
     world.tick()
     world.tick()
 
-    assert [n["kind"] for n in told(world, "dan")] == ["closed"], "told, and only once"
+    assert [n["kind"] for n in told(world, "dan")] == ["changed"], "told, and only once"
 
 
 def test_a_booking_made_by_hand_is_told(world):

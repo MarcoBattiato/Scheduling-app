@@ -32,7 +32,7 @@ const ui = {
   alpha: null,
   moves: null,
   picked: {},           // plan id -> {item key -> ticked}
-  away: {mode: "days", action: "reschedule"},   // a provider's absence is offered as a move
+  away: {mode: "days"},
   exceptionAvailable: false,
 };
 
@@ -244,6 +244,29 @@ async function api(path, body) {
     toast(data.detail || "That did not work");
     return null;
   }
+  return data;
+}
+
+// Taking time off over bookings: the server answers 409 with them, and the
+// provider chooses — ask them all to move, or keep the time. Nothing changes
+// until they choose; there is no "leave them" (a diary with bookings in time
+// nobody is working is the inconsistency this avoids).
+async function timeOff(path, body, key = "then") {
+  const send = (extra) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+                                       body: JSON.stringify({...body, ...extra})});
+  let res = await send({});
+  let data = await res.json().catch(() => ({}));
+  if (res.status === 409 && data.detail && data.detail.bookings) {
+    const list = data.detail.bookings.map((b) => `<li>${esc(nameOf(b.client_id))} · ${fmtWhen(b.start)}</li>`).join("");
+    const yes = await ask(`${plural(data.detail.bookings.length, "booking falls", "bookings fall")} in that time`,
+      `<ul style="margin:0 0 8px;padding-left:18px">${list}</ul>Ask ${data.detail.bookings.length === 1 ? "this client" : "all of them"}
+       to move to another time? Each keeps their booking until a new time is agreed. Otherwise the time is not taken off.`,
+      "Ask them to move", false, "Don't take the time off");
+    if (!yes) { toast("Nothing changed — the time stays as it was"); return null; }
+    res = await send({[key]: "reschedule"});
+    data = await res.json().catch(() => ({}));
+  }
+  if (!res.ok) { toast((data.detail && data.detail.message) || data.detail || "That did not work"); return null; }
   return data;
 }
 
@@ -1696,8 +1719,8 @@ function awayView() {
   const a = ui.away;
   const day = a.day || todayKey();
   return `${backLink()}<h1>Time off</h1>
-    <p class="lead">Marks the time as not working. Bookings already in it are
-      dealt with however you choose below.</p>
+    <p class="lead">Marks the time as not working. If anyone is booked in it, you choose:
+      ask them all to move, or don't take the time off.</p>
     <form data-form="away" class="card">
       <div class="segmented" style="margin-bottom:12px">
         <button type="button" data-act="away-mode" data-mode="days" aria-pressed="${a.mode === "days"}">Whole days</button>
@@ -1711,13 +1734,8 @@ function awayView() {
           <label class="field"><span>From</span><select name="from">${timeOptions("09:00", 0, 23 * 60 + 30)}</select></label>
           <label class="field"><span>Until</span><select name="to">${timeOptions("13:00", 0, 23 * 60 + 30)}</select></label>
         </div>`}
-      <span class="hint" style="margin:0 0 6px;display:block">Bookings already in that time</span>
-      <div class="choices">${[
-        ["reschedule", "Find them a new time", `Each client is told and offered another time ${windowWords()}; they keep their hour until it is agreed.`],
-        ["flag", "Leave them for now", "Clients are told the clinic is closed then; you decide later. Safest if you might have the date wrong."],
-        ["cancel", "Cancel them", "Nobody is offered anything else."],
-      ].map(([id, title, meta]) => `<button type="button" class="choice" data-act="away-action" data-action="${id}" aria-pressed="${a.action === id}">
-        <span><b>${title}</b><br><span class="meta">${meta}</span></span></button>`).join("")}</div>
+      <span class="hint" style="margin:0 0 6px;display:block">If anyone is booked in that time, you'll be asked
+        whether to move them ${windowWords()} or keep the time.</span>
       <div class="stack"><button class="btn block" type="submit">Mark me away</button></div>
     </form>`;
 }
@@ -2071,11 +2089,11 @@ function redrawSheet() {
 
 // A yes/no question, as a sheet rather than confirm(): a native dialog on a
 // phone gives no room to say what the choice actually does.
-function ask(title, body, yes, danger) {
+function ask(title, body, yes, danger, no = "Go back") {
   return new Promise((resolve) => {
-    openSheet(() => `<h3>${title}</h3><p>${body}</p><div class="stack">
+    openSheet(() => `<h3>${title}</h3><div class="sheet-body">${body}</div><div class="stack">
       <button class="btn ${danger ? "danger" : ""} block" data-act="answer" data-yes="1">${yes}</button>
-      <button class="btn ghost block" data-act="answer" data-yes="0">Go back</button></div>`);
+      <button class="btn ghost block" data-act="answer" data-yes="0">${no}</button></div>`);
     sheetResolve = resolve;
   });
 }
@@ -2119,16 +2137,9 @@ function switchTo(who) {
 }
 
 async function done(promise, message) {
-  const strandedBefore = isProvider() && state ? stranded().filter((a) => !a.pending).length : 0;
   const result = await promise;
   if (result !== null && message) toast(message);
   await refresh(true);
-  // A change to the provider's hours that leaves bookings outside them asks
-  // straight away what to do — and does nothing until they answer, so a
-  // mistyped hour reschedules nobody.
-  if (isProvider() && state && stranded().filter((a) => !a.pending).length > strandedBefore) {
-    openSheet(strandedSheet);
-  }
   return result;
 }
 
@@ -2305,13 +2316,13 @@ const ACTIONS = {
   "range-add": (d) => openSheet(() => rangeSheet(Number(d.weekday))),
   "range-remove": async (d) => {
     const ranges = ((state.weekly || {})[whose()] || []).filter((_, i) => i !== Number(d.index));
-    await done(api("/api/availability", {client_id: whose(), ranges}), "Hours updated");
+    await done(timeOff("/api/availability", {client_id: whose(), ranges}), "Hours updated");
   },
   "exception-add": (d) => { ui.exceptionAvailable = false; openSheet(() => exceptionSheet(d.day)); },
   "exception-kind": (d) => { ui.exceptionAvailable = d.on === "1"; redrawSheet(); },
   "exception-clear": async (d) => {
-    await done(api("/api/exceptions", {client_id: whose(), date: d.date, from_time: d.from, to_time: d.to,
-                                       available: d.kind === "add", clear: true}), "Back to usual");
+    await done(timeOff("/api/exceptions", {client_id: whose(), date: d.date, from_time: d.from, to_time: d.to,
+                                           available: d.kind === "add", clear: true}), "Back to usual");
   },
 
   // provider
@@ -2395,7 +2406,6 @@ const ACTIONS = {
   },
 
   "away-mode": (d) => { ui.away.mode = d.mode; render(true); },
-  "away-action": (d) => { ui.away.action = d.action; render(true); },
   "client-open": (d) => openSheet(() => clientSheet(d.id)),
   "service-toggle": async (d) => {
     await done(api(`/api/services/${encodeURIComponent(d.id)}/active?active=${d.active === "1"}`),
@@ -2522,13 +2532,13 @@ const FORMS = {
       else merged.push({...r});
     }
     const ranges = [...all.filter((r) => r.weekday !== weekday), ...merged];
-    const ok = await done(api("/api/availability", {client_id: whose(), ranges}), "Hours updated");
+    const ok = await done(timeOff("/api/availability", {client_id: whose(), ranges}), "Hours updated");
     if (ok) closeSheet();
   },
   exception: async (form) => {
     const f = form.elements;
     if (toMin(f.to.value) <= toMin(f.from.value)) { toast("The end has to be after the start"); return; }
-    const ok = await done(api("/api/exceptions", {client_id: whose(), date: f.date.value,
+    const ok = await done(timeOff("/api/exceptions", {client_id: whose(), date: f.date.value,
       from_time: f.from.value, to_time: f.to.value, available: ui.exceptionAvailable}), "Saved for that date");
     if (ok) closeSheet();
   },
@@ -2544,16 +2554,13 @@ const FORMS = {
       start = `${f.from_date.value}T${f.from.value}`;
       end = `${f.from_date.value}T${f.to.value}`;
     }
-    if (a.action === "cancel" && !await ask("Cancel everyone in that time?",
-        "Nobody is offered another time.", "Mark away and cancel", true)) return;
-    const outcome = await api("/api/provider/away", {start, end, action: a.action});
+    const outcome = await timeOff("/api/provider/away", {start, end}, "action");
     await refresh(true);
     if (!outcome) return;
     const affected = outcome.affected || 0;
     const skipped = (outcome.sessions_moved || []).length;
-    toast((affected ? `Marked away · ${plural(affected, "booking")} ${
-      {flag: "flagged", reschedule: "being moved", cancel: "cancelled"}[a.action]}` : "Marked away · nothing was booked")
-      + (skipped ? ` · ${plural(skipped, "repeating session")} to be offered another time (clients are told)` : ""));
+    toast((affected ? `Marked away · ${plural(affected, "client")} asked to move` : "Marked away · nothing was booked")
+      + (skipped ? ` · ${plural(skipped, "repeating session")} to be offered another time` : ""));
     ui.away.day = null;
     go("home");
   },

@@ -30,7 +30,10 @@ Layers, and the rule that keeps them apart:
 
 - `state.py` — the `World`: every behaviour lives here, and it is the only
   module that knows both packages.
-- `app.py` — HTTP only. **One request at a time touches the World**: the
+- `app.py` — HTTP only. **Automatic runs happen in the background**, every
+  `TICK_SECONDS`, not inside somebody's poll; a poll that finds the World busy
+  answers from the last snapshot instead of waiting (with no background clock,
+  as under the test client, a poll still ticks). **One request at a time touches the World**: the
   `autosave` middleware holds an asyncio lock (per event loop) around every
   `/api/`, `/calendar/` and `/pay/` request and its save. Routes run on a thread
   pool; without it a poll read the plans while another poll's tick added one,
@@ -115,13 +118,17 @@ against, so **`origin` has to be right**:
 - a move the scheduler imposed and the client merely accepted →
   `Origin.DISPLACED`
 
-**Changing availability never reschedules anybody.** Stranding is a query
-(`orphaned_appointments`), not an event: bookings left in time the provider no
-longer has are flagged and stay put, and acting on them is always explicit —
-either the provider asks (`rehouse_orphans` / `cancel_orphans`) or they have
-turned on `SchedulingPolicy.rehouse_orphans_on_run`. A run reports them either
-way. One mistyped date must not put half the week through a rescheduling
-nobody asked for.
+**Time off over bookings needs a decision first** (`TimeOffConflict`). The
+provider taking time away — the away screen, a single date, or new weekly
+hours — over future bookings changes *nothing* unless they say what happens to
+those bookings, and there are exactly two answers: ask them all to move
+(`then="reschedule"` / `action="reschedule"`), or do not take the time off. The
+API answers 409 with the bookings; the phone asks. So the diary never holds
+bookings in time nobody is working — the inconsistency that "flag them" and
+"cancel them" used to leave behind, and every rule written to cope with it.
+Nothing is rescheduled by a mistyped date either: nothing happens until the
+provider answers. `orphaned_appointments` / `rehouse_orphans` remain for data
+from before the rule and for the moment between asking and moving.
 
 **Time moves on.** A run offers nothing sooner than `World.OFFER_LEAD` (an hour)
 from now — the window is whole days, so it used to offer that morning; a booked
@@ -131,10 +138,7 @@ expires (`_expire_past_asks`, on every tick, answer and settle), so a late "yes"
 can never book the past; and an automatic run is skipped while a draft made
 from the same queue (`Plan.queue`) still waits for the provider.
 
-**The provider being away is offered as a move, not a cancellation**, unless
-they choose "cancel" (or "just flag", which tells the clients and leaves the
-decision for later): `provider_away`'s default action is `reschedule`. A
-session the clinic has to move — a booking in the time, or a repeating session
+**A session the clinic has to move** — a booking in the time, or a repeating session
 falling on it — gets `Request.latest` from `SchedulingPolicy.reschedule_window`
 (same week by default; same month, N days, or anywhere) and is only placed
 before it. When the window closes with nothing found, a one-off booking is
@@ -301,23 +305,21 @@ or a promise that might not hold ("the clinic will offer you another time") —
 and never give the reason in terms of anybody else. Confirmations too: a booking
 or move written down is confirmed to the client.
 
-**A change to the provider's hours that strands bookings asks the provider
-first** (the phone opens the stranded-bookings sheet: find new times / cancel /
-not now) and tells nobody until they choose; a mistyped hour must not start a
-rebooking. Choosing "find a new time" (or "leave them" from the away screen)
-is what tells the clients. A move for a session that has since happened or
+A move for a session that has since happened or
 been cancelled ends (`_end_stale_replacements`), and `_book` never cancels an
 appointment that is not still booked — that rewrote a session that took place.
 A client marking a time unavailable takes back any offer to it still in the air.
 
 **Bookings in closed time are the provider's to decide** (`needs_decision`,
 `decide`). From 48 hours before (`DECIDE_AHEAD`) — and after, if still
-undecided — any booking in time the provider is not working, whether "not now"
-was chosen or a new time was not found, is on a "needs your decision" card:
+undecided — any booking still in time the provider is not working — a new time not found
+yet — is on a "needs your decision" card (for 90 days after, at most):
 find a new time, keep it (marks the provider available then), or cancel it.
 Nothing happens to it on its own, and it never sits in the past looking as if
-it happened. A closure announced early raises the repeating sessions in it at
-once, and runs reach as far as their reschedule window to place them.
+it happened. A booking (booked far ahead, presumably for a reason) in time taken off is
+asked to move at once and planned at once, runs reaching as far as its
+reschedule window; repeating sessions not yet raised are not raised early —
+they come in with their week, with the same priority as everybody else's.
 
 **Answers that do not come**: `answer_within_hours` (48 by default) puts a "no
 answer" card on the provider's Home; "stop waiting" (or

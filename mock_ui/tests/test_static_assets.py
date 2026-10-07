@@ -815,7 +815,8 @@ def _world_with_stranded():
         world.set_weekly_availability(
             who, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)])
     world.store.book_appointment("alice", "s60", at(0, 9), at(0, 10))
-    world.provider_away(at(0, 0), at(0, 23), action="flag")
+    # Data from before time off needed a decision: still has to be shown.
+    world._apply_exception(PROVIDER, at(0, 0).date(), time(0, 0), time(23, 0), available=False)
     return world
 
 

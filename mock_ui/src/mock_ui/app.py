@@ -19,7 +19,8 @@ import html as html_lib
 import anyio.from_thread
 from fastapi import FastAPI, Form, HTTPException, Query, Request as HttpRequest
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,7 +28,7 @@ from calendar_store import Party
 from scheduling_contracts import Principal, Role, Session
 
 from . import assistant as assistant_mod, billing, calendar_sync, control, persistence, scenarios
-from .state import World
+from .state import TimeOffConflict, World
 
 STATIC = Path(__file__).parent / "static"
 # Not in every platform's table, and a manifest served as octet-stream is
@@ -96,6 +97,9 @@ class ClientIn(BaseModel):
 class WeeklyIn(BaseModel):
     client_id: str
     ranges: List[dict] = []
+    # For the provider: what happens to bookings the change would leave out
+    # ("reschedule"); none given and some fall out, nothing changes (409).
+    then: Optional[str] = None
 
 
 class RequestIn(BaseModel):
@@ -149,6 +153,7 @@ class ExceptionIn(BaseModel):
     to_time: str
     available: bool = True
     clear: bool = False
+    then: Optional[str] = None
 
 
 class ServiceIn(BaseModel):
@@ -174,11 +179,10 @@ class AwayIn(BaseModel):
     """The provider cannot work a stretch of time."""
     start: str
     end: str
-    # "reschedule" (the default) offers everyone affected another time within
-    # the reschedule window; "flag" marks the time off and leaves the bookings
-    # in it for the provider to decide about (the clients are told); "cancel"
-    # cancels them, only when the provider says so explicitly.
-    action: str = "reschedule"
+    # "reschedule": everyone booked in the time is asked to move (within the
+    # reschedule window). Left out with bookings in the time, nothing changes
+    # and the answer is a 409 listing them — move them, or keep the time.
+    action: Optional[str] = None
 
 
 class OrphansIn(BaseModel):
@@ -253,20 +257,58 @@ class SettingsIn(BaseModel):
 # -- routes ---------------------------------------------------------
 
 
-@app.get("/api/state")
-def get_state(as_: Optional[str] = Query(None, alias="as")):
-    # Every poll is also a chance for the provider's schedule policy to fire.
-    # Cheap, deterministic, and avoids a background thread for something a
-    # person is watching anyway.
-    world.tick()
-    if as_ and as_ != "provider":
+# -- the scheduler's clock, and polls that never wait for it -------------
+#
+# Automatic runs happen in the background (`_ticking`), not inside somebody's
+# poll: a solve can take seconds — tens of them on a busy machine — and with
+# the World locked meanwhile, every phone used to stall behind it. While the
+# World is busy, a poll gets the last snapshot made instead (`_last`), at
+# most one run old, which is what a poll every 2.5s is for anyway.
+TICK_SECONDS = 20.0
+_background = {"running": False}
+_last: dict = {}
+
+
+def _scoped(full: dict, person: Optional[str]) -> dict:
+    if person and person != "provider":
         # A client's screens get their own slice only: hiding the rest on
         # screen would still hand it to anyone opening developer tools.
         try:
-            return world.snapshot_for(as_)
+            return world.scope_snapshot(full, person)
         except KeyError:
             raise HTTPException(404, "no such person") from None
-    return world.snapshot()
+    return full
+
+
+@app.get("/api/state")
+def get_state(as_: Optional[str] = Query(None, alias="as")):
+    if not _background["running"]:
+        world.tick()          # no background clock (the tests): a poll is the clock
+    full = world.snapshot()
+    _last["full"], _last["world"] = full, world
+    return _scoped(full, as_)
+
+
+def _tick() -> None:
+    world.tick()
+    _last["full"], _last["world"] = world.snapshot(), world
+
+
+@app.on_event("startup")
+async def _start_ticking() -> None:
+    async def loop():
+        _background["running"] = True
+        try:
+            while True:
+                await asyncio.sleep(TICK_SECONDS)
+                async with _world_lock():
+                    try:
+                        await run_in_threadpool(_tick)
+                    except Exception as exc:              # never kill the clock
+                        world._note(f"scheduled check failed: {exc}")
+        finally:
+            _background["running"] = False
+    asyncio.get_running_loop().create_task(loop())
 
 
 @app.post("/api/clients")
@@ -278,9 +320,20 @@ def add_client(payload: ClientIn):
     return {"client": vars(client)}
 
 
+def _time_off_conflict(exc: "TimeOffConflict"):
+    """409 with the bookings, so the screen can ask: move them all, or keep
+    the time."""
+    raise HTTPException(409, {"message": str(exc), "bookings": exc.bookings}) from None
+
+
 @app.post("/api/availability")
 def set_availability(payload: WeeklyIn):
-    world.set_weekly_availability(payload.client_id, payload.ranges)
+    try:
+        world.set_weekly_availability(payload.client_id, payload.ranges, then=payload.then)
+    except TimeOffConflict as exc:
+        _time_off_conflict(exc)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     return {"ok": True}
 
 
@@ -293,10 +346,12 @@ def set_exception(payload: ExceptionIn):
         end = time.fromisoformat(payload.to_time)
         if payload.clear:
             world.clear_exception(payload.client_id, on_date, start, end,
-                                  payload.available)
+                                  payload.available, then=payload.then)
         else:
             world.set_exception(payload.client_id, on_date, start, end,
-                                payload.available)
+                                payload.available, then=payload.then)
+    except TimeOffConflict as exc:
+        _time_off_conflict(exc)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     return {"ok": True}
@@ -841,6 +896,8 @@ def provider_away(payload: AwayIn):
             datetime.fromisoformat(payload.end),
             payload.action,
         )
+    except TimeOffConflict as exc:
+        _time_off_conflict(exc)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
 
@@ -1025,6 +1082,15 @@ async def autosave(request, call_next):
     """
     if request.url.path in _UNLOCKED or not request.url.path.startswith(("/api/", "/calendar/", "/pay/")):
         return await call_next(request)
+    if request.url.path == "/api/state" and _world_lock().locked() \
+            and _last.get("world") is world:
+        # Busy (a run, most likely): answer from the last snapshot rather
+        # than queueing behind it.
+        try:
+            body = _scoped(_last["full"], request.query_params.get("as"))
+        except HTTPException as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        return JSONResponse(jsonable_encoder(body))
     async with _world_lock():                        # one at a time; see _world_lock
         response = await call_next(request)
         if request.method == "POST" and response.status_code < 400 \

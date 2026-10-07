@@ -449,3 +449,4 @@ p.because { margin: 8px 4px; }
 .bubble.typing { opacity: .7; font-style: italic; }
 .confirm-card p { font-size: 16px; }
 .row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.sheet-body { margin: 0 0 12px; }

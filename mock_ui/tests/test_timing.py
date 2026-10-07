@@ -165,12 +165,12 @@ def test_a_day_off_moves_weekly_sessions_within_the_week_not_away(world):
     assert placed["start"].date() != day.date() and placed["end"] <= session.latest
 
 
-def test_a_day_off_is_offered_as_a_move_by_default(world):
+def test_a_day_off_over_a_booking_asks_the_client_to_move(world):
     booked = world.store.book_appointment("bob", "s60", on(3, 10), on(3, 11))
 
-    result = world.provider_away(on(3, 0), on(3, 23, 59))
+    result = world.provider_away(on(3, 0), on(3, 23, 59), action="reschedule")
 
-    assert result["rehoused"], "the provider has to say 'cancel' for a cancellation"
+    assert result["rehoused"]
     request = next(r for r in world.requests.values() if r.replaces_appointment_id == booked.id)
     assert request.latest == world.reschedule_deadline(booked.range.start) and request.keep_looking
     assert world.store.get_appointment(booked.id).status.value == "booked", "kept until moved"
@@ -179,7 +179,7 @@ def test_a_day_off_is_offered_as_a_move_by_default(world):
 
 def test_a_booking_with_no_time_left_in_its_window_is_looked_for_further_out(world):
     booked = world.store.book_appointment("bob", "s60", on(3, 10), on(3, 11))
-    world.provider_away(on(3, 0), on(3, 23, 59))
+    world.provider_away(on(3, 0), on(3, 23, 59), action="reschedule")
     request = next(r for r in world.requests.values() if r.replaces_appointment_id == booked.id)
     request.latest = on(0, 0)                             # the window has closed
 
@@ -222,6 +222,7 @@ def test_many_phones_polling_at_once_neither_crash_nor_run_twice(world, monkeypa
         world.submit_request("alice" if i % 2 else "bob", "s60", on(1 + i % 3, 9 + i % 3).isoformat())
     monkeypatch.setattr(app_module, "world", world)
     monkeypatch.setattr(app_module, "_gate", None)
+    monkeypatch.setattr(app_module, "TICK_SECONDS", 0.2)      # runs happen in the background
 
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app_module.app, port=port, log_level="error"))
@@ -238,12 +239,17 @@ def test_many_phones_polling_at_once_neither_crash_nor_run_twice(world, monkeypa
                 lambda i: httpx.get(f"http://127.0.0.1:{port}/api/state"
                                     + ("" if i % 2 else "?as=alice"), timeout=60).status_code,
                 range(30)))
+        for _ in range(200):                       # the background clock runs it
+            if world.plans:
+                break
+            clock.sleep(0.05)
+        clock.sleep(1)                             # and does not run it again
     finally:
         server.should_exit = True
         thread.join(10)
 
     assert codes == [200] * 30
-    assert len(world.plans) == 1, "one run, not one per poll"
+    assert len(world.plans) == 1, "one run, in the background, not one per poll"
 
 
 # -- a move for a session that has since happened -------------------------------------
@@ -253,8 +259,7 @@ def test_a_move_for_a_session_that_has_happened_ends_and_never_rewrites_it(world
     """The session went ahead before a new time was found. Placing the move
     afterwards added a session and cancelled the one that took place."""
     booked = world.store.book_appointment("bob", "s60", on(1, 10), on(1, 11))
-    world.provider_away(on(1, 0), on(1, 23, 59), action="flag")
-    (request_id,) = world.rehouse_orphans()
+    (request_id,) = world.provider_away(on(1, 0), on(1, 23, 59), action="reschedule")["rehoused"]
     request = world.requests[request_id]
     world.store.mark_attendance(booked.id, attended=True)       # it happened after all
 
@@ -284,31 +289,32 @@ def test_a_solver_that_runs_out_of_time_changes_nothing(world, monkeypatch):
 
 
 def _stranded_tomorrow(world):
+    """Hours taken away over a booking, the client asked to move, and no new
+    time found (nothing else is free)."""
     booked = world.store.book_appointment("bob", "s60", on(1, 10), on(1, 11))
-    world.set_weekly_availability(PROVIDER, [])          # e.g. hours changed, "not now"
+    world.set_weekly_availability(PROVIDER, [], then="reschedule")
     return booked
 
 
-def test_a_booking_left_in_closed_time_comes_to_the_provider_before_the_day(world):
+def test_a_booking_still_in_closed_time_comes_to_the_provider_before_the_day(world):
     booked = _stranded_tomorrow(world)
 
     (item,) = world.needs_decision()
 
-    assert item["appointment_id"] == booked.id and not item["past"]
+    assert item["appointment_id"] == booked.id and not item["past"] and item["being_moved"]
     assert world.store.get_appointment(booked.id).status.value == "booked", "nothing by itself"
-    assert world.notices_for("bob") == [], "nobody is told before the provider decides"
 
 
 def test_far_off_ones_wait_until_48_hours_before(world):
     world.store.book_appointment("bob", "s60", on(4, 10), on(4, 11))
-    world.set_weekly_availability(PROVIDER, [])
+    world.set_weekly_availability(PROVIDER, [], then="reschedule")
 
     assert world.needs_decision() == []
 
 
 @pytest.mark.parametrize("how, status, told", [
-    ("cancel", "cancelled_by_provider", ["cancelled"]),
-    ("keep", "booked", []),          # never told anything was wrong, so nothing to undo
+    ("cancel", "cancelled_by_provider", ["cancelled", "changed"]),
+    ("keep", "booked", ["confirmed", "changed"]),
 ])
 def test_the_provider_decides_and_the_client_is_told(world, how, status, told):
     booked = _stranded_tomorrow(world)
@@ -331,7 +337,6 @@ def test_a_past_one_stays_until_decided_rather_than_looking_as_if_it_happened(wo
 
 def test_a_rehouse_that_finds_nothing_is_still_the_providers_to_decide(world):
     booked = _stranded_tomorrow(world)
-    world.decide(booked.id, "rehouse")
 
     (item,) = world.needs_decision()
     assert item["being_moved"]
@@ -342,22 +347,37 @@ def test_a_rehouse_that_finds_nothing_is_still_the_providers_to_decide(world):
     assert [n["kind"] for n in world.notices_for("bob")] == ["cancelled", "changed"]
 
 
-# -- R3: a closure announced early is planned early -----------------------------------------
+# -- a closure announced early: bookings move now, routines come in on time -------
 
 
-def test_a_closure_announced_early_looks_for_new_times_at_once(world):
+def test_a_closure_announced_early_moves_what_is_booked_now(world):
+    """Booked far ahead, presumably for a reason: asked to move at once, and
+    planned at once, even beyond the usual window."""
+    world.policy.horizon_days = 3
+    booked = world.store.book_appointment("bob", "s60", on(9, 10), on(9, 11))
+
+    (request_id,) = world.provider_away(on(9, 0), on(9, 23, 59), action="reschedule")["rehoused"]
+
+    world.propose()
+    assert any(p["request_id"] == request_id for p in draft(world).placements)
+    assert world.store.get_appointment(booked.id).status.value == "booked", "kept until moved"
+
+
+def test_a_closure_announced_early_leaves_weekly_sessions_to_their_week(world):
+    """Not raised early: they come in with their week, with the same priority
+    as everybody else's — and are offered another day in that week then."""
     world.policy.horizon_days = 3
     day = on(9, 10)
     series = world.start_series("alice", "s60", (day - timedelta(days=14)).isoformat(), every_weeks=1)
 
     world.provider_away(day.replace(hour=0), day.replace(hour=23, minute=59))
 
+    assert not [r for r in world.requests.values()
+                if r.series_id == series.id and r.preferred_start == day]
+    world.tick(now=day - timedelta(days=2))                 # its week comes into view
     session = next(r for r in world.requests.values()
                    if r.series_id == series.id and r.preferred_start == day)
     assert session.latest == world.reschedule_deadline(day)
-    world.propose()
-    assert any(p["request_id"] == session.id for p in draft(world).placements), \
-        "planned now, beyond the usual window, inside its own week"
 
 
 # -- R6: a client's own move respects what is promised ---------------------------------------
@@ -375,9 +395,42 @@ def test_a_client_cannot_move_into_a_slot_offered_to_somebody_else(world):
 
 
 def test_keeping_one_the_client_was_told_about_tells_them_it_goes_ahead(world):
-    booked = _stranded_tomorrow(world)
-    world.decide(booked.id, "rehouse")             # "a new time is being looked for"
+    booked = _stranded_tomorrow(world)             # "a new time is being looked for"
 
     world.decide(booked.id, "keep")
 
     assert world.notices_for("bob")[0]["text"].endswith("goes ahead as booked.")
+
+
+def test_a_poll_does_not_wait_for_a_slow_run(world, monkeypatch):
+    """A run holding the World for seconds (a busy machine) must not stall
+    every phone: polls answer from the last snapshot meanwhile."""
+    import uvicorn
+    from mock_ui import app as app_module
+
+    monkeypatch.setattr(app_module, "world", world)
+    monkeypatch.setattr(app_module, "_gate", None)
+    monkeypatch.setattr(app_module, "TICK_SECONDS", 0.5)
+    monkeypatch.setattr(app_module, "_tick", lambda: clock.sleep(4))   # a slow run
+
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app_module.app, port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        clock.sleep(0.05)
+    try:
+        url = f"http://127.0.0.1:{port}/api/state?as=alice"
+        assert httpx.get(url, timeout=10).status_code == 200      # before the run starts
+        clock.sleep(1)                                              # the run is now going
+        began = clock.monotonic()
+        response = httpx.get(url, timeout=10)
+        waited = clock.monotonic() - began
+    finally:
+        server.should_exit = True
+        thread.join(10)
+
+    assert response.status_code == 200 and response.json()["clients"][0]["id"] == "alice"
+    assert waited < 1.5, f"a poll waited {waited:.1f}s behind a run"

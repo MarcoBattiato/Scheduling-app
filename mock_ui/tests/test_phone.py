@@ -96,7 +96,7 @@ def called_off():
     tuesday = scenarios._at(scenarios.next_monday(), 1, 9)
     _one_off_becomes_weekly(world)
     world.start_series("carol", "session-60", tuesday.isoformat(), every_weeks=1)
-    world.provider_away(tuesday.replace(hour=0), tuesday.replace(hour=23))
+    world.provider_away(tuesday.replace(hour=0), tuesday.replace(hour=23), action="reschedule")
     dans = next(a for a in world.store.appointments_for(
         "dan", datetime.now(), datetime.now() + timedelta(days=28)))
     world.cancel_appointment(dans.id, by=Party.PROVIDER)
