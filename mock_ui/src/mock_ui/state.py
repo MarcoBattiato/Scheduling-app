@@ -93,6 +93,8 @@ class Request:
     # provider until each has seen it (`seen_by`: "client", "provider").
     lapsed_reason: str = ""
     seen_by: set = field(default_factory=set)
+    # The client has been told no time has been found yet (once, not per run).
+    told_unplaced: bool = False
 
 
 def every(weeks: int) -> str:
@@ -210,6 +212,26 @@ class Approval:
 
 
 @dataclass
+class Notice:
+    """Something that happened to a client's booking without them doing it.
+
+    Nothing about a client's appointments changes behind their back: an offer
+    taken back, a move no longer needed, a session called off, a booking made
+    or cancelled by the clinic, a request still without a time, an
+    appointment in time the clinic is closed. Each is a notice on their Home
+    until they press OK. Worded for the client, and never says why in terms of
+    anybody else ("another client refused") — that is somebody else's
+    business.
+    """
+    id: int
+    client_id: str
+    kind: str            # skipped | cancelled | withdrawn | booked | unplaced | closed
+    text: str
+    at: datetime
+    seen: bool = False
+
+
+@dataclass
 class Plan:
     """A solver result, held until the provider and then the clients agree.
 
@@ -250,9 +272,11 @@ class World:
         # feed's address. The address is the only credential a subscribed
         # calendar app can present, so it has to be unguessable.
         self.feed_tokens: Dict[str, str] = {}
-        # Bookings the practice cancelled that the client has not yet been
-        # shown. A cancellation is never only a line in their history.
-        self.cancel_notices: set = set()
+        # What happened to each client's bookings without them doing it —
+        # see Notice. `told_closed`: appointments already reported as being
+        # in time the clinic is closed, so a poll does not repeat it.
+        self.notices: Dict[int, Notice] = {}
+        self.told_closed: set = set()
         # Every command that went through the gate (control.py): who, through
         # which channel, in which conversation, and what came of it.
         self.audit: List[dict] = []
@@ -634,6 +658,12 @@ class World:
                     break
                 if start <= now or start.date() in series.raised:
                     continue
+                if self._already_covered(series.client_id, start):
+                    # They are already booked (or already asking) for that day —
+                    # typically "keep my Tuesday slot going" from the slot they
+                    # have. A second request would book a second session.
+                    series.raised.add(start.date())
+                    continue
                 if self._provider_away_at(start, series.service_id):
                     # The provider has taken that time off. Raising it would
                     # only park it, and a parked session gets placed in some
@@ -682,9 +712,76 @@ class World:
     def _lapse(self, request: Request, reason: str) -> None:
         request.status = "lapsed"
         request.lapsed_reason = reason
-        request.seen_by = set()
+        request.seen_by = {"client"}            # the client's copy is a Notice
+        why = {self.SKIP_AWAY: "the clinic is closed that day",
+               self.SKIP_FULL: "you already have as many sessions that week as planned",
+               self.SKIP_UNPLACED: "no time could be found for it before the day"}[reason]
+        self._tell(request.client_id, "skipped",
+                   f"Your repeating session on {self._when(request.preferred_start)} won't "
+                   f"take place: {why}. Your other sessions carry on as usual.")
         self._note(f"{request.client_id}'s {request.preferred_start:%a %d %b} session "
                    f"will not happen — {self.SKIP_WORDS[reason]}")
+
+    # -- telling clients ------------------------------------------------
+
+    @staticmethod
+    def _when(moment: datetime) -> str:
+        return f"{moment:%a %d %b} at {moment:%H:%M}"
+
+    def _tell(self, client_id: str, kind: str, text: str) -> Notice:
+        notice = Notice(id=next(self._ids), client_id=client_id, kind=kind,
+                        text=text, at=datetime.now())
+        self.notices[notice.id] = notice
+        return notice
+
+    def notices_for(self, client_id: str) -> List[dict]:
+        """What this client has not yet said they have seen, newest first."""
+        return [{"id": n.id, "client_id": n.client_id, "kind": n.kind, "text": n.text,
+                 "at": n.at.isoformat()}
+                for n in sorted(self.notices.values(), key=lambda n: n.id, reverse=True)
+                if n.client_id == client_id and not n.seen]
+
+    def acknowledge_notice(self, notice_id: int, client_id: Optional[str] = None) -> None:
+        notice = self.notices[notice_id]
+        if client_id is not None and notice.client_id != client_id:
+            raise KeyError("no such notice")
+        notice.seen = True
+
+    def _tell_taken_back(self, approval: "Approval") -> None:
+        """An offer or a move ask withdrawn by us. Said plainly; never why."""
+        agreed = approval.status == "accepted"
+        if approval.kind == "booking":
+            what = ("The time you agreed to" if agreed else "The time we offered you")
+            self._tell(approval.client_id, "withdrawn",
+                       f"{what}, {self._when(approval.now_start)}, can't go ahead after all. "
+                       f"Your request is still open, and the clinic will offer you another time.")
+        else:
+            what = ("The move you agreed to" if agreed else "We no longer need to move your appointment")
+            self._tell(approval.client_id, "withdrawn",
+                       (f"{what}, to {self._when(approval.now_start)}, won't happen. "
+                        if agreed else f"{what}. ")
+                       + f"Your appointment stays on {self._when(approval.was_start)}.")
+
+    def _tell_unplaced(self, request: "Request") -> None:
+        if request.told_unplaced or request.status != "on_hold":
+            return
+        request.told_unplaced = True
+        self._tell(request.client_id, "unplaced",
+                   f"We haven't found a time yet for your request around "
+                   f"{self._when(request.preferred_start)}. It stays open, and the clinic "
+                   f"will offer a time as soon as one comes up.")
+
+    def _tell_closed(self) -> None:
+        """Bookings left in time the clinic is closed. Flagged, not moved — so
+        the client must hear it, or they may turn up to a closed door."""
+        for appointment in self.orphaned_appointments():
+            if appointment.id in self.told_closed or appointment.client_id == PROVIDER:
+                continue
+            self.told_closed.add(appointment.id)
+            self._tell(appointment.client_id, "closed",
+                       f"The clinic is not available at the time of your appointment on "
+                       f"{self._when(appointment.range.start)}. It stays booked for now; "
+                       f"the clinic will be in touch about another time.")
 
     def acknowledge_skipped(self, request_id: int, who: str) -> None:
         """`who` ("client" or "provider") has seen that this session is off."""
@@ -694,6 +791,16 @@ class World:
         if who not in ("client", "provider"):
             raise ValueError("who must be client or provider")
         request.seen_by.add(who)
+
+    def _already_covered(self, client_id: str, start: datetime) -> bool:
+        """Has this client already a booking, or an open request, on that day?"""
+        day = (datetime.combine(start.date(), time.min),
+               datetime.combine(start.date() + timedelta(days=1), time.min))
+        if self.store.appointments_for(client_id, *day):
+            return True
+        return any(r.client_id == client_id and r.preferred_start.date() == start.date()
+                   and r.status in ("pending", "on_hold", "awaiting_client")
+                   for r in self.requests.values())
 
     def _provider_away_at(self, start: datetime, service_id: str) -> bool:
         """Has the provider marked this slot as time off?
@@ -757,12 +864,10 @@ class World:
         if by is Party.CLIENT and not as_move:
             self._maybe_propose_late_fee(appointment, now or datetime.now())
         if by is not Party.CLIENT and not as_move and appointment.client_id != PROVIDER:
-            self.cancel_notices.add(appointment.id)
+            self._tell(appointment.client_id, "cancelled",
+                       f"The clinic has cancelled your {self._service_name(appointment.service_type_id)} "
+                       f"on {self._when(appointment.range.start)}.")
         return appointment
-
-    def acknowledge_cancellation(self, appointment_id: int) -> None:
-        """The client has seen that the practice cancelled this booking."""
-        self.cancel_notices.discard(appointment_id)
 
     def mark_attendance(self, appointment_id: int, attended: bool) -> Appointment:
         """The provider recording whether the client turned up."""
@@ -978,6 +1083,8 @@ class World:
 
         stranded = [a.id for a in self.orphaned_appointments()
                     if a.range.start < end and start < a.range.end]
+        if action != "cancel":
+            self._tell_closed()
         self._note(f"provider away {start:%a %d %b %H:%M} – {end:%a %d %b %H:%M}"
                    + (f": {len(stranded)} appointment(s) now stranded"
                       if stranded else ""))
@@ -1099,6 +1206,8 @@ class World:
             locked=lock, preferred_start=request.preferred_start,
         )
         request.status = "placed"
+        self._tell(request.client_id, "booked",
+                   f"The clinic has booked your {service.name} for {self._when(start)}.")
         free = self.availability_segments(PROVIDER, start.date(),
                                           end.date() + timedelta(days=1))
         outside = not any(s.start <= start and end <= s.end for s in free)
@@ -1110,7 +1219,7 @@ class World:
         return booked
 
     def request_reschedule(
-        self, appointment_id: int, preferred_start: str, release_slot: bool
+        self, appointment_id: int, preferred_start: Optional[str], release_slot: bool
     ) -> Request:
         """A client asking to be moved, without naming where.
 
@@ -1133,6 +1242,15 @@ class World:
         appointment = self.store.get_appointment(appointment_id)
         if not appointment.occupies_slot:
             raise ValueError("that appointment is not live")
+        # "Move it to when it already is" is not a move. Accepted, it blocked
+        # the client's corrected request ("already waiting to be moved") and a
+        # run could then move them away although they never asked to leave.
+        # No preference at all (None) is fine: "somewhere near where it is".
+        if preferred_start is None:
+            preferred_start = appointment.range.start.isoformat()
+        elif _parse_dt(preferred_start) == appointment.range.start:
+            raise ValueError("that is when the appointment already is; "
+                             "choose the time you would like to move it to")
         if any(r.replaces_appointment_id == appointment_id
                and r.status in ("pending", "on_hold", "awaiting_client")
                for r in self.requests.values()):
@@ -1182,6 +1300,7 @@ class World:
         # Repeating bookings first, so a session that just came into the window
         # is in the queue the policy is about to look at.
         self.raise_due_sessions(now)
+        self._tell_closed()
         trigger = due(
             self.policy, now, self.last_run,
             [r.preferred_start
@@ -1433,6 +1552,7 @@ class World:
         for request in waiting:
             if request.id not in placed_ids:
                 request.status = "on_hold"
+                self._tell_unplaced(request)
 
         if not result.placements and not result.displacements:
             self._note(f"scheduler ran ({reason}) — nothing could be placed")
@@ -1520,6 +1640,7 @@ class World:
                 self.requests[placement["request_id"]].status = "awaiting_client"
             else:
                 self.requests[placement["request_id"]].status = "on_hold"
+                self._tell_unplaced(self.requests[placement["request_id"]])
         for displacement in plan.displacements:
             if plan.item_key("reschedule", displacement["appointment_id"]) in chosen:
                 self._ask(plan, "reschedule", displacement["client_id"],
@@ -1673,6 +1794,7 @@ class World:
                 continue
             if approval.status not in ("pending", "accepted"):
                 continue
+            self._tell_taken_back(approval)
             approval.status = "withdrawn"
             dropped += 1
             if approval.kind == "booking":
@@ -1872,6 +1994,7 @@ class World:
                              and move.appointment_id in a.depends_on]
                 if needed_by and all(a.status in self.DEAD and not a.applied
                                       for a in needed_by):
+                    self._tell_taken_back(move)
                     move.status = "withdrawn"
                     changed = True
                     self._note(f"stopped asking {move.client_id} to move — "
@@ -1890,6 +2013,7 @@ class World:
         Final: the ask is withdrawn, so its slot stops being held and a later
         settlement cannot pick an old "yes" back up and write it down.
         """
+        self._tell_taken_back(approval)
         approval.status = "withdrawn"
         if approval.kind == "booking":
             request = self.requests.get(approval.request_id)
@@ -1916,7 +2040,7 @@ class World:
                     or refused.appointment_id not in other.depends_on):
                 continue
             if other.status == "pending":
-                other.status = "withdrawn"
+                other.status = "withdrawn"        # _strand tells them, once
                 self._note(f"took back {other.client_id}'s offer — it needed "
                            f"{refused.client_id} to move")
             elif other.status != "accepted":
@@ -1956,6 +2080,9 @@ class World:
             request = self.requests.get(approval.request_id)
             if request:
                 request.status = "on_hold"
+            # Anybody asked to move only to make room for this offer is now
+            # being disrupted for nothing; stop asking them (and tell them).
+            self._drop_moves_nobody_needs(approval.plan_id)
 
     # -- reading -----------------------------------------------------
 
@@ -2112,7 +2239,9 @@ class World:
                  "lapsed_reason": r.lapsed_reason, "seen_by": sorted(r.seen_by)}
                 for r in self.requests.values()
             ],
-            "cancel_notices": sorted(self.cancel_notices),
+            "notices": [{"id": n.id, "client_id": n.client_id, "kind": n.kind,
+                         "text": n.text, "at": n.at.isoformat()}
+                        for n in self.notices.values() if not n.seen],
             "series": [
                 {"id": x.id, "client_id": x.client_id, "service_id": x.service_id,
                  "service": self._service_name(x.service_id),
@@ -2173,6 +2302,46 @@ class World:
                 "last_run": self.last_run.isoformat() if self.last_run else None,
             },
             "log": self.log[-40:],
+        }
+
+    def snapshot_for(self, client_id: str, horizon_days: int = 28) -> dict:
+        """What one client's own screens may hold: their things, nobody else's.
+
+        Not a filter on the display — a filter on what is sent. A screen that
+        hides the rest still hands it to anyone who opens the browser's
+        developer tools, and the provider's hours and other people's bookings
+        are exactly what a client must never be able to read off (nor work
+        out — the same rule as their assistant's). Kept: their own bookings,
+        requests, questions, repeating bookings, hours, charges and notices;
+        the catalogue they may book; the practice's public settings. Dropped:
+        everyone else, the provider's time, plans, the scheduler, the log.
+        """
+        if client_id not in self.clients:
+            raise KeyError(f"no client called {client_id!r}")
+        full = self.snapshot(horizon_days)
+        mine = lambda rows: [r for r in rows if r.get("client_id") == client_id]  # noqa: E731
+        appointments = [{k: v for k, v in a.items() if k != "notes"}   # the clinician's
+                        for a in mine(full["appointments"])]
+        charges = mine(full["charges"])
+        charge_ids = {c["id"] for c in charges}
+        return {
+            "today": full["today"], "horizon": full["horizon"],
+            "practice_name": full["practice_name"],
+            "assistant": full["assistant"], "chat": full["chat"],
+            "billing": full["billing"],
+            "clients": [c for c in full["clients"] if c["id"] == client_id],
+            "services": [x for x in full["services"] if x["active"] and x["client_bookable"]],
+            "appointments": appointments,
+            "availability": {client_id: full["availability"][client_id]},
+            "exceptions": {client_id: full["exceptions"][client_id]},
+            "weekly": {client_id: full["weekly"][client_id]},
+            "requests": mine(full["requests"]),
+            "series": mine(full["series"]),
+            "approvals": mine(full["approvals"]),
+            "charges": charges,
+            "payments": [x for x in full["payments"] if x["charge_id"] in charge_ids],
+            "feeds": {k: v for k, v in full["feeds"].items() if k == client_id},
+            "notices": self.notices_for(client_id),
         }
 
     def _service_name(self, service_id: str) -> str:

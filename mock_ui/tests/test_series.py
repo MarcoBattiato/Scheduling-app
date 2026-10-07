@@ -247,7 +247,11 @@ def client():
 
 def test_the_api_starts_and_stops_a_series(client):
     from mock_ui import scenarios
-    tuesday = scenarios._at(scenarios.next_monday(), 1, 9).isoformat()
+    # A day Carol has not already asked for — that request would cover it.
+    tuesday = scenarios._at(scenarios.next_monday(), 1, 10).isoformat()
+    for r in client.get("/api/state").json()["requests"]:
+        if r["client_id"] == "carol":
+            client.post(f"/api/requests/{r['id']}/withdraw")
 
     started = client.post("/api/series", json={
         "client_id": "carol", "service_id": "session-60",
@@ -332,23 +336,28 @@ def test_a_session_that_will_not_happen_is_shown_to_both_until_seen(world, tmp_p
 
     assert result["sessions_skipped"] == [skipped.id], "the provider is told at once"
     shown = next(r for r in world.snapshot()["requests"] if r["id"] == skipped.id)
-    assert shown["status"] == "lapsed" and shown["lapsed_reason"] and shown["seen_by"] == []
+    assert shown["status"] == "lapsed" and shown["lapsed_reason"] == "away"
+    assert "provider" not in shown["seen_by"], "the provider has still to see it"
+    told = world.notices_for("carol")
+    assert [n["kind"] for n in told] == ["skipped"] and "closed that day" in told[0]["text"]
 
-    world.acknowledge_skipped(skipped.id, "client")
+    world.acknowledge_notice(told[0]["id"], "carol")
     path = tmp_path / "s.json"
     persistence.save(world, path)
     again = persistence.load(path)
-    assert again.requests[skipped.id].seen_by == {"client"}, "the provider has still to see it"
+    assert again.notices_for("carol") == [], "seen stays seen across a restart"
+    assert "provider" not in again.requests[skipped.id].seen_by
 
 
 def test_a_booking_the_practice_cancels_is_shown_to_the_client_until_seen(world):
     appointment = world.store.book_appointment("carol", "s60", at(2), at(2, 11))
 
     world.cancel_appointment(appointment.id, by=Party.PROVIDER)
-    assert world.snapshot()["cancel_notices"] == [appointment.id]
+    told = world.notices_for("carol")
+    assert [n["kind"] for n in told] == ["cancelled"]
 
-    world.acknowledge_cancellation(appointment.id)
-    assert world.snapshot()["cancel_notices"] == []
+    world.acknowledge_notice(told[0]["id"], "carol")
+    assert world.notices_for("carol") == []
 
 
 def test_the_client_cancelling_or_a_move_needs_no_notice(world):
@@ -358,4 +367,14 @@ def test_the_client_cancelling_or_a_move_needs_no_notice(world):
     world.cancel_appointment(mine.id, by=Party.CLIENT)
     world.cancel_appointment(moving.id, by=Party.PROVIDER, as_move=True)
 
-    assert world.cancel_notices == set()
+    assert world.notices_for("carol") == []
+
+
+def test_a_series_from_a_slot_already_booked_does_not_book_it_twice(world):
+    """"Keep my Tuesday slot going": the session they have is the first one."""
+    world.store.book_appointment("carol", "s60", at(3), at(3, 11))
+
+    series = world.start_series("carol", "s60", at(3).isoformat(), every_weeks=1)
+    world.tick(now=later(7))
+
+    assert [r.preferred_start for r in sessions(world, series)] == [at(10)]

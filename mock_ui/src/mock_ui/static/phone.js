@@ -248,9 +248,15 @@ async function api(path, body) {
 }
 
 let chatText = "";
+let people = [];   // [{id, name}] for "view as" — the stand-in for signing in
 
 async function refresh(force) {
-  const text = await (await fetch("/api/state")).text();
+  // A client's screens are sent their own slice only (see World.snapshot_for);
+  // "view as" has its own short list, standing in for signing in.
+  const text = await (await fetch(`/api/state?as=${encodeURIComponent(me)}`)).text();
+  if (!people.length || force) {
+    try { people = await (await fetch("/api/people")).json(); } catch { /* keep the last */ }
+  }
   const conversation = (await fetchChat()) + (await fetchHelper());
   if (!force && text === stateText && conversation === chatText) return;
   stateText = text;
@@ -329,7 +335,7 @@ function currentView() {
 
 function render(force) {
   if (!state) return;
-  const known = ["provider", ...state.clients.map((c) => c.id)];
+  const known = Array.isArray(people) && people.length ? people.map((p) => p.id) : ["provider", me];
   if (!known.includes(me)) { me = "provider"; tab = "home"; }
 
   // Do not pull a field out from under somebody's thumb. The next poll, or
@@ -412,7 +418,8 @@ function renderHeader() {
   $("avatar").textContent = name.slice(0, 1).toUpperCase();
   $("subtitle").textContent = isProvider() ? "Practice diary" : "Your appointments";
   const sel = $("role");
-  const options = [["provider", "Provider"], ...state.clients.map((c) => [c.id, c.name])];
+  const options = (Array.isArray(people) && people.length ? people : [{id: me, name: me}])
+    .map((p) => [p.id, p.name]);
   const wanted = options.map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`).join("");
   if (sel.dataset.options !== wanted) { sel.innerHTML = wanted; sel.dataset.options = wanted; }
   sel.value = me;
@@ -459,35 +466,25 @@ function empty(title, body, action) {
 // happen, and a booking the practice cancelled, stay on the person's Home
 // until they have said they've seen it.
 
-const SKIP_WORDS = {
-  client: {away: "the clinic is closed that day",
-           week_full: "you already have as many sessions that week as planned",
-           unplaced: "no time could be found for it before the day"},
-  provider: {away: "you're away that day",
-             week_full: "their weekly limit is already reached",
-             unplaced: "no time was found before the day"},
-};
-const skipWhy = (who, r) => SKIP_WORDS[who][r.lapsed_reason] || "it could not go ahead";
+// The provider's wording; the client's copy is a server-written notice.
+const SKIP_WORDS = {away: "you're away that day", week_full: "their weekly limit is already reached",
+                    unplaced: "no time was found before the day"};
+const skipWhy = (r) => SKIP_WORDS[r.lapsed_reason] || "it could not go ahead";
 
 const skippedFor = (who, clientId) => (state.requests || []).filter((r) =>
   r.status === "lapsed" && !(r.seen_by || []).includes(who)
   && (clientId == null || r.client_id === clientId));
 
+const NOTICE_TAGS = {skipped: "not happening", cancelled: "cancelled by the clinic",
+  withdrawn: "changed", booked: "booked for you", unplaced: "still looking", closed: "clinic not available"};
+
 function clientNotices() {
-  const skipped = skippedFor("client", me);
-  const cancelled = (state.appointments || []).filter((a) =>
-    a.client_id === me && (state.cancel_notices || []).includes(a.id));
-  return skipped.map((r) => `<div class="card warn">
-      <div class="main"><span class="tag warn">not happening</span>
-        <h3 style="margin-top:6px">${esc(r.service)} on ${fmtWhen(r.preferred)}</h3>
-        <p class="meta">This session (part of your repeating booking, ${esc(r.note || "regularly")}) won't take place: ${esc(skipWhy("client", r))}. Your other sessions carry on as usual.</p>
-        <div class="row-actions"><button class="btn small" data-act="skip-seen" data-id="${r.id}" data-who="client">OK</button>
-        <button class="btn small ghost" data-act="tab" data-tab="messages">Message the clinic</button></div></div>
-    </div>`).join("") + cancelled.map((a) => `<div class="card warn">
-      <div class="main"><span class="tag warn">cancelled by the clinic</span>
-        <h3 style="margin-top:6px">${esc(a.service)} on ${fmtWhen(a.start)}</h3>
-        <p class="meta">The clinic has cancelled this appointment.</p>
-        <div class="row-actions"><button class="btn small" data-act="cancel-seen" data-id="${a.id}">OK</button>
+  // Everything that happened to their bookings without them doing it. Each
+  // stays until they press OK — nothing is changed behind their back.
+  return (state.notices || []).filter((n) => n.client_id === me).map((n) => `<div class="card warn">
+      <div class="main"><span class="tag warn">${esc(NOTICE_TAGS[n.kind] || "update")}</span>
+        <p style="margin:8px 0 0">${esc(n.text)}</p>
+        <div class="row-actions"><button class="btn small" data-act="notice-seen" data-id="${n.id}">OK</button>
         <button class="btn small ghost" data-act="tab" data-tab="messages">Message the clinic</button></div></div>
     </div>`).join("");
 }
@@ -1088,7 +1085,7 @@ function providerHome() {
         <h3 style="margin-top:6px">${plural(skipped.length, "repeating session")} won't take place</h3>
         <div class="list" style="box-shadow:none;margin:8px 0 0">${skipped.map((r) => `<div class="row">
           <div class="main"><div class="title">${esc(nameOf(r.client_id))} · ${fmtWhen(r.preferred)}</div>
-          <div class="meta">${esc(skipWhy("provider", r))}</div></div>
+          <div class="meta">${esc(skipWhy(r))}</div></div>
           <button class="btn small" data-act="skip-seen" data-id="${r.id}" data-who="provider">OK</button></div>`).join("")}</div>
         <p class="hint" style="margin:8px 0 0">The client is told on their Home too. Nothing booked was cancelled.</p></div>
     </div>`);
@@ -2042,7 +2039,9 @@ function switchTo(who) {
   me = who;
   remember(who);
   resetChoices();
-  go("home");
+  state = null; stateText = "";         // never draw one person with another's data
+  tab = "home";
+  refresh(true).then(() => go("home"));
 }
 
 async function done(promise, message) {
@@ -2074,8 +2073,8 @@ const ACTIONS = {
   "skip-seen": async (d) => {
     await done(api(`/api/requests/${d.id}/seen?who=${encodeURIComponent(d.who)}`, {}), "");
   },
-  "cancel-seen": async (d) => {
-    await done(api(`/api/appointments/${d.id}/seen`, {}), "");
+  "notice-seen": async (d) => {
+    await done(api(`/api/notices/${d.id}/seen?as=${encodeURIComponent(me)}`, {}), "");
   },
   withdraw: async (d) => {
     if (!await ask("Withdraw this request?", "You will not be offered a time for it.", "Withdraw", true)) return;
@@ -2511,7 +2510,11 @@ window.Phone = {
   actions: Object.keys(ACTIONS),
   forms: Object.keys(FORMS),
   // "diary@2026-10-13" opens the diary on that day.
-  show: (who, where) => {
+  // `data` and `list`: that person's own payload and the "view as" list,
+  // as the server would send them.
+  show: (who, where, data, list) => {
+    if (data) state = data;
+    if (list) people = list;
     const [view, day] = where.split("@");
     if (who !== me) resetChoices();
     me = who; tab = view;

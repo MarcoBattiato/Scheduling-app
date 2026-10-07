@@ -38,20 +38,20 @@ def _small():
 
 
 def untouched():
-    return _small().snapshot()
+    return _small()
 
 
 def drafted():
     world = _small()
     world.propose()
-    return world.snapshot()
+    return world
 
 
 def asked():
     world = _small()
     plan_id = world.propose()["plan_id"]
     world.provider_approve(plan_id)
-    return world.snapshot()
+    return world
 
 
 def carol_agreed_dan_has_not():
@@ -62,22 +62,31 @@ def carol_agreed_dan_has_not():
     world.provider_approve(plan_id)
     carol = next(a for a in world.approvals.values() if a.client_id == "carol")
     world.respond_to_approval(carol.id, "accept")
-    return world.snapshot()
+    return world
 
 
 def busy():
     world = World()
     scenarios.load(world, "busy")
     world.propose()
-    return world.snapshot()
+    return world
+
+
+def _one_off_becomes_weekly(world):
+    """Carol already asked for that Tuesday; she turns it into a weekly
+    booking. Left in, it would cover the first session (no double booking)."""
+    for r in list(world.requests.values()):
+        if r.client_id == "carol":
+            world.withdraw_request(r.id)
 
 
 def repeating():
     """Carol comes every week, Tuesdays at nine."""
     world = _small()
     tuesday = scenarios._at(scenarios.next_monday(), 1, 9)
+    _one_off_becomes_weekly(world)
     world.start_series("carol", "session-60", tuesday.isoformat(), every_weeks=1)
-    return world.snapshot()
+    return world
 
 
 def called_off():
@@ -85,12 +94,13 @@ def called_off():
     practice cancelled Dan's booking. Neither may happen silently."""
     world = _small()
     tuesday = scenarios._at(scenarios.next_monday(), 1, 9)
+    _one_off_becomes_weekly(world)
     world.start_series("carol", "session-60", tuesday.isoformat(), every_weeks=1)
     world.provider_away(tuesday.replace(hour=0), tuesday.replace(hour=23))
     dans = next(a for a in world.store.appointments_for(
         "dan", datetime.now(), datetime.now() + timedelta(days=28)))
     world.cancel_appointment(dans.id, by=Party.PROVIDER)
-    return world.snapshot()
+    return world
 
 
 STATES = {"untouched": untouched, "drafted": drafted, "asked": asked,
@@ -103,7 +113,10 @@ STATES = {"untouched": untouched, "drafted": drafted, "asked": asked,
 HARNESS = r"""
   const vm = require("vm"), fs = require("fs");
   const [script, html, statePath, plan] = process.argv.slice(1);
-  const stateText = fs.readFileSync(statePath, "utf8");
+  // Each person's own payload, exactly as the server would send it to them.
+  const states = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const people = [{id: "provider", name: "Provider"},
+                  ...states.provider.clients.map((c) => ({id: c.id, name: c.name}))];
   const wanted = JSON.parse(plan);
   // Only ids really in the page resolve, so a renamed element is caught.
   const realIds = new Set([...fs.readFileSync(html, "utf8").matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
@@ -125,7 +138,10 @@ HARNESS = r"""
     history: {replaceState: noop},
     localStorage: {getItem: () => null, setItem: noop},
     URLSearchParams,
-    fetch: async () => ({ok: true, text: async () => stateText, json: async () => JSON.parse(stateText)}),
+    fetch: async (url) => {
+      const body = String(url).includes("/api/people") ? JSON.stringify(people) : JSON.stringify(states.provider);
+      return {ok: true, text: async () => body, json: async () => JSON.parse(body)};
+    },
     scrollTo: noop, addEventListener: noop,
   };
   sandbox.window = sandbox;
@@ -139,7 +155,7 @@ HARNESS = r"""
     out.actions = P.actions; out.forms = P.forms;
     for (const [who, tabs] of Object.entries(wanted)) {
       for (const tab of tabs) {
-        try { out.views[`${who}:${tab}`] = P.show(who, tab) + "\n<!--tabs-->" + P.tabs(); }
+        try { out.views[`${who}:${tab}`] = P.show(who, tab, states[who], people) + "\n<!--tabs-->" + P.tabs(); }
         catch (e) { out.problems.push(`${who}:${tab}: ${e.stack.split("\n").slice(0, 2).join(" ")}`); }
       }
     }
@@ -149,9 +165,17 @@ HARNESS = r"""
 """
 
 
-def draw(state: dict, plan: dict) -> dict:
+def payloads(world: World) -> dict:
+    """What each person's phone is sent: the provider everything, each client
+    only their own slice (World.snapshot_for) — so a client screen that
+    reached for somebody else's data would come out empty here, not pass."""
+    return {"provider": world.snapshot(),
+            **{cid: world.snapshot_for(cid) for cid in world.clients}}
+
+
+def draw(world: World, plan: dict) -> dict:
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
-        json.dump(state, fh, default=str)
+        json.dump(payloads(world), fh, default=str)
         path = fh.name
     result = subprocess.run(
         ["node", "-e", HARNESS, str(STATIC / "phone.js"), str(STATIC / "phone.html"),
@@ -162,10 +186,10 @@ def draw(state: dict, plan: dict) -> dict:
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def everyone(state: dict) -> dict:
+def everyone(world: World) -> dict:
     plan = {"provider": PROVIDER_TABS}
-    for client in state["clients"]:
-        plan[client["id"]] = CLIENT_TABS
+    for client_id in world.clients:
+        plan[client_id] = CLIENT_TABS
     return plan
 
 
@@ -282,8 +306,8 @@ def test_a_yes_that_cannot_happen_yet_is_not_offered_for_confirming(drawn):
 
 @node
 def test_a_client_never_sees_anybody_else(drawn):
-    """Scoping is not enforced by the server yet, so the views must not leak
-    names on their own account."""
+    """Belt and braces: the server sends a client only their own slice, and
+    the views must not leak names on their own account either."""
     others = {"Alice", "Bob", "Dan"}
     for tab in CLIENT_TABS:
         html = screen(drawn, "asked", f"carol:{tab}")
@@ -304,10 +328,11 @@ def test_a_client_is_only_offered_times_they_are_free(drawn):
 def test_the_diary_lays_overlaps_side_by_side():
     """An offered slot sits exactly on the booking it would replace; drawn on
     top of each other, one of them is invisible."""
-    state = asked()
-    tuesday = next(a["now"][:10] for a in state["approvals"] if a["client_id"] == "carol")
+    world = asked()
+    tuesday = next(a.now_start.date().isoformat() for a in world.approvals.values()
+                   if a.client_id == "carol")
 
-    out = draw(state, {"provider": [f"diary@{tuesday}"]})
+    out = draw(world, {"provider": [f"diary@{tuesday}"]})
 
     assert not out["problems"], out["problems"]
     html = out["views"][f"provider:diary@{tuesday}"]
@@ -466,7 +491,7 @@ def test_nothing_is_called_off_silently(drawn):
     dan = screen(drawn, "called_off", "dan:home")
     provider = screen(drawn, "called_off", "provider:home")
 
-    assert "not happening" in carol and 'data-act="skip-seen"' in carol
-    assert "cancelled by the clinic" in dan and 'data-act="cancel-seen"' in dan
+    assert "not happening" in carol and 'data-act="notice-seen"' in carol
+    assert "cancelled by the clinic" in dan and 'data-act="notice-seen"' in dan
     assert "won't take place" in provider and "Carol" in provider
     assert "not happening" not in dan, "only the person whose session it is"

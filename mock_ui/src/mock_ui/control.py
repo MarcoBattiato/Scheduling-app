@@ -396,6 +396,13 @@ class Gate:
         hide — the catalogue is public — so this cannot leak what the
         ownership check disguises.
         """
+        if isinstance(command, sc.RequestReschedule) and command.preferred_start is not None:
+            # Ownership was checked before this, so the appointment is theirs.
+            current = self.world.store.get_appointment(int(command.appointment_id)).range.start
+            if command.preferred_start == current:
+                return ("that is when the appointment already is; ask for the time "
+                        "they would like to move it to")
+            return None
         if not isinstance(command, (sc.SubmitRequest, sc.StartSeries)):
             return None
         service_id = command.service_id
@@ -706,8 +713,7 @@ def _cancel(w, c, p):
 
 
 def _reschedule(w, c, p):
-    a = w.store.get_appointment(int(c.appointment_id))
-    wish = (c.preferred_start or a.range.start).isoformat()
+    wish = c.preferred_start.isoformat() if c.preferred_start else None
     r = w.request_reschedule(int(c.appointment_id), wish, c.release_slot)
     return {"request_id": r.id}
 

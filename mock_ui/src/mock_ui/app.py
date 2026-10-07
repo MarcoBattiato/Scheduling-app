@@ -208,11 +208,18 @@ class SettingsIn(BaseModel):
 
 
 @app.get("/api/state")
-def get_state():
+def get_state(as_: Optional[str] = Query(None, alias="as")):
     # Every poll is also a chance for the provider's schedule policy to fire.
     # Cheap, deterministic, and avoids a background thread for something a
     # person is watching anyway.
     world.tick()
+    if as_ and as_ != "provider":
+        # A client's screens get their own slice only: hiding the rest on
+        # screen would still hand it to anyone opening developer tools.
+        try:
+            return world.snapshot_for(as_)
+        except KeyError:
+            raise HTTPException(404, "no such person") from None
     return world.snapshot()
 
 
@@ -647,11 +654,23 @@ def skipped_seen(request_id: int, who: str):
     return {"ok": True}
 
 
-@app.post("/api/appointments/{appointment_id}/seen")
-def cancellation_seen(appointment_id: int):
-    """The client has seen that the practice cancelled this booking."""
-    world.acknowledge_cancellation(appointment_id)
+@app.post("/api/notices/{notice_id}/seen")
+def notice_seen(notice_id: int, as_: str = Query(..., alias="as")):
+    """A client has seen a notice about their own booking."""
+    try:
+        world.acknowledge_notice(notice_id, as_)
+    except KeyError:
+        raise HTTPException(404, "no such notice") from None
     return {"ok": True}
+
+
+@app.get("/api/people")
+def people():
+    """Who can be chosen in "view as". A stand-in for signing in, and the one
+    place every client's name is still handed out: it goes when sign-in
+    arrives. Nothing else about anybody is here."""
+    return [{"id": "provider", "name": "Provider"}] + [
+        {"id": c.id, "name": c.name} for c in world.clients.values()]
 
 
 @app.post("/api/appointments/{appointment_id}/cancel")

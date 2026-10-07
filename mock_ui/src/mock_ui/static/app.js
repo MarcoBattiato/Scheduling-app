@@ -571,9 +571,14 @@ function renderAlerts() {
   const mine = state.approvals.filter(
     (a) => !a.applied && (a.status === "pending" || a.status === "accepted")
            && (isProvider() || a.client_id === me));
-  if (!mine.length) { $("alerts").innerHTML = ""; return; }
+  // What happened to this client's bookings without them doing it — the same
+  // server-written notices the phone shows, until they press OK.
+  const notices = isProvider() ? [] : (state.notices || []).filter((n) => n.client_id === me);
+  const told = notices.map((n) => `<div class="alert settled-wait"><div>${esc(n.text)}</div>
+    <div class="row"><button onclick="noticeSeen(${n.id})">OK</button></div></div>`).join("");
+  if (!mine.length) { $("alerts").innerHTML = told; return; }
 
-  $("alerts").innerHTML = mine.map((a) => {
+  $("alerts").innerHTML = told + mine.map((a) => {
     const isMove = a.kind === "reschedule";
     if (a.status === "accepted") {
       const what = isMove
@@ -608,6 +613,11 @@ function renderAlerts() {
          Either way it helps to update your availability for that week.</p>` : ""}`;
     return `<div class="alert"><div>${body}</div>${buttons}</div>`;
   }).join("");
+}
+
+async function noticeSeen(id) {
+  await api(`/api/notices/${id}/seen?as=${encodeURIComponent(me)}`);
+  refresh();
 }
 
 // -- side panels ------------------------------------------------------

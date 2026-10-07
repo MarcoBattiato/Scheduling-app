@@ -766,3 +766,13 @@ def test_the_queue_can_tell_a_rehousing_from_a_request(world):
 
     assert shown and shown[0]["origin"] == "displaced"
     assert shown[0]["note"] == "the provider is not available then"
+
+
+def test_moving_an_appointment_to_where_it_already_is_is_refused(world):
+    """Accepted, it blocked a corrected request and a run could move the client
+    away although they never asked to leave."""
+    booked = world.store.book_appointment("alice", "s60", at(2, 10), at(2, 11))
+
+    with pytest.raises(ValueError, match="already is"):
+        world.request_reschedule(booked.id, at(2, 10).isoformat(), release_slot=False)
+    assert world.request_reschedule(booked.id, at(3, 10).isoformat(), release_slot=False)

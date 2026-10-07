@@ -26,7 +26,8 @@ from calendar_store import (
 )
 
 from .billing import BillingSettings, Charge, Payment
-from .state import Approval, AssistantSettings, ChatSettings, Client, Message, Plan, Request, Series, World
+from .state import (Approval, AssistantSettings, ChatSettings, Client, Message, Notice, Plan,
+                    Request, Series, World)
 
 
 def _dt(value):
@@ -84,7 +85,8 @@ def save(world: World, path: Path) -> None:
              "origin": r.origin.value, "note": r.note,
              "preferred_start": _dt(r.preferred_start),
              "series_id": r.series_id,
-             "lapsed_reason": r.lapsed_reason, "seen_by": sorted(r.seen_by)}
+             "lapsed_reason": r.lapsed_reason, "seen_by": sorted(r.seen_by),
+             "told_unplaced": r.told_unplaced}
             for r in world.requests.values()
         ],
         "series": [
@@ -132,7 +134,8 @@ def save(world: World, path: Path) -> None:
         # payment in progress across a restart would read as expired.
         "simulated_outcomes": getattr(world.processor, "outcomes", {}),
         "feed_tokens": world.feed_tokens,
-        "cancel_notices": sorted(world.cancel_notices),
+        "notices": [{**vars(n), "at": _dt(n.at)} for n in world.notices.values()],
+        "told_closed": sorted(world.told_closed),
         "audit": world.audit,
         "messages": [{**vars(m), "at": _dt(m.at), "read_at": _dt(m.read_at)}
                      for m in world.messages],
@@ -219,6 +222,7 @@ def load(path: Path) -> World:
             series_id=entry.get("series_id"),
             lapsed_reason=entry.get("lapsed_reason", ""),
             seen_by=set(entry.get("seen_by", [])),
+            told_unplaced=entry.get("told_unplaced", False),
         )
     for entry in payload.get("series", []):
         world.series[entry["id"]] = Series(
@@ -278,7 +282,11 @@ def load(path: Path) -> World:
             {k: tuple(v) for k, v in payload.get("simulated_outcomes", {}).items()})
     # Kept across restarts, or every subscribed calendar would break on each one.
     world.feed_tokens = dict(payload.get("feed_tokens", {}))
-    world.cancel_notices = set(payload.get("cancel_notices", []))
+    world.notices = {
+        n["id"]: Notice(**{**n, "at": datetime.fromisoformat(n["at"])})
+        for n in payload.get("notices", [])
+    }
+    world.told_closed = set(payload.get("told_closed", []))
     world.audit = list(payload.get("audit", []))
     world.messages = [Message(**{**m, "at": _back(m["at"]), "read_at": _back(m.get("read_at"))})
                       for m in payload.get("messages", [])]
@@ -301,7 +309,7 @@ def load(path: Path) -> World:
     world._ids = itertools.count(max(
         [highest] + list(world.requests) + list(world.plans) + list(world.approvals)
         + list(world.series) + list(world.charges) + list(world.payments)
-        + [m.id for m in world.messages]
+        + [m.id for m in world.messages] + list(world.notices)
     ) + 1)
     return world
 

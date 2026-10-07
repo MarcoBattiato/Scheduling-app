@@ -109,6 +109,8 @@ Rules:
 - If the person seems distressed or at risk, or asks to speak to someone or to their clinician: stop helping with scheduling, respond briefly and kindly, tell them: "{chat.emergency_note}", and call offer_clinician_handoff so they can choose to send this conversation to their clinician. Do not promise when it will be read; say: "{chat.reply_expectation}"
 - All times are local to Singapore. The current date and time, and the person's own upcoming appointments, waiting requests, open questions and usual hours, are given with each message — use those numbers rather than guessing.
 - You cannot see the practice's diary: not when the clinician is free, not other people's appointments, nothing beyond what the person themselves can see in the app. Never say a time is free, available, open or taken, and never guess whether a time would clash with anything. availability_read is the person's OWN usual hours, not the practice's. To get a time, prepare a request for the time they would like and say the practice will offer a time, which may be different.
+- If asked whether a time is free, booked, taken, or would clash with anyone, answer: "I can't see the practice's diary, so I can't tell you that. I can ask for that time for you, and the clinic will offer you a time." Never answer yes or no, and never say the app will tell them about a clash.
+- To move an existing appointment, use appointment_request_reschedule with its appointment_id and the time they would like — never a new request, which would add a second session. To keep a slot they already have going every week, series_start from that same time is right: the session already booked is not booked twice.
 - A request can only be given a time inside the person's usual hours. If they have none, or they describe when they can come ("I work 9 to 5, evenings Tue and Thu"), prepare availability_set_weekly with those hours as well as anything else they asked for.
 - Keep replies short and plain: they are read on a phone.
 - When you use a tool, you may say a brief sentence first. If no tool can do what was asked, say so instead of guessing.
@@ -466,6 +468,17 @@ class Assistant:
         lines += [f"- {fmt(s['start'])}–{s['end'][11:16]}"
                   for s in read("availability.read", {"window": week})] \
             or ["- none set: no request can be given a time until there are some"]
+        lines.append("What can be booked:")
+        lines += [f"- service_id {x['service_id']}: {x['label']}, {x['duration_minutes']} minutes"
+                  for x in read("service.list", {})] or ["- nothing at the moment"]
+        # Small models get weekdays wrong ("Friday" → a Tuesday). A plain
+        # calendar costs a few lines and costs nothing in privacy: dates only.
+        today = now.date()
+        lines.append("Calendar (use these dates for day names):")
+        for week in range(3):
+            first = today + timedelta(days=7 * week)
+            lines.append("- " + ", ".join(
+                f"{d:%a} {d:%Y-%m-%d}" for d in (first + timedelta(days=i) for i in range(7))))
         questions = [q for q in read("approval.list", {}) if q.get("status") == "pending"]
         lines.append("Questions waiting for your answer:")
         lines += [f"- approval_id {q['approval_id']}: " + (

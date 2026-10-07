@@ -170,9 +170,11 @@ client's limit, is not queued; and one not placed before its day is not made up
 in a later week, where it would stack on that week's own session — a one-off
 request, by contrast, stays queued until placed. **None of these is silent**:
 each becomes a request with status `lapsed` and a reason code
-(`World.SKIP_WORDS`), shown on the client's Home and the provider's until each
-has pressed OK (`Request.seen_by`). Likewise a booking the *practice* cancels
-stays on the client's Home until seen (`World.cancel_notices`);
+(`World.SKIP_WORDS`), shown on the provider's Home until seen
+(`Request.seen_by`) and to the client as a notice (below). A series whose
+session falls on a day the client is already booked or already asking for
+counts that session as covered — "keep my Tuesday slot going" must not book the
+Tuesday twice;
 stopping a series withdraws what is not yet booked and leaves what is. The
 series' slot is a real client preference — `Origin.CLIENT`, and exactly the
 habitual slot SPEC §10.1 wants to learn.
@@ -261,6 +263,23 @@ until the practice offers it; each client opts in after the notice. Conversation
 `ASSISTANT_MODEL` / `ASSISTANT_EFFORT` (default Opus 5.5, medium), with
 server-side refusal fallbacks on. `tests/test_assistant.py` replaces Claude
 with a script and checks what leaves the practice.
+
+**Nothing about a client's bookings changes behind their back** (`Notice`,
+`World._tell`). An offer or a move ask we take back (agreed to or not), a
+repeating session called off, a booking the clinic cancels or makes by hand, a
+request still without a time after a run (once), and a booking left in time
+the clinic is closed (checked on every tick, once per booking) each leave a
+notice on the client's Home — phone and desktop — until they press OK. Notices
+are worded for the client and never give the reason in terms of anybody else.
+
+**A client's screens are sent only their own slice** (`World.snapshot_for`,
+`/api/state?as=<client>`): their bookings, requests, questions, hours, charges
+and notices, the bookable catalogue and the practice's public settings —
+never another client, the provider's hours, plans, the scheduler or the log.
+Hiding the rest on screen would still hand it to anyone opening developer
+tools. `/api/people` is the one list of everybody's names, for "view as" only,
+and goes when sign-in arrives. The desktop page is the developer's view and
+still reads everything.
 
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider

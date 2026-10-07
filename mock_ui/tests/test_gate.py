@@ -203,6 +203,17 @@ def test_a_booking_for_a_service_that_does_not_exist_is_refused_not_drafted(worl
     assert gate.pending(client("dan")) == []
 
 
+def test_a_move_to_the_same_time_is_refused_not_drafted(world, gate):
+    session = assistant(client("dan"))
+    appointment = booked(world, "dan")[0]
+
+    with pytest.raises(Invalid, match="already is"):
+        gate.execute(session, build_command("appointment.request_reschedule", {
+            "appointment_id": appointment.id,
+            "preferred_start": appointment.range.start.isoformat()}, session))
+    assert gate.pending(client("dan")) == []
+
+
 def test_a_failure_on_confirm_names_what_was_missing(world, gate):
     session = assistant(client("dan"))
     when = (datetime.now() + timedelta(days=3)).replace(hour=10, minute=0).isoformat()
@@ -468,6 +479,18 @@ def test_a_clients_assistant_is_told_it_cannot_see_the_practices_diary(world):
     prompt = _client_prompt(world)
     assert "cannot see the practice's diary" in prompt
     assert "Never say a time is free" in prompt
+    assert "I can't see the practice's diary" in prompt, "the answer to 'is X free?'"
+
+
+def test_each_client_message_carries_dates_and_what_can_be_booked(world, gate):
+    """Small models got weekdays wrong ("Friday" became a Tuesday)."""
+    from mock_ui.assistant import Assistant
+    context = Assistant(world, gate=gate)._client_context(assistant(client("dan")))
+    today = datetime.now().date()
+
+    assert f"{today:%a} {today:%Y-%m-%d}" in context
+    assert f"{today + timedelta(days=20):%Y-%m-%d}" in context
+    assert "service_id session-60" in context
 
 
 def test_a_clients_assistant_is_not_told_provider_commands_exist(world):
