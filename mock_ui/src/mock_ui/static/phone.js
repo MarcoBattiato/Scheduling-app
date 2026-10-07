@@ -1075,7 +1075,9 @@ function providerHome() {
     && !blockedBy(planById(a.plan_id), a, (state.approvals || []).filter((x) => x.plan_id === a.plan_id)).length).length;
   const waitingOn = asks.filter((a) => a.status === "pending").length;
   const queue = (state.requests || []).filter(openRequest);
-  const stuck = stranded();
+  // Ones close enough to need a decision now have their own card below.
+  const deciding = new Set((state.decisions || []).map((d) => d.appointment_id));
+  const stuck = stranded().filter((a) => !deciding.has(a.id));
 
   let html = `${installTip()}<h1>${fmtDay(todayKey())}</h1>`;
   const cards = [];
@@ -1086,6 +1088,23 @@ function providerHome() {
         <h3 style="margin-top:6px">${plural(stuck.length, "booking is", "bookings are")} in time you're not working</h3>
         <p class="meta">${idle ? "Nothing has been done about them yet." : "Already being moved."}</p></div>
       <span class="chev">›</span></button>`);
+  }
+  const decide = state.decisions || [];
+  if (decide.length) {
+    cards.push(`<div class="card warn">
+      <div class="main"><span class="tag warn">needs your decision</span>
+        <h3 style="margin-top:6px">${plural(decide.length, "booking is", "bookings are")} in time you're not working</h3>
+        <div class="list" style="box-shadow:none;margin:8px 0 0">${decide.map((d) => `<div class="row">
+          <div class="main"><div class="title">${esc(nameOf(d.client_id))} · ${fmtWhen(d.start)}</div>
+            <div class="meta">${d.past ? "This time has passed — did it go ahead?"
+              : d.being_moved ? "No new time found yet." : "Nothing has been done about it."}</div>
+            <div class="row-actions">
+              ${!d.past && !d.being_moved ? `<button class="btn small" data-act="decide" data-id="${d.appointment_id}" data-how="rehouse">Find a new time</button>` : ""}
+              <button class="btn small secondary" data-act="decide" data-id="${d.appointment_id}" data-how="keep">${d.past ? "It went ahead" : "Keep it, I'll be there"}</button>
+              <button class="btn small danger" data-act="decide" data-id="${d.appointment_id}" data-how="cancel">Cancel it</button>
+            </div></div></div>`).join("")}</div>
+        <p class="hint" style="margin:8px 0 0">Nothing happens to these until you choose. The client is told what you decide.</p></div>
+    </div>`);
   }
   const overdue = (state.approvals || []).filter((a) => a.overdue);
   if (overdue.length) {
@@ -2384,6 +2403,13 @@ const ACTIONS = {
   },
   "setting-toggle": async (d, el) => {
     await done(api("/api/settings", {[d.key]: el.checked}), "Saved");
+  },
+  decide: async (d) => {
+    if (d.how === "cancel" && !await ask("Cancel this booking?", "The client is told the clinic has cancelled it.",
+                                         "Cancel it", true)) return;
+    await done(api(`/api/decisions/${d.id}`, {how: d.how}),
+               {cancel: "Cancelled · the client is told", keep: "Kept · the client is told",
+                rehouse: "Looking for a new time"}[d.how]);
   },
   "decline-overdue": async () => {
     if (!await ask("Stop waiting for them?", "Each is told the offer has been withdrawn, and a new draft is made.",

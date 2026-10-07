@@ -278,3 +278,106 @@ def test_a_solver_that_runs_out_of_time_changes_nothing(world, monkeypatch):
 
     assert out["ran"] is False and "ran out of time" in out["reason"]
     assert not world.plans and all(r.status == "pending" for r in world.requests.values())
+
+
+# -- bookings in closed time: the provider decides ---------------------------------------
+
+
+def _stranded_tomorrow(world):
+    booked = world.store.book_appointment("bob", "s60", on(1, 10), on(1, 11))
+    world.set_weekly_availability(PROVIDER, [])          # e.g. hours changed, "not now"
+    return booked
+
+
+def test_a_booking_left_in_closed_time_comes_to_the_provider_before_the_day(world):
+    booked = _stranded_tomorrow(world)
+
+    (item,) = world.needs_decision()
+
+    assert item["appointment_id"] == booked.id and not item["past"]
+    assert world.store.get_appointment(booked.id).status.value == "booked", "nothing by itself"
+    assert world.notices_for("bob") == [], "nobody is told before the provider decides"
+
+
+def test_far_off_ones_wait_until_48_hours_before(world):
+    world.store.book_appointment("bob", "s60", on(4, 10), on(4, 11))
+    world.set_weekly_availability(PROVIDER, [])
+
+    assert world.needs_decision() == []
+
+
+@pytest.mark.parametrize("how, status, told", [
+    ("cancel", "cancelled_by_provider", ["cancelled"]),
+    ("keep", "booked", []),          # never told anything was wrong, so nothing to undo
+])
+def test_the_provider_decides_and_the_client_is_told(world, how, status, told):
+    booked = _stranded_tomorrow(world)
+
+    world.decide(booked.id, how)
+
+    assert world.store.get_appointment(booked.id).status.value == status
+    assert [n["kind"] for n in world.notices_for("bob")] == told
+    assert world.needs_decision() == []
+
+
+def test_a_past_one_stays_until_decided_rather_than_looking_as_if_it_happened(world):
+    booked = world.store.book_appointment("bob", "s60", on(-1, 10), on(-1, 11))
+    world.set_weekly_availability(PROVIDER, [])
+
+    (item,) = world.needs_decision()
+
+    assert item["appointment_id"] == booked.id and item["past"]
+
+
+def test_a_rehouse_that_finds_nothing_is_still_the_providers_to_decide(world):
+    booked = _stranded_tomorrow(world)
+    world.decide(booked.id, "rehouse")
+
+    (item,) = world.needs_decision()
+    assert item["being_moved"]
+    world.decide(booked.id, "cancel")
+
+    assert not [r for r in world.requests.values()
+                if r.replaces_appointment_id == booked.id and r.status != "withdrawn"]
+    assert [n["kind"] for n in world.notices_for("bob")] == ["cancelled", "changed"]
+
+
+# -- R3: a closure announced early is planned early -----------------------------------------
+
+
+def test_a_closure_announced_early_looks_for_new_times_at_once(world):
+    world.policy.horizon_days = 3
+    day = on(9, 10)
+    series = world.start_series("alice", "s60", (day - timedelta(days=14)).isoformat(), every_weeks=1)
+
+    world.provider_away(day.replace(hour=0), day.replace(hour=23, minute=59))
+
+    session = next(r for r in world.requests.values()
+                   if r.series_id == series.id and r.preferred_start == day)
+    assert session.latest == world.reschedule_deadline(day)
+    world.propose()
+    assert any(p["request_id"] == session.id for p in draft(world).placements), \
+        "planned now, beyond the usual window, inside its own week"
+
+
+# -- R6: a client's own move respects what is promised ---------------------------------------
+
+
+def test_a_client_cannot_move_into_a_slot_offered_to_somebody_else(world):
+    world.submit_request("alice", "s60", on(2, 10).isoformat())
+    world.propose()
+    world.provider_approve(draft(world).id)
+    offer = next(a for a in world.approvals.values() if a.client_id == "alice")
+    mine = world.store.book_appointment("bob", "s60", on(3, 9), on(3, 10))
+
+    with pytest.raises(ValueError, match="promised"):
+        world.move_appointment(mine.id, offer.now_start, offer.now_end)
+
+
+def test_keeping_one_the_client_was_told_about_tells_them_it_goes_ahead(world):
+    booked = _stranded_tomorrow(world)
+    world.decide(booked.id, "rehouse")             # "a new time is being looked for"
+
+    world.decide(booked.id, "keep")
+
+    assert world.notices_for("bob")[0]["text"].endswith("goes ahead as booked.")

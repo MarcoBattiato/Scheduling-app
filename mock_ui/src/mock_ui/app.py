@@ -700,6 +700,22 @@ def skipped_seen(request_id: int, who: str):
     return {"ok": True}
 
 
+class DecisionIn(BaseModel):
+    how: str          # cancel | keep | rehouse
+
+
+@app.post("/api/decisions/{appointment_id}")
+def decide(appointment_id: int, payload: DecisionIn):
+    """The provider's answer for a booking in time the clinic is closed."""
+    try:
+        world.decide(appointment_id, payload.how)
+    except KeyError:
+        raise HTTPException(404, "no such appointment") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
 class OverdueIn(BaseModel):
     approval_ids: Optional[List[int]] = None     # None: every overdue answer
 
@@ -780,6 +796,8 @@ def move_appointment(appointment_id: int, payload: MoveIn):
         )
     except KeyError:
         raise HTTPException(404, "no such appointment") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
     return {"ok": True}
 
 

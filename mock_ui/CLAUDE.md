@@ -310,6 +310,15 @@ been cancelled ends (`_end_stale_replacements`), and `_book` never cancels an
 appointment that is not still booked — that rewrote a session that took place.
 A client marking a time unavailable takes back any offer to it still in the air.
 
+**Bookings in closed time are the provider's to decide** (`needs_decision`,
+`decide`). From 48 hours before (`DECIDE_AHEAD`) — and after, if still
+undecided — any booking in time the provider is not working, whether "not now"
+was chosen or a new time was not found, is on a "needs your decision" card:
+find a new time, keep it (marks the provider available then), or cancel it.
+Nothing happens to it on its own, and it never sits in the past looking as if
+it happened. A closure announced early raises the repeating sessions in it at
+once, and runs reach as far as their reschedule window to place them.
+
 **Answers that do not come**: `answer_within_hours` (48 by default) puts a "no
 answer" card on the provider's Home; "stop waiting" (or
 `decline_when_overdue`, automatically) takes the silence as *declined* — not
