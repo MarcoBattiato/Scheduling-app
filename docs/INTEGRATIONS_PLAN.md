@@ -1,14 +1,18 @@
-# Calendars and payments — plan
+# Calendars, payments and the AI assistant — plan
 
-Two integrations with the outside world: putting appointments into the
-calendars people already use, and taking money for them. Both are written
+Three integrations with the outside world: putting appointments into the
+calendars people already use, taking money for them, and letting people run
+the app by talking to an AI assistant. All are written
 against the interface-first approach in [INTERFACE_PLAN.md](INTERFACE_PLAN.md):
 each is a **port** the domain asks for, with adapters behind it, so the
 scheduler never learns that Google or Stripe exist.
 
 Status: calendar steps 1–2 **built** (event rules and the subscription feed,
-in `mock_ui/calendar_sync.py`); everything else is a proposal. Decisions still
-needed are collected at the end.
+in `mock_ui/calendar_sync.py`); payments steps 1–2 **built** in test mode
+(`mock_ui/billing.py`: ledger, pay-after-session, fees awaiting the provider,
+a simulated processor and Stripe Checkout in test mode). Everything else is a
+proposal, as is all of Part 3. Decisions still needed are collected at the
+end.
 
 ---
 
@@ -204,10 +208,11 @@ do, not what the practice must charge.
 anyone (CONTROL_SURFACE.md §8), and taking payments on top of that would be
 taking them on behalf of whoever typed a name. So:
 
-1. Build the ledger and the rules against Stripe **test mode**, in the mock:
-   per-session charges and pay-after-session first, since they touch the
-   fewest moving parts.
-2. Fees (late cancellation, no-show), using the provenance already recorded.
+1. ✅ The ledger and the rules, against Stripe **test mode** or a built-in
+   simulated processor: per-session charges and pay-after-session, provider
+   recording cash / transfer / PayNow-to-the-practice.
+2. ✅ Fees (late cancellation, no-show), using the provenance already
+   recorded — proposed only, each confirmed or waived by the provider.
 3. Pay at booking ("Accept and pay").
 4. Packages and credits.
 5. Monthly invoices.
@@ -254,9 +259,204 @@ the provider able to override per client where it makes sense:
   below): today the app has no login, so putting it on the internet would let
   anyone read every client's name and bookings.
 
+## Part 3 — The AI assistant
+
+Both the provider and clients can do everything either through the screens or
+by talking to an assistant. The screens are never second-class: anything the
+assistant can do, the GUI can do, so nobody has to use the AI.
+
+### Where it lives — decided: inside the app
+
+An **Assistant** tab in the phone app. The server sends the conversation to
+Claude together with a set of *tools*; each tool is one command from
+`scheduling_contracts`, and every call goes through the same permission gate
+as the screens. No other app or account is involved. (Exposing the same
+commands to the Claude apps over MCP stays possible later, behind the same
+gate, once sign-in exists.)
+
+### How it is guarded
+
+The contracts already model this: an assistant is **the same person acting
+through a restricted channel** (`Session.via_assistant`), and the permission
+table says, per command, whether an assistant may do it freely (reads),
+only as a draft the human confirms (every write), or never (money, settings
+that steer the scheduler). Delegation is proved to only ever *narrow* what
+the person holds.
+
+- **The tool list is cut to the person.** A client's assistant is not given
+  provider tools at all — and every call is checked again regardless.
+- **Every change ends in a confirmation card** in the chat: "Move your Tue
+  10:00 to Wed 11:00? [Confirm] [Cancel]". The card is bound to that exact
+  change, so the model cannot propose one thing and execute another.
+- **No money**, not even as a draft.
+- **Text written by others cannot escalate.** A note or a name containing
+  instructions can at most get the assistant to *propose* something the
+  person was entitled to do anyway — which they would still have to confirm.
+- **Logged**: every assistant action, with the conversation it came from —
+  what it *did*, not what was *said*.
+
+### Privacy — the part that decides whether this can be offered at all
+
+Talking to the assistant sends text to the AI provider, outside Singapore and
+outside the practice. Under the PDPA that raises consent and notification,
+the transfer-limitation obligation, and protection and retention. And the
+data is unusually sensitive: for a psychology practice, *being a client* is
+sensitive before any clinical detail. So the design minimises what leaves:
+
+**1. The model never learns who anybody is.**
+
+- **A client's assistant carries no identifier at all.** Nobody can act on
+  another client, so the tools always mean "me": *my* bookings, *my* hours.
+  The model sees "you have a 60-minute appointment on Tuesday at 10:00" — no
+  name, no id. Identity is held by the server's session, never in the
+  conversation.
+- **The provider's assistant** does need to tell clients apart, so each
+  client gets a **pseudonym for that conversation only** ("Client A",
+  "Client B"), assigned at random and never reused, so nothing is linkable
+  across conversations. The server swaps real names out before sending and
+  back in before showing; the provider sees real names, the model never does.
+- **No clinical fields** reach the assistant: no service names, no notes, no
+  attendance history beyond what scheduling needs (CONTROL_SURFACE.md §7
+  already requires this).
+
+What leaves the practice is therefore close to anonymous scheduling data:
+durations, times, and availability, attached to nobody.
+
+**2. Opt-in, never required.** Off by default. The practice decides whether
+to offer it; each client switches it on themselves after a plain notice of
+what is sent, to whom, and where.
+
+**3. The right terms with the AI provider.** Anthropic's commercial API terms
+do not use the data for training; a data processing agreement covers the
+transfer-limitation obligation; shorter or zero data retention can be
+arranged (check current terms). Alternatively, Claude through AWS or Google
+Cloud may keep processing in an Asia-Pacific region — availability per region
+to be checked. Required before going live, not for the demo.
+
+**4. Everything else stays local.** Voice through the phone's own dictation,
+so audio never goes to another company. Conversations kept no longer than
+needed; erasing a client (crypto-shredding) erases their conversations too.
+
+**5. Fallback: a model on the practice's own server.** Nothing leaves at all,
+at the cost of markedly worse reliability and a far more expensive server.
+Kept in reserve in case 1–4 are not enough.
+
+### What clients type: distress, and the clinician
+
+One risk no amount of name-stripping removes: a client writes their own
+messages, and a therapy client may write something clinical or alarming
+("I'm not coping, I need to come in sooner"). Two answers:
+
+**An internal chat with the clinician** — client ↔ provider messaging inside
+the app, which never goes through the AI. Useful on its own ("running 10
+minutes late"), and it is where the assistant hands over:
+
+- **The assistant is for scheduling only, and says so** when it is first
+  opened: it does not give advice, and what you tell it is not read by your
+  clinician unless you send it to them.
+- **When a message suggests distress** — or the client simply asks for a
+  person — the assistant stops handling it as scheduling. It immediately
+  shows emergency contacts (in Singapore, 995 and the SOS 24-hour line 1767;
+  the practice confirms the numbers and wording), and offers: *"Would you
+  like me to pass this to your clinician?"*
+- **On yes, the conversation is transferred to the clinician chat**, the
+  client's own words included, and the provider is notified. The client is
+  told plainly when they can expect a reply, because the chat is not watched
+  around the clock and is not an emergency service.
+- **A "Message my clinician" button is always on screen**, AI or not. Detection
+  by a model is not reliable enough to be the only way to reach a person.
+
+Two things to be clear about:
+
+- The distressing message *has already gone to the AI provider* by the time
+  it is detected — it was typed into the assistant. The hand-off keeps
+  everything after it in the practice.
+- **Whether the transfer needs the client's yes** is a clinical decision.
+  Asking respects the client's choice; forwarding automatically errs on the
+  side of safety. The design supports either, as a practice setting. Forwarding
+  without asking would be the single, deliberate exception to "an assistant
+  never writes on its own", and the contract tests would record it as such.
+
+Clinician messages are clinical data: stored encrypted per client, like notes,
+and covered by erasure.
+
+### Your examples against the rules
+
+| Ask | How it is handled |
+|---|---|
+| Provider: "review the outstanding bookings" | Reads — allowed as is |
+| Provider: compare the engine at different settings | A new **what-if read**: runs the scheduler at any settings and returns the results *without saving anything*. The assistant can compare as many as asked ("at 0.9 Client B moves to Monday and nothing is wasted"); turning one into a real proposal is a confirmed step |
+| Provider: change the saved defaults | Forbidden to the assistant today; could become confirm-only. Practice's choice |
+| Client: update my availability | Draft → confirmation card |
+| Client: move my appointment | Draft → confirmation card |
+| Client: "I want to talk to someone" | Hand-off to the clinician chat |
+
+### Voice
+
+Claude takes text, not audio, so speech becomes text first:
+
+1. The phone keyboard's microphone — works today, free, and **audio stays on
+   the phone**.
+2. A mic button in the app using the browser's speech recognition — free;
+   quality varies by browser and accent; some browsers send audio to their
+   own vendor, so check before relying on it.
+3. A speech-to-text service — best accuracy (Singapore English, mixed
+   languages), small cost per minute, and **another company receiving
+   audio**, which needs the same privacy treatment as the AI provider.
+
+Replies can be read aloud with the phone's built-in speech, free and local.
+
+### Model and cost
+
+| Model | Price, input / output per million tokens | Use |
+|---|---|---|
+| Claude Opus 5.5 | US$4 / $20 | Strongest; the provider's analysis questions |
+| Claude Sonnet 5.5 | US$2 / $10 | Half the price; likely enough for clients' tasks |
+| Claude Haiku 4.5 | US$1 / $5 | Cheapest; simple exchanges only |
+
+Roughly a few US cents per exchange on Opus, half that on Sonnet — a few
+dollars a month for a small practice. Needs an Anthropic API key on the
+server, kept like the Stripe key: in the environment, never in the app.
+
+### Order
+
+1. **The guarded core**: commands wired to the permission gate, per-person
+   views with no identifiers (clients) or per-conversation pseudonyms
+   (provider), confirmation cards. This is also the first real consumer of
+   `scheduling_contracts`, and moves INTERFACE_PLAN.md phase C forward.
+2. **The clinician chat**, with the always-visible "Message my clinician".
+3. **The Assistant tab** for both roles, typed and dictated, with the opt-in
+   notice and the hand-off.
+4. **What-if comparisons** for the provider.
+5. A mic button; a speech service only if dictation is not good enough.
+
+The demo can run on the "view as" picker like the screens do. Going live
+needs sign-in, the AI provider's terms (point 3 above), and the practice's
+sign-off on the notice and the distress hand-off.
+
+---
+
 ## Decisions still needed
 
 1. A domain name for the practice (for sending email, and the app's address).
 2. Whether this practice is GST-registered (asked of the client).
 3. When to put the app online — which means doing sign-in (INTERFACE_PLAN.md
    phase C) first.
+
+**AI assistant — for the practice to decide**
+
+4. Whether to offer an AI assistant at all, given the notice and opt-in.
+5. Distress hand-off: transfer only with the client's yes, or automatically?
+   Should the provider be alerted, and how? The emergency numbers and wording.
+6. How quickly the clinician chat is answered, so clients can be told.
+7. Whether processing must stay in Singapore or the region — which decides
+   between Anthropic directly and a cloud provider.
+8. Whether the assistant may ever change saved scheduler settings (with
+   confirmation), or only compare them.
+
+**AI assistant — for you**
+
+9. Model: Opus 5.5 for everyone, or Opus for the provider and Sonnet for
+   clients.
+10. An Anthropic API key, set as `ANTHROPIC_API_KEY` on the machine running
+    the server, when building starts.
