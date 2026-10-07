@@ -22,9 +22,9 @@ from mock_ui.state import World
 STATIC = Path(__file__).resolve().parent.parent / "src" / "mock_ui" / "static"
 node = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
-CLIENT_TABS = ["home", "book", "bookings", "hours"]
+CLIENT_TABS = ["home", "book", "bookings", "hours", "messages"]
 PROVIDER_TABS = ["home", "diary", "queue", "plans", "more", "more/hours", "more/away",
-                 "more/clients", "more/services", "more/settings", "more/activity", "more/calendar", "more/payments", "more/billing"]
+                 "more/clients", "more/services", "more/settings", "more/activity", "more/calendar", "more/payments", "more/billing", "more/messages"]
 
 
 # -- states worth drawing --------------------------------------------------

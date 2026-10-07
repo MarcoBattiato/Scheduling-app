@@ -724,7 +724,47 @@ def _limits(w, c, p):
     return {"ok": True}
 
 
+def _author(p) -> str:
+    # Who wrote it is the session's — a client cannot write "as the clinician".
+    return "client" if p.role is Role.CLIENT else "provider"
+
+
+def _send(w, c, p):
+    m = w.send_message(c.client_id, _author(p), c.text)
+    return {"message_id": m.id}
+
+
+def _list_messages(w, c, p):
+    me = _author(p)
+    if c.client_id is None:                     # every conversation, in summary
+        out = []
+        for cid, client in w.clients.items():
+            convo = w.conversation(cid)
+            if not convo:
+                continue
+            last = convo[-1]
+            out.append({"client_id": cid, "name": client.name,
+                        "unread": w.unread(cid, me), "last_at": last.at,
+                        "last_author": last.author, "preview": last.text[:80]})
+        return sorted(out, key=lambda x: x["last_at"], reverse=True)
+    return {"client_id": c.client_id,
+            "unread": w.unread(c.client_id, me),
+            "settings": {"reply_expectation": w.chat.reply_expectation,
+                         "emergency_note": w.chat.emergency_note,
+                         "enabled": w.chat.enabled},
+            "messages": [{"message_id": m.id, "author": m.author, "text": m.text,
+                          "at": m.at, "read": m.read_at is not None}
+                         for m in w.conversation(c.client_id)]}
+
+
+def _mark_read(w, c, p):
+    return {"marked": w.mark_read(c.client_id, _author(p))}
+
+
 HANDLERS: Dict[type, Callable] = {
+    sc.SendMessage: _send,
+    sc.ListMessages: _list_messages,
+    sc.MarkMessagesRead: _mark_read,
     sc.ReadAppointments: _read_appointments,
     sc.ReadAvailability: _read_availability,
     sc.ListRequests: _list_requests,

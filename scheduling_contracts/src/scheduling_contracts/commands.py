@@ -255,6 +255,38 @@ class StopSeries:
     series_id: SeriesId
 
 
+# ------------------------------------------------------- M. clinician chat
+#
+# A client and their clinician, in writing, inside the app. Clinical by
+# nature — people write about why they are coming — so every command here
+# is withheld from assistants entirely, reads included: the assistant is for
+# scheduling, and a conversation with a clinician must never reach a model.
+# Who wrote a message is the session's, never the caller's to say.
+
+@command("message.send", Tier.ROUTINE, TargetKind.CLIENT, "client_id", phi=True)
+@dataclass(frozen=True)
+class SendMessage:
+    """Write in a client's conversation with the practice. A client may only
+    write in their own; the provider in anyone's."""
+    client_id: ClientId
+    text: str
+
+
+@command("message.list", Tier.READ, TargetKind.CLIENT, "client_id", phi=True)
+@dataclass(frozen=True)
+class ListMessages:
+    # A client's own conversation; None means every conversation's summary,
+    # which only a practice-wide role may ask for.
+    client_id: Optional[ClientId] = None
+
+
+@command("message.mark_read", Tier.ROUTINE, TargetKind.CLIENT, "client_id")
+@dataclass(frozen=True)
+class MarkMessagesRead:
+    """Everything the *other* side wrote in this conversation, as read."""
+    client_id: ClientId
+
+
 # ---------------------------------------------------------------- K. payments
 #
 # Money. Every write here is FINANCIAL, which makes it undelegable: no

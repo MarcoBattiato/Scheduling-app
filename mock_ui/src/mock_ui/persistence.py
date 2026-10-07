@@ -26,7 +26,7 @@ from calendar_store import (
 )
 
 from .billing import BillingSettings, Charge, Payment
-from .state import Approval, Client, Plan, Request, Series, World
+from .state import Approval, ChatSettings, Client, Message, Plan, Request, Series, World
 
 
 def _dt(value):
@@ -132,6 +132,9 @@ def save(world: World, path: Path) -> None:
         "simulated_outcomes": getattr(world.processor, "outcomes", {}),
         "feed_tokens": world.feed_tokens,
         "audit": world.audit,
+        "messages": [{**vars(m), "at": _dt(m.at), "read_at": _dt(m.read_at)}
+                     for m in world.messages],
+        "chat": vars(world.chat),
         "log": world.log,
     }
     path.write_text(json.dumps(payload, indent=2))
@@ -270,6 +273,9 @@ def load(path: Path) -> World:
     # Kept across restarts, or every subscribed calendar would break on each one.
     world.feed_tokens = dict(payload.get("feed_tokens", {}))
     world.audit = list(payload.get("audit", []))
+    world.messages = [Message(**{**m, "at": _back(m["at"]), "read_at": _back(m.get("read_at"))})
+                      for m in payload.get("messages", [])]
+    world.chat = ChatSettings(**payload.get("chat", {}))
 
     # Restart id issuing above everything restored, so a reloaded session
     # cannot mint an id that already exists.
@@ -285,6 +291,7 @@ def load(path: Path) -> World:
     world._ids = itertools.count(max(
         [highest] + list(world.requests) + list(world.plans) + list(world.approvals)
         + list(world.series) + list(world.charges) + list(world.payments)
+        + [m.id for m in world.messages]
     ) + 1)
     return world
 

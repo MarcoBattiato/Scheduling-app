@@ -88,4 +88,7 @@ def test_phi_commands_are_reads_or_writes_we_expect():
     phi = {n for n in names() if spec_of(build(by_name(n))).phi}
     # charge.list: a charge names the service it is for, and service names
     # are clinical (CONTROL_SURFACE.md §7) — a bill says what you were seen for.
-    assert phi == {"client.summary", "appointment.read", "view.snapshot", "charge.list"}
+    # message.send / message.list: people write to their clinician about why
+    # they are coming. The conversation is clinical by nature.
+    assert phi == {"client.summary", "appointment.read", "view.snapshot", "charge.list",
+                   "message.send", "message.list"}

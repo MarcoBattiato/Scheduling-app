@@ -309,6 +309,20 @@ override is not an escape hatch. Two asymmetries to fix while formalising this:
 | `system.reset` | Wipe and reseed | X | *admin* | ○ | ○ | live |
 | `system.save` | Snapshot session to disk | W | *admin* | ○ | ○ | live |
 
+### M. Clinician chat
+
+| Command | Effect | Tier | Prov | Client | Asst | Status |
+|---|---|---|---|---|---|---|
+| `message.send` | Write in a client's conversation with the practice | W,P | ● | ◐ | ○ | new |
+| `message.list` | One conversation, or every conversation's summary | R,P | ● | ◐ | ○ | new |
+| `message.mark_read` | Mark what the other side wrote as read | W | ● | ◐ | ○ | new |
+
+> Withheld from assistants entirely, **reads included**. People write to their
+> clinician about why they are coming; that conversation must never reach a
+> model. Who wrote a message is taken from the session, not offered to the
+> caller. The assistant's hand-off into this chat (INTEGRATIONS_PLAN.md
+> Part 3) is a separate, deliberate path.
+
 ### K. Payments — planned
 
 | Command | Effect | Tier | Prov | Client | Asst |

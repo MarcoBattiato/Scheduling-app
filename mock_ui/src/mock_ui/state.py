@@ -92,6 +92,32 @@ def every(weeks: int) -> str:
 
 
 @dataclass
+class Message:
+    """One message in a client's conversation with the practice.
+
+    Clinical: people write about why they are coming. Kept out of the shared
+    state the screens poll, out of the activity log, and away from any
+    assistant (the commands are FORBIDDEN to one) — read only through the gate.
+    """
+    id: int
+    client_id: str                  # whose conversation
+    author: str                     # "client" | "provider" — from the session
+    text: str
+    at: datetime
+    read_at: Optional[datetime] = None   # when the other side read it
+
+
+@dataclass
+class ChatSettings:
+    enabled: bool = True
+    # Told to clients so nobody waits for a reply that is not coming tonight.
+    reply_expectation: str = "Your clinician usually replies within one working day."
+    # The practice confirms the numbers and wording.
+    emergency_note: str = ("This is not an emergency service. If you are in danger "
+                           "or need help now, call 995, or the SOS 24-hour line on 1767.")
+
+
+@dataclass
 class Series:
     """The same service at the same time every few weeks — weekly therapy,
     say — so the client does not have to ask for each session.
@@ -208,6 +234,9 @@ class World:
         # Every command that went through the gate (control.py): who, through
         # which channel, in which conversation, and what came of it.
         self.audit: List[dict] = []
+        # Client ↔ clinician conversations — see Message.
+        self.messages: List[Message] = []
+        self.chat = ChatSettings()
         # Money — see billing.py.
         self.billing = BillingSettings()
         self.charges: Dict[int, Charge] = {}
@@ -463,6 +492,50 @@ class World:
             if secrets.compare_digest(known, token):
                 return person
         return None
+
+    # -- the clinician chat -----------------------------------------------
+
+    MAX_MESSAGE = 4000
+
+    def send_message(self, client_id: str, author: str, text: str) -> Message:
+        if client_id not in self.clients:
+            raise KeyError(f"no client called {client_id!r}")
+        if author not in ("client", "provider"):
+            raise ValueError("a message is written by the client or the provider")
+        if not self.chat.enabled:
+            raise ValueError("messaging is switched off for this practice")
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("an empty message is not sent")
+        if len(text) > self.MAX_MESSAGE:
+            raise ValueError(f"a message is at most {self.MAX_MESSAGE} characters")
+        message = Message(id=next(self._ids), client_id=client_id, author=author,
+                          text=text, at=datetime.now())
+        self.messages.append(message)
+        # That someone wrote, never what: the log is seen far more widely
+        # than a conversation should be.
+        self._note(f"{'the practice' if author == 'provider' else client_id} wrote "
+                   f"in {client_id}'s conversation")
+        return message
+
+    def conversation(self, client_id: str) -> List[Message]:
+        if client_id not in self.clients:
+            raise KeyError(f"no client called {client_id!r}")
+        return [m for m in self.messages if m.client_id == client_id]
+
+    def mark_read(self, client_id: str, reader: str) -> int:
+        """Everything the other side wrote in this conversation, as read."""
+        other = "provider" if reader == "client" else "client"
+        now, marked = datetime.now(), 0
+        for m in self.conversation(client_id):
+            if m.author == other and m.read_at is None:
+                m.read_at, marked = now, marked + 1
+        return marked
+
+    def unread(self, client_id: str, reader: str) -> int:
+        other = "provider" if reader == "client" else "client"
+        return sum(1 for m in self.messages
+                   if m.client_id == client_id and m.author == other and m.read_at is None)
 
     # -- repeating bookings --------------------------------------------
 
@@ -1836,6 +1909,11 @@ class World:
                 for s in self.catalogue.services(include_inactive=True)
             ],
             "practice_name": self.practice_name,
+            # The chat's settings — what clients are told — but never a word
+            # of any conversation: those are fetched through the gate.
+            "chat": {"enabled": self.chat.enabled,
+                     "reply_expectation": self.chat.reply_expectation,
+                     "emergency_note": self.chat.emergency_note},
             "billing": {**billing.settings_dict(self.billing),
                         "modes": billing.MODES, "methods": billing.PAY_METHODS,
                         "recorded_methods": list(billing.RECORDED_METHODS),

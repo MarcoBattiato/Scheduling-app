@@ -102,6 +102,9 @@ def args_for(name, world, cid):
         "appointment.mark_attendance": {"appointment_id": mine_appt, "attended": True},
         "appointment.place_manually": {"request_id": req.id, "start": when},
         "client.set_limits": {"per_day": 2},
+        "message.send": {"text": "Running ten minutes late"},
+        "message.list": {},
+        "message.mark_read": {},
     }[name]
 
 

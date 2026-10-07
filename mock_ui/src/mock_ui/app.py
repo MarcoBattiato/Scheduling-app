@@ -198,6 +198,9 @@ class SettingsIn(BaseModel):
     scope_to_horizon: Optional[bool] = None
     rehouse_orphans_on_run: Optional[bool] = None
     practice_name: Optional[str] = None
+    chat_enabled: Optional[bool] = None
+    chat_reply_expectation: Optional[str] = None
+    chat_emergency_note: Optional[str] = None
 
 
 # -- routes ---------------------------------------------------------
@@ -285,6 +288,24 @@ def session_for(person: str) -> Session:
 
 def _gate_error(exc: control.GateError):
     raise HTTPException(exc.status, str(exc)) from None
+
+
+class CommandIn(BaseModel):
+    args: dict = {}
+
+
+@app.post("/api/commands/{name}")
+def run_command(name: str, payload: CommandIn, as_: str = Query("provider", alias="as")):
+    """Any command, through the gate, as the person themselves. The screens'
+    way onto the gate — the clinician chat is the first feature to use it,
+    so its permissions are the contract's from the start."""
+    session = session_for(as_)
+    try:
+        outcome = gate().execute(session, control.build_command(name, payload.args, session))
+    except control.GateError as exc:
+        _gate_error(exc)
+    return {"status": outcome.status, "result": outcome.result,
+            "token": outcome.token, "summary": outcome.summary}
 
 
 @app.get("/api/drafts")
@@ -736,6 +757,15 @@ def settings(payload: SettingsIn):
         if not name:
             raise HTTPException(400, "the practice needs a name")
         world.practice_name = name[:80]
+    if payload.chat_enabled is not None:
+        world.chat.enabled = payload.chat_enabled
+    if payload.chat_reply_expectation is not None:
+        world.chat.reply_expectation = payload.chat_reply_expectation.strip()[:200]
+    if payload.chat_emergency_note is not None:
+        note = payload.chat_emergency_note.strip()
+        if not note:
+            raise HTTPException(400, "clients must always be told where to get urgent help")
+        world.chat.emergency_note = note[:400]
     return {"ok": True}
 
 

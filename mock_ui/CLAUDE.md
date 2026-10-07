@@ -206,6 +206,18 @@ key; a live key is refused) share one interface. Descriptions sent to the
 processor and shown to clients carry no service name. GST is off by default;
 when on, prices *include* it and the included part is recorded.
 
+**The clinician chat** (`World.messages`, commands `message.*`) is the first
+feature built on the gate from the start: the phone app reaches it only
+through `POST /api/commands/{name}?as=…`, so its permissions are the
+contract's. It is clinical, so it is deliberately **not** in `snapshot()`
+(which anyone can read today) and not in the activity log beyond "X wrote in
+Y's conversation"; each person fetches their own conversation through the
+gate. Who wrote a message is derived from the session. Every `message.*`
+command is FORBIDDEN to assistants, reads included — the assistant's
+hand-off into the chat is a separate path, still to be built. The practice's
+"reply expectation" and "emergency note" are shown above every client's
+conversation, and the emergency note cannot be blanked.
+
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider
 says so, and the decision is a pure function so it is testable without waiting

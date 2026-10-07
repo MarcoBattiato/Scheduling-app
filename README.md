@@ -178,7 +178,7 @@ Design and open questions: [`scheduling_engine/SPEC.md`](scheduling_engine/SPEC.
 
 ### `scheduling_contracts` — the interface layer
 
-Declarations only: the 51 typed commands that can be triggered from outside, the
+Declarations only: the 54 typed commands that can be triggered from outside, the
 permission matrix that says who may issue each one, and the ports the domain
 asks of storage, of a solver, and of an audit log. It has **no dependencies at
 all**, which is enforced by a test — it is the fixed point the other packages
@@ -314,7 +314,7 @@ cd calendar_store   && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 cd mock_ui          && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 ```
 
-830 tests: 251 for the engine, 64 for the store, 486 for the mock UI, 29 for the
+845 tests: 251 for the engine, 64 for the store, 501 for the mock UI, 29 for the
 contracts. See the note on the one known failure below.
 
 ---

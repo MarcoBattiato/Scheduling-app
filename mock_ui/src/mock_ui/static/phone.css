@@ -414,3 +414,19 @@ p.because { margin: 8px 4px; }
 .install-tip .main { flex: 1; font-size: 14px; }
 .install-tip button { border: 0; background: none; color: var(--muted); font-size: 22px;
                       line-height: 1; padding: 0 4px; cursor: pointer; min-height: 32px; }
+
+/* -- the clinician chat ---------------------------------------------- */
+
+.bubbles { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+.bubble { max-width: 82%; padding: 9px 13px; border-radius: 18px; font-size: 15px;
+          line-height: 1.35; overflow-wrap: anywhere; }
+.bubble.mine { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 6px; }
+.bubble.theirs { align-self: flex-start; background: var(--surface); border: 1px solid var(--line);
+                 border-bottom-left-radius: 6px; }
+.bubble-meta { font-size: 11px; opacity: .75; margin-top: 3px; }
+.composer { display: flex; gap: 8px; align-items: flex-end; }
+.composer textarea, .field textarea {
+  flex: 1; min-height: 48px; padding: 10px 12px; border-radius: 14px; resize: vertical;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); font: inherit; font-size: 16px; width: 100%;
+}
+.composer .btn { flex: none; }

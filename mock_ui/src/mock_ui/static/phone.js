@@ -186,6 +186,38 @@ function untilField(name) {
     <p class="hint" style="margin-top:-4px">Leave it empty to keep going until you stop it.</p>`;
 }
 
+// -- the clinician chat: fetched through the gate, never in /api/state ---
+
+// Conversations are clinical, so they are not in the shared state every
+// screen polls: each person asks the gate for their own, as themselves.
+const chat = {mine: null, summary: [], thread: {}};
+
+async function command(name, args) {
+  const res = await fetch(`/api/commands/${name}?as=${encodeURIComponent(me)}`, {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({args}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "That did not work");
+  return data.result;
+}
+
+const openThread = () => (isProvider() && tab.startsWith("more/messages/") ? tab.split("/")[2] : null);
+
+async function fetchChat() {
+  try {
+    if (isProvider()) {
+      chat.mine = null;
+      chat.summary = (await command("message.list", {})) || [];
+      const open = openThread();
+      if (open) chat.thread[open] = await command("message.list", {client_id: open});
+    } else {
+      chat.summary = [];
+      chat.mine = (await command("message.list", {})) || null;
+    }
+  } catch { /* messaging off, or a person who has gone: nothing to show */ }
+  return JSON.stringify([chat.mine, chat.summary, chat.thread[openThread()] || null]);
+}
+
 // -- talking to the server --------------------------------------------
 
 async function api(path, body) {
@@ -201,12 +233,31 @@ async function api(path, body) {
   return data;
 }
 
+let chatText = "";
+
 async function refresh(force) {
   const text = await (await fetch("/api/state")).text();
-  if (!force && text === stateText) return;
+  const conversation = await fetchChat();
+  if (!force && text === stateText && conversation === chatText) return;
   stateText = text;
+  chatText = conversation;
   state = JSON.parse(text);
   render(force);
+  markSeen();
+}
+
+// Opening a conversation reads it. Done after drawing, and only once per
+// batch of new messages, so the other side's "read" is honest.
+let marking = false;
+async function markSeen() {
+  const who = isProvider() ? openThread() : (currentView() === "messages" ? me : null);
+  const convo = isProvider() ? chat.thread[who] : chat.mine;
+  if (!who || !convo || !convo.unread || marking) return;
+  marking = true;
+  try { await command("message.mark_read", isProvider() ? {client_id: who} : {}); }
+  catch { /* try again next time */ }
+  marking = false;
+  refresh(true);
 }
 
 // -- rendering -------------------------------------------------------
@@ -217,6 +268,7 @@ const TABS = {
     ["book", "Book", "M12 5v14M5 12h14"],
     ["bookings", "Bookings", "M4 6h16v14H4zM4 10h16M8 3v4M16 3v4"],
     ["hours", "My hours", "M12 7v5l3 2M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18z"],
+    ["messages", "Messages", "M4 5h16v11H9l-5 4z"],
   ],
   provider: [
     ["home", "Home", "M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"],
@@ -231,7 +283,8 @@ function badges() {
   if (!isProvider()) {
     return {home: (state.approvals || []).filter(
       (a) => a.client_id === me && !a.applied && a.status === "pending").length
-      + chargesOf(me, "due").length};
+      + chargesOf(me, "due").length,
+      messages: (chat.mine && chat.mine.unread) || 0};
   }
   const plans = state.plans || [];
   const agreedWaiting = plans.filter((p) => {
@@ -242,12 +295,14 @@ function badges() {
   return {
     queue: (state.requests || []).filter(openRequest).length,
     plans: plans.filter((p) => p.status === "draft").length + agreedWaiting.length,
-    home: stranded().filter((a) => !a.pending).length + chargesOf(null, "proposed").length,
+    home: stranded().filter((a) => !a.pending).length + chargesOf(null, "proposed").length
+      + chat.summary.filter((t) => t.unread).length,
   };
 }
 
 const VIEWS = {
-  client: {home: clientHome, book: clientBook, bookings: clientBookings, hours: hoursView},
+  client: {home: clientHome, book: clientBook, bookings: clientBookings, hours: hoursView,
+           messages: clientMessages},
   provider: {home: providerHome, diary: diaryView, queue: queueView, plans: plansView,
              more: moreView},
 };
@@ -793,6 +848,70 @@ function exceptionSheet(presetDate) {
     </form>`;
 }
 
+// -- the clinician chat ----------------------------------------------
+
+function bubbles(messages, mineAuthor) {
+  if (!messages.length) return `<p class="hint" style="text-align:center">No messages yet.</p>`;
+  return `<div class="bubbles">${messages.map((m) => `
+    <div class="bubble ${m.author === mineAuthor ? "mine" : "theirs"}">
+      <div>${esc(m.text).replace(/\n/g, "<br>")}</div>
+      <div class="bubble-meta">${fmtWhen(m.at)}${m.author === mineAuthor && m.read ? " · read" : ""}</div>
+    </div>`).join("")}</div>`;
+}
+
+function composer(placeholder) {
+  return `<form data-form="message" class="composer">
+    <textarea name="text" rows="2" maxlength="4000" placeholder="${esc(placeholder)}"></textarea>
+    <button class="btn" type="submit">Send</button></form>`;
+}
+
+function clientMessages() {
+  const convo = chat.mine;
+  if (!convo) return `<h1>Messages</h1>${empty("Not available", "<p>Messaging is not offered right now.</p>")}`;
+  const settings = convo.settings || {};
+  if (!settings.enabled) {
+    return `<h1>Messages</h1>${empty("Messaging is switched off", `<p>${esc(settings.emergency_note || "")}</p>`)}`;
+  }
+  return `<h1>Messages</h1>
+    <p class="lead">Write to your clinician. ${esc(settings.reply_expectation || "")}</p>
+    <div class="card warn" style="font-size:14px">${esc(settings.emergency_note || "")}</div>
+    ${bubbles(convo.messages, "client")}
+    ${composer("Write a message")}
+    <p class="hint">Only you and your clinician see this conversation. It never goes to an AI assistant.</p>`;
+}
+
+function messagesView() {
+  const open = openThread();
+  if (open) {
+    const convo = chat.thread[open];
+    return `<button class="link" data-act="tab" data-tab="more/messages" style="margin:-8px 0 0 -4px">‹ Messages</button>
+      <h1>${esc(nameOf(open))}</h1>
+      ${convo ? bubbles(convo.messages, "provider") : `<p class="hint">Loading…</p>`}
+      ${composer(`Reply to ${nameOf(open)}`)}`;
+  }
+  const c = state.chat || {};
+  return `${backLink()}<h1>Messages</h1>
+    ${chat.summary.length ? `<div class="list">${chat.summary.map((t) => `
+      <button class="row" data-act="tab" data-tab="more/messages/${esc(t.client_id)}">
+        <span class="avatar">${esc(t.name.slice(0, 1).toUpperCase())}</span>
+        <div class="main"><div class="title">${esc(t.name)}${t.unread ? ` <span class="tag accent">${t.unread} new</span>` : ""}</div>
+          <div class="meta">${t.last_author === "provider" ? "You: " : ""}${esc(t.preview)}</div></div>
+        <span class="meta">${relDay(t.last_at)}</span></button>`).join("")}</div>`
+      : empty("No conversations yet", "<p>Clients can write to you from the Messages tab in their app.</p>")}
+    <h2>What clients are told</h2>
+    <form data-form="chat-settings" class="card">
+      <label class="row" style="padding:0;min-height:44px;border:0">
+        <span class="main"><span class="title">Offer messaging</span></span>
+        <input type="checkbox" name="enabled" ${c.enabled !== false ? "checked" : ""}></label>
+      <label class="field"><span>When to expect a reply</span>
+        <input name="reply" value="${esc(c.reply_expectation || "")}" autocomplete="off"></label>
+      <label class="field"><span>Where to get urgent help</span>
+        <textarea name="emergency" rows="3">${esc(c.emergency_note || "")}</textarea></label>
+      <p class="hint" style="margin-top:-4px">Shown above every client's conversation. Confirm the numbers and wording are right for your practice.</p>
+      <button class="btn secondary block" type="submit">Save</button>
+    </form>`;
+}
+
 // -- the provider: home ------------------------------------------------
 
 const stranded = () => (state.appointments || []).filter((a) => a.orphaned && a.status === "booked");
@@ -815,6 +934,15 @@ function providerHome() {
       <div class="main"><span class="tag warn">needs a decision</span>
         <h3 style="margin-top:6px">${plural(stuck.length, "booking is", "bookings are")} in time you're not working</h3>
         <p class="meta">${idle ? "Nothing has been done about them yet." : "Already being moved."}</p></div>
+      <span class="chev">›</span></button>`);
+  }
+  const unreadThreads = chat.summary.filter((t) => t.unread);
+  if (unreadThreads.length) {
+    cards.push(`<button class="card attention tap" data-act="tab" data-tab="${
+      unreadThreads.length === 1 ? `more/messages/${esc(unreadThreads[0].client_id)}` : "more/messages"}">
+      <div class="main"><span class="tag accent">messages</span>
+        <h3 style="margin-top:6px">${plural(unreadThreads.reduce((n, t) => n + t.unread, 0), "new message")}</h3>
+        <p class="meta">From ${unreadThreads.slice(0, 3).map((t) => esc(t.name)).join(", ")}</p></div>
       <span class="chev">›</span></button>`);
   }
   const fees = chargesOf(null, "proposed");
@@ -1335,6 +1463,7 @@ const MORE = [
   ["clients", "Clients", "Everyone and their history"],
   ["services", "Services", "What can be booked, for how long"],
   ["calendar", "Calendar sync", "Your diary in Google, Apple or Outlook"],
+  ["messages", "Messages", "Conversations with clients"],
   ["payments", "Payments", "Fees to decide, what is owed, what is paid"],
   ["billing", "Billing settings", "Fees, GST, how clients pay"],
   ["settings", "Scheduling", "How far ahead to plan, and when"],
@@ -1347,7 +1476,7 @@ function moreView() {
   const page = tab.split("/")[1];
   const pages = {hours: hoursView, away: awayView, clients: clientsView, services: servicesView,
                  settings: settingsView, activity: activityView, calendar: calendarView,
-                 payments: paymentsView, billing: billingView};
+                 payments: paymentsView, billing: billingView, messages: messagesView};
   if (pages[page]) return pages[page]();
   return `<h1>More</h1><div class="list">${MORE.map(([id, title, meta]) => `
     <button class="row" data-act="more-open" data-page="${id}">
@@ -1743,6 +1872,7 @@ function go(next) {
 // Choices belong to the person who made them; nobody inherits a half-picked
 // booking from whoever was on the screen before.
 function resetChoices() {
+  chat.mine = null; chat.summary = []; chat.thread = {}; chatText = "";
   ui.pickers = {}; ui.bookService = null; ui.bookEvery = 0; ui.diaryDay = null;
   ui.runOver = null; ui.runSeen = null; ui.picked = {};
 }
@@ -2016,6 +2146,22 @@ const ACTIONS = {
 };
 
 const FORMS = {
+  message: async (form) => {
+    const text = form.elements.text.value.trim();
+    if (!text) return;
+    const to = isProvider() ? {client_id: openThread()} : {};
+    try {
+      await command("message.send", {...to, text});
+      form.reset();
+      if (document.activeElement) document.activeElement.blur();
+      await refresh(true);
+    } catch (e) { toast(e.message); }
+  },
+  "chat-settings": async (form) => {
+    const f = form.elements;
+    await done(api("/api/settings", {chat_enabled: f.enabled.checked,
+      chat_reply_expectation: f.reply.value, chat_emergency_note: f.emergency.value}), "Saved");
+  },
   billing: async (form) => {
     const f = form.elements;
     await done(api("/api/billing", {
