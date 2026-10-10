@@ -95,7 +95,13 @@ class Conversation:
     visible: List[dict] = field(default_factory=list)    # what the person sees
     typed: List[str] = field(default_factory=list)       # the person's own words, for a hand-off
     handoff_offered: bool = False
-    handoff_sent: bool = False
+    # How many of `typed` have been passed to the clinician. A later message
+    # in distress can be passed on too — only what was not sent before.
+    sent_upto: int = 0
+
+    @property
+    def handoff_sent(self) -> bool:
+        return 0 < self.sent_upto >= len(self.typed)
 
 
 def _client_prompt(world) -> str:
@@ -387,6 +393,8 @@ class Assistant:
             convo = self.conversations.get(conversation_id)
             if convo is None or convo.principal != principal:
                 raise control.NotFound("no such conversation")
+            # Most recently used last, so the limit evicts the oldest unused.
+            self.conversations[conversation_id] = self.conversations.pop(conversation_id)
             return convo
         convo = Conversation(id=secrets.token_urlsafe(12), principal=principal,
                              created=datetime.now())
@@ -457,7 +465,10 @@ class Assistant:
         guessed date ranges and invented appointment numbers."""
         def read(name, args):
             try:
-                return self.gate.execute(session, control.build_command(name, args, session)).result
+                # The diary sent with every message is the app's own doing, not
+                # something the person asked for: not a row on the audit trail.
+                return self.gate.execute(session, control.build_command(name, args, session),
+                                         audit=False).result
             except control.GateError:
                 return []
         now = datetime.now()
@@ -524,8 +535,19 @@ class Assistant:
         """Swap any client name the provider typed for this conversation's
         pseudonym, before it leaves the practice."""
         aliases = self.gate._pseudonyms(session)
-        for cid, client in sorted(self.world.clients.items(), key=lambda kv: -len(kv[1].name)):
-            pattern = re.compile(rf"\b{re.escape(client.name)}\b", re.IGNORECASE)
+        # Full names first, then first names ("Alice" for "Alice Tan"), longest
+        # first so one name is never swapped inside another.
+        forms = []
+        for cid, client in self.world.clients.items():
+            name = client.name.strip()
+            if not name:
+                continue
+            forms.append((name, cid))
+            first = name.split()[0]
+            if first != name and len(first) > 1:
+                forms.append((first, cid))
+        for form, cid in sorted(forms, key=lambda f: -len(f[0])):
+            pattern = re.compile(rf"\b{re.escape(form)}\b", re.IGNORECASE)
             if pattern.search(text):
                 text = pattern.sub(aliases.of(cid), text)
         return text
@@ -548,16 +570,31 @@ class Assistant:
         # "Send this to my clinician" link is always there for them.
         if principal.role is not Role.CLIENT or not convo.typed:
             raise control.Forbidden("nothing to pass on here")
-        if convo.handoff_sent:
+        if not self.world.chat.enabled:
+            raise control.Forbidden("messaging is switched off for this practice")
+        new = convo.typed[convo.sent_upto:]
+        if not new:
             return self.view(convo)
-        text = ("Passed on from the scheduling assistant, at my request. What I wrote:\n\n"
-                + "\n\n".join(f"“{t}”" for t in convo.typed))
+        head = "Passed on from the scheduling assistant, at my request. What I wrote:\n\n"
+        # Too long for one message: keep the latest words, which are the ones
+        # that made them reach for this, and drop the oldest.
+        quoted, room = [], self.world.MAX_MESSAGE - len(head)
+        for t in reversed(new):
+            piece = f"“{t}”"
+            if len(piece) + 2 > room:
+                if not quoted:
+                    quoted.append(piece[-room:])
+                break
+            quoted.insert(0, piece)
+            room -= len(piece) + 2
+        text = head + "\n\n".join(quoted)
         sent = self.gate.execute(Session(principal), control.build_command(
-            "message.send", {"text": text[: self.world.MAX_MESSAGE]}, Session(principal)))
+            "message.send", {"text": text}, Session(principal)))
         for message in self.world.messages:
             if message.id == sent.result["message_id"]:
                 message.handoff = True                # so the clinician sees it may need attention
-        convo.handoff_sent = True
+        convo.sent_upto = len(convo.typed)
+        convo.handoff_offered = False
         convo.visible.append({"role": "assistant", "text":
                               "Sent to your clinician. " + self.world.chat.reply_expectation})
         return self.view(convo)
@@ -566,4 +603,7 @@ class Assistant:
         return {"conversation_id": convo.id, "messages": convo.visible,
                 "handoff_offered": convo.handoff_offered and not convo.handoff_sent,
                 "handoff_sent": convo.handoff_sent,
+                # The emergency contacts are shown either way; the button to
+                # send only when there is a clinician chat to send it to.
+                "can_hand_off": self.world.chat.enabled,
                 "emergency_note": self.world.chat.emergency_note if convo.handoff_offered else None}

@@ -248,7 +248,7 @@ def test_appointments_carry_enough_to_be_worth_hovering_over(world):
 def test_a_client_summary_counts_what_actually_happened(world):
     place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
-    world.mark_attendance(booked.id, attended=False)
+    world.mark_attendance(booked.id, attended=False, now=booked.range.end)   # once it has happened
     place(world, "alice", 60, 1, 9, 17)
     (second,) = world.store.appointments_for("alice", at(1, 0), at(2, 0))
     world.cancel_appointment(second.id)

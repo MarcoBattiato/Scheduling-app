@@ -160,8 +160,12 @@ def test_the_provider_cancelling_is_recorded_differently(client):
 
 
 def test_the_provider_can_record_attendance(client):
-    state = client.get("/api/state").json()
-    booked = next(a for a in state["appointments"] if a["status"] == "booked")
+    from datetime import datetime, timedelta
+    from mock_ui import app as module
+    # Earlier today: started, and still inside the window the screens show.
+    start = datetime.now().replace(hour=0, minute=1, second=0, microsecond=0)
+    past = module.world.store.book_appointment("alice", "session-60", start, start + timedelta(hours=1))
+    booked = {"id": past.id}
 
     assert client.post(f"/api/appointments/{booked['id']}/attendance",
                        json={"attended": False}).status_code == 200
@@ -254,11 +258,14 @@ def test_a_discontinued_service_disappears_from_sale_but_not_from_the_record(cli
     services = {s["id"]: s for s in client.get("/api/state").json()["services"]}
     assert services["session-90"]["active"] is False, "still listed to the provider"
 
-    booked = client.post("/api/requests", json={
+    asked = client.post("/api/requests", json={
         "client_id": "alice", "service_id": "session-90",
         "preferred_start": at(0, 9),
     })
-    assert booked.status_code == 200, "existing ids still resolve for rescheduling"
+    assert asked.status_code == 400, "off sale: no new requests for it"
+    # ...but the record still resolves, so a booking made for it can be moved.
+    from mock_ui import app as module
+    assert module.world.catalogue.get_service("session-90").name
 
 
 def test_duplicate_service_ids_are_refused(client):
@@ -341,7 +348,7 @@ def test_a_session_is_saved_without_being_asked(client, tmp_path, monkeypatch):
     assert "dana" in (tmp_path / "auto.json").read_text()
 
 
-def test_resetting_clears_the_saved_session_too(client, tmp_path, monkeypatch):
+def test_resetting_saves_the_fresh_session_over_the_old(client, tmp_path, monkeypatch):
     """Otherwise a reset undoes itself at the next restart."""
     from mock_ui import app as module
     monkeypatch.setattr(module, "SNAPSHOT", tmp_path / "auto.json")
@@ -350,7 +357,17 @@ def test_resetting_clears_the_saved_session_too(client, tmp_path, monkeypatch):
 
     client.post("/api/reset")
 
-    assert not (tmp_path / "auto.json").exists()
+    assert "dana" not in (tmp_path / "auto.json").read_text(), \
+        "saved as reset, so a restart does not bring the old session back"
+
+
+def test_attendance_waits_until_the_session_has_started(client):
+    state = client.get("/api/state").json()
+    future = next(a for a in state["appointments"] if a["status"] == "booked")
+
+    response = client.post(f"/api/appointments/{future['id']}/attendance", json={"attended": True})
+
+    assert response.status_code == 409 and "not started" in response.json()["detail"]
 
 
 def test_the_snapshot_lives_beside_the_package_not_the_shell():

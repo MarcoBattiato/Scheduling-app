@@ -285,9 +285,11 @@ in solver treatment:
    rejected, and `respond_to_proposal` (§11) needs to surface that distinctly (e.g.
    a `stale_proposal` result) rather than silently no-op'ing, so the caller can tell
    the client their accepted offer is no longer available.
-4. **Apply independently.** As responses arrive, each confirmed move is applied to
-   `BookedSlots` on its own, immediately — never gated on the rest of that solve's
-   proposals also succeeding. A durable, reusable option pool is the point: a
+4. **Apply independently.** Each confirmed move is applied to `BookedSlots` on
+   its own — never gated on the rest of that solve's proposals also succeeding.
+   (The mock UI, which owns negotiation for now, records an acceptance and writes
+   it when the provider settles the plan; the settle applies each agreed change
+   independently, except a booking whose slot another move must vacate first.) A durable, reusable option pool is the point: a
    partial success still benefits future passes even if it doesn't fully resolve
    the request that triggered it.
 
@@ -388,10 +390,10 @@ out versus one hour out are different behaviours, and only a stored
 of that, so the residual gap is small. Revisit only if late cancellations turn
 out to be worth pricing.
 
-**Declined reschedule offers** are also not persisted. A refusal marks that
-appointment unmovable for subsequent solves and nothing more; there is no
-per-date block of the kind §9 describes. Deliberately simpler: the alternative
-adds a second kind of history for a signal that has no consumer yet.
+**Declined reschedule offers** are recorded as §9 describes: the mock UI writes a
+single-date block into that client's availability for the declined slot ("not
+that time"), and a refusal ("not at all") additionally marks the appointment
+unmovable for subsequent solves.
 
 ### 10.0.2 Availability constrains, preference costs
 

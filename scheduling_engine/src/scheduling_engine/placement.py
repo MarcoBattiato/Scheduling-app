@@ -748,17 +748,24 @@ def _break_symmetry(
     by_request: Dict[int, List[int]],
     chosen: Sequence[cp_model.IntVar],
 ) -> None:
-    """Two requests wanting the same duration in the same windows are
-    interchangeable: swapping them is a different assignment with an identical
-    cost, and the solver would otherwise explore every permutation. Force them
-    into start order, and make the later one placeable only if the earlier one
-    is.
+    """Two requests that are truly interchangeable — same client, same
+    duration, same windows, same wished-for time — give the same cost however
+    they are swapped, and the solver would otherwise explore every
+    permutation. Force them into start order, and make the later one
+    placeable only if the earlier one is.
+
+    Only then: two clients with the same windows are not interchangeable
+    (each has their own limits and their own wish), and neither are one
+    client's two requests wishing for different times. Ordering those would
+    cut off the best plan, or the only feasible one.
     """
     groups: Dict[Tuple, List[int]] = {}
     for index, request in enumerate(requests):
         key = (
+            request.client_id,
             request.duration_minutes,
             tuple(sorted((w.start, w.end) for w in request.desired)),
+            request.preferred_start,
         )
         groups.setdefault(key, []).append(index)
 

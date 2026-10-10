@@ -141,9 +141,9 @@ from the same queue (`Plan.queue`) still waits for the provider.
 **A session the clinic has to move** — a booking in the time, or a repeating session
 falling on it — gets `Request.latest` from `SchedulingPolicy.reschedule_window`
 (same week by default; same month, N days, or anywhere) and is only placed
-before it. When the window closes with nothing found, a one-off booking is
-looked for further out (`keep_looking`: there is no alternative), a repeating
-session lapses. A client who marked themselves away is told exactly that.
+before it. When the window closes with nothing found, a repeating session
+lapses; a booking being moved reaches its own time first, and goes to the
+provider's decision card. A client who marked themselves away is told exactly that.
 
 `provider_away` is the newest way to get the *origin* wrong. A client rehoused because
 the provider fell ill will accept the slot they are offered, and the booking is

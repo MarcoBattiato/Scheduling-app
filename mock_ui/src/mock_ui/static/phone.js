@@ -367,7 +367,12 @@ function render(force) {
   const active = document.activeElement;
   const typing = active && active.closest && active.closest("#view")
     && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName);
-  if (typing && !force) return;
+  if (typing && !force) {
+    // Not now — but not forgotten: the next poll draws it even if nothing
+    // else has changed by then.
+    stateText = "";
+    return;
+  }
 
   renderHeader();
   renderTabs();
@@ -1058,11 +1063,12 @@ function assistantSheet() {
   const handoff = convo && convo.handoff_offered ? `
     <div class="card warn">
       <p style="margin:0 0 8px"><b>${esc(convo.emergency_note || "")}</b></p>
+      ${convo.can_hand_off === false ? "" : `
       <p style="margin:0 0 10px">Would you like to send what you've written here to your clinician?</p>
       <div class="pair" style="margin-top:0">
         <button class="btn" data-act="helper-handoff">Send to my clinician</button>
         <button class="btn secondary" data-act="tab" data-tab="messages">Write to them myself</button>
-      </div></div>` : "";
+      </div>`}</div>` : "";
   return `<div style="display:flex;justify-content:space-between;align-items:center">${head}
       ${convo ? `<button class="link" data-act="helper-new">New conversation</button>` : ""}</div>
     ${lines.length ? "" : `<p class="hint" style="margin-top:0">${isProvider()
@@ -1079,7 +1085,7 @@ function assistantSheet() {
     <p class="hint">It can only prepare changes — you confirm each one.${isProvider() ? "" :
       " It never sees your name or your messages to your clinician."}</p>
     ${isProvider() ? "" : `<div class="pair" style="margin-top:4px">
-      ${convo && !convo.handoff_offered && !convo.handoff_sent && lines.length
+      ${convo && convo.can_hand_off !== false && !convo.handoff_offered && !convo.handoff_sent && lines.length
         ? `<button class="link" data-act="helper-handoff-ask">Send this to my clinician</button>` : "<span></span>"}
       <button class="link" data-act="helper-opt-out" style="text-align:right">Turn the assistant off</button></div>`}`;
 }
@@ -1883,7 +1889,7 @@ function settingsView() {
     </div>
     <h2>When the clinic has to move a session</h2>
     <p class="hint">You away, or a repeating session on a closed day: where its new time may be.
-      If nothing is free in time, a one-off booking is looked for further out; a weekly one is skipped that week.</p>
+      If nothing is free in time, a weekly session is skipped that week; a booking comes to you to decide before its day.</p>
     <div class="choices">${[
       ["week", "Same week", "A weekly session never lands on top of next week's."],
       ["month", "Same month", ""],

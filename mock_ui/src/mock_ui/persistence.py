@@ -87,7 +87,7 @@ def save(world: World, path: Path) -> None:
              "series_id": r.series_id,
              "lapsed_reason": r.lapsed_reason, "seen_by": sorted(r.seen_by),
              "told_unplaced": r.told_unplaced,
-             "latest": _dt(r.latest), "keep_looking": r.keep_looking}
+             "latest": _dt(r.latest)}
             for r in world.requests.values()
         ],
         "series": [
@@ -230,7 +230,6 @@ def load(path: Path) -> World:
             seen_by=set(entry.get("seen_by", [])),
             told_unplaced=entry.get("told_unplaced", False),
             latest=_back(entry.get("latest")),
-            keep_looking=entry.get("keep_looking", True),
         )
     for entry in payload.get("series", []):
         world.series[entry["id"]] = Series(

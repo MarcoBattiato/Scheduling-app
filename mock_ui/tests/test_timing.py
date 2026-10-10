@@ -172,20 +172,9 @@ def test_a_day_off_over_a_booking_asks_the_client_to_move(world):
 
     assert result["rehoused"]
     request = next(r for r in world.requests.values() if r.replaces_appointment_id == booked.id)
-    assert request.latest == world.reschedule_deadline(booked.range.start) and request.keep_looking
+    assert request.latest == world.reschedule_deadline(booked.range.start)
     assert world.store.get_appointment(booked.id).status.value == "booked", "kept until moved"
     assert [n["kind"] for n in world.notices_for("bob")] == ["changed"]
-
-
-def test_a_booking_with_no_time_left_in_its_window_is_looked_for_further_out(world):
-    booked = world.store.book_appointment("bob", "s60", on(3, 10), on(3, 11))
-    world.provider_away(on(3, 0), on(3, 23, 59), action="reschedule")
-    request = next(r for r in world.requests.values() if r.replaces_appointment_id == booked.id)
-    request.latest = on(0, 0)                             # the window has closed
-
-    world.tick()
-
-    assert request.latest is None and request.status == "pending", "there is no alternative"
 
 
 # -- 8. the client's own time away ------------------------------------------------------

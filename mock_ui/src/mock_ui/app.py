@@ -289,8 +289,11 @@ def get_state(as_: Optional[str] = Query(None, alias="as")):
 
 
 def _tick() -> None:
+    before = len(world.log)
     world.tick()
     _last["full"], _last["world"] = world.snapshot(), world
+    if len(world.log) != before:      # every change notes itself: something happened
+        _save()
 
 
 @app.on_event("startup")
@@ -364,6 +367,8 @@ def submit_request(payload: RequestIn):
         )
     except KeyError as exc:
         raise HTTPException(400, str(exc.args[0])) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     # Deliberately does NOT run the scheduler. A request arriving is not a
     # reason to re-plan the week — see policy.py.
     return {"request_id": request.id}
@@ -458,7 +463,12 @@ def assistant_opt_in(payload: OptIn, as_: str = Query("provider", alias="as")):
 @app.post("/api/assistant/send")
 def assistant_send(payload: AssistantIn, as_: str = Query("provider", alias="as")):
     try:
-        return assistant().send(session_for(as_).principal, payload.conversation_id, payload.text)
+        out = assistant().send(session_for(as_).principal, payload.conversation_id, payload.text)
+        # Outside the request lock (the model is slow), so outside the
+        # autosave too: what the tools did — drafts, audit rows — is saved here.
+        with _ThreadSideLock():
+            _save()
+        return out
     except assistant_mod.Unavailable as exc:
         raise HTTPException(503, str(exc)) from None
     except assistant_mod.AssistantError as exc:
@@ -811,6 +821,8 @@ def cancel_appointment(appointment_id: int, payload: CancelIn = CancelIn()):
         )
     except KeyError:
         raise HTTPException(404, "no such appointment") from None
+    except ValueError as exc:                  # no longer booked: history, not cancellable
+        raise HTTPException(409, str(exc)) from None
     return {"ok": True}
 
 
@@ -1034,13 +1046,16 @@ def reset(scenario: str = "simple"):
     about; see that module for why that has to be deliberate.
     """
     global world
-    world = World()
+    fresh = World()
     if scenario != "empty":
         try:
-            scenarios.load(world, scenario)
+            scenarios.load(fresh, scenario)
         except ValueError as exc:
-            raise HTTPException(404, str(exc)) from None
-    SNAPSHOT.unlink(missing_ok=True)
+            raise HTTPException(404, str(exc)) from None      # the live World untouched
+    world = fresh
+    # Saved, not deleted: a reset to "busy" or "empty" must still be that
+    # after a restart, not the default example.
+    _save()
     return {"ok": True, "scenario": scenario}
 
 
@@ -1093,6 +1108,9 @@ async def autosave(request, call_next):
         if request.method == "POST" and response.status_code < 400 \
                 and request.url.path != "/api/reset" and not _is_read(request.url.path):
             await run_in_threadpool(_save)           # never a half-changed World
+            # The cached snapshot is now older than this write; a busy poll
+            # must not hand the writer back the state from before it.
+            _last.clear()
     return response
 
 
@@ -1144,5 +1162,7 @@ def phone():
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
-if not world.clients:
+if not SNAPSHOT.exists():
+    # The very first start: something to look at. A session saved empty on
+    # purpose ("empty" scenario) stays empty.
     scenarios.load(world, "simple")

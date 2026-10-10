@@ -73,6 +73,28 @@ SPAN = lambda: {"start": datetime.now().isoformat(),                       # noq
                 "end": (datetime.now() + timedelta(days=28)).isoformat()}
 
 
+def _real_plans(world, cid):
+    """Ids that exist: a plan out with clients, a draft, and a question for
+    `cid` if there is one. Aiming at id 1 hit a Charge, so these writes were
+    NotFound and never really tested."""
+    if not any(p.status in ("awaiting_clients", "answered") for p in world.plans.values()):
+        world.propose(max_displacements=2)
+        first = next((p for p in world.plans.values() if p.status == "draft"), None)
+        if first:
+            world.provider_approve(first.id)
+    out_plan = next((p.id for p in world.plans.values()
+                     if p.status in ("awaiting_clients", "answered")), 0)
+    if not any(p.status == "draft" for p in world.plans.values()):
+        world.submit_request(cid, "session-60",
+                             (datetime.now() + timedelta(days=3)).replace(hour=11, minute=0).isoformat())
+        world.propose(max_displacements=0)
+    draft_plan = next((p.id for p in world.plans.values() if p.status == "draft"), 0)
+    question = next((a.id for a in world.approvals.values()
+                     if a.client_id == cid and a.status == "pending"),
+                    next((a.id for a in world.approvals.values() if a.status == "pending"), 0))
+    return out_plan, draft_plan, question
+
+
 def args_for(name, world, cid):
     """Valid arguments for `name`, aimed at something `cid` owns."""
     when = (datetime.now() + timedelta(days=9)).replace(hour=10, minute=0, second=0,
@@ -81,6 +103,8 @@ def args_for(name, world, cid):
     mine_appt = booked(world, cid)[0].id
     req = world.submit_request(cid, "session-60", when)
     series = world.start_series(cid, "session-60", when)
+    needs_plans = {"approval.respond", "plan.approve", "plan.settle", "plan.discard"}
+    out_plan, draft_plan, question = _real_plans(world, cid) if name in needs_plans else (0, 0, 0)
     return {
         "appointment.read": {"window": SPAN()},
         "availability.read": {"window": SPAN()},
@@ -96,9 +120,10 @@ def args_for(name, world, cid):
         "series.stop": {"series_id": series.id},
         "appointment.cancel": {"appointment_id": mine_appt},
         "appointment.request_reschedule": {"appointment_id": mine_appt},
-        "approval.respond": {"approval_id": 1, "answer": "accept"},
-        "plan.propose": {}, "plan.approve": {"plan_id": 1}, "plan.settle": {"plan_id": 1, "how": "agreed"},
-        "plan.discard": {"plan_id": 1},
+        "approval.respond": {"approval_id": question, "answer": "accept"},
+        "plan.propose": {}, "plan.approve": {"plan_id": draft_plan},
+        "plan.settle": {"plan_id": out_plan, "how": "agreed"},
+        "plan.discard": {"plan_id": draft_plan},
         "appointment.mark_attendance": {"appointment_id": mine_appt, "attended": True},
         "appointment.place_manually": {"request_id": req.id, "start": when},
         "client.set_limits": {"per_day": 2},

@@ -13,8 +13,11 @@ from mock_ui.state import PROVIDER, World
 
 
 def monday() -> date:
+    """The next Monday at least two days away — on a Sunday, tomorrow is
+    inside the 24 hours' notice, which would make its bookings immovable."""
     today = date.today()
-    return today + timedelta(days=(7 - today.weekday()) % 7 or 7)
+    days = (7 - today.weekday()) % 7 or 7
+    return today + timedelta(days=days if days >= 2 else days + 7)
 
 
 def at(day_offset: int, hour: int, minute: int = 0) -> datetime:
@@ -701,26 +704,28 @@ def test_the_provider_setting_is_what_a_run_uses(world):
     never consulted and the setting did nothing at all.
     """
     world.policy.horizon_days = 3
+    world.policy.scope_to_horizon = False      # in play, so the horizon is what bounds it
     world.submit_request("alice", "s60",
                          (datetime.now() + timedelta(days=30)).isoformat())
 
     world.propose()
 
     plan = next((p for p in world.plans.values() if p.status == "draft"), None)
-    if plan and plan.placements:
-        assert plan.placements[0]["start"] < datetime.now() + timedelta(days=3)
+    assert plan and plan.placements, "placed, inside the provider's horizon"
+    assert plan.placements[0]["start"] < datetime.now() + timedelta(days=3)
 
 
 def test_an_explicit_horizon_still_overrides_the_setting(world):
     world.policy.horizon_days = 30
+    world.policy.scope_to_horizon = False
     world.submit_request("alice", "s60",
                          (datetime.now() + timedelta(days=20)).isoformat())
 
     world.propose(horizon_days=5)
 
     plan = next((p for p in world.plans.values() if p.status == "draft"), None)
-    if plan and plan.placements:
-        assert plan.placements[0]["start"] < datetime.now() + timedelta(days=5)
+    assert plan and plan.placements, "placed, inside the run's own horizon"
+    assert plan.placements[0]["start"] < datetime.now() + timedelta(days=5)
 
 
 # -- declining is not refusing ---------------------------------------

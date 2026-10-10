@@ -265,3 +265,41 @@ def test_a_clients_poll_works_out_only_that_clients_things(world, monkeypatch):
     world.snapshot_for("alice")
 
     assert set(asked) == {"alice"}
+
+
+def test_a_repeating_booking_for_a_withdrawn_service_ends_and_says_so(world):
+    series = world.start_series("alice", "s60", on(2, 10).isoformat(), every_weeks=1)
+    world.catalogue.deactivate_service("s60")
+
+    world.raise_due_sessions(now=datetime.now() + timedelta(days=7))
+
+    assert series.status == "stopped"
+    assert "no longer offers it" in world.notices_for("alice")[0]["text"]
+    with pytest.raises(ValueError):
+        world.submit_request("alice", "s60", on(3, 10).isoformat())
+
+
+def test_naming_another_clients_id_is_on_the_audit_trail(world):
+    from scheduling_contracts import Principal, Role, Session
+    gate = control.Gate(world)
+    session = Session(Principal(Role.CLIENT, "alice"), via_assistant=True, conversation_id="c")
+    before = len(world.audit)
+
+    with pytest.raises(control.NotFound):
+        gate.execute(session, control.build_command(
+            "appointment.read", {"client_id": "bob", "window": {
+                "start": "2026-01-01T00:00", "end": "2027-01-01T00:00"}}, session))
+
+    assert world.audit[before:] and world.audit[-1]["outcome"] == "refused"
+
+
+def test_asking_for_one_plans_questions_returns_only_that_plans(world):
+    from scheduling_contracts import Principal, Role, Session
+    plan, offer = offered(world)
+    gate = control.Gate(world)
+    session = Session(Principal(Role.PROVIDER))
+
+    other = gate.execute(session, control.build_command("approval.list", {"plan_id": plan.id + 999}, session))
+    this = gate.execute(session, control.build_command("approval.list", {"plan_id": plan.id}, session))
+
+    assert other.result == [] and [a["approval_id"] for a in this.result] == [offer.id]

@@ -242,7 +242,7 @@ class Gate:
 
     # -- the front door ---------------------------------------------------
 
-    def execute(self, session: Session, command) -> Outcome:
+    def execute(self, session: Session, command, audit: bool = True) -> Outcome:
         try:
             spec = spec_of(command)
         except LookupError:
@@ -250,7 +250,13 @@ class Gate:
         if session.via_assistant and not session.conversation_id:
             raise Invalid("an assistant session needs a conversation id")
 
-        command = self._as_seen_by(session, command)
+        try:
+            command = self._as_seen_by(session, command)
+        except NotFound:
+            # Naming somebody else's id, or a real id the assistant was never
+            # shown: exactly the probing the trail is for.
+            self._audit(session, spec.name, None, "refused", "named a client it may not reach")
+            raise
         target = self._resolve(command)
         decision = decide(session, command, target)
 
@@ -283,7 +289,7 @@ class Gate:
             self._audit(session, spec.name, target, "drafted", draft.summary)
             return Outcome("needs_confirmation", token=draft.token, summary=draft.summary)
 
-        result = self._run(session, command, spec.name, target)
+        result = self._run(session, command, spec.name, target, audit=audit)
         return Outcome("done", result=self._for(session, result))
 
     def confirm(self, session: Session, token: str) -> Outcome:
@@ -425,7 +431,8 @@ class Gate:
 
     # -- running ----------------------------------------------------------------
 
-    def _run(self, session, command, name, target, outcome="done", conversation=None):
+    def _run(self, session, command, name, target, outcome="done", conversation=None,
+             audit=True):
         try:
             result = HANDLERS[type(command)](self.world, command, session.principal)
         except KeyError as exc:
@@ -442,8 +449,8 @@ class Gate:
         # polls message.list every few seconds, and recording each one grew
         # the saved audit without limit. Reads through an assistant, writes,
         # refusals and failures are all still recorded.
-        if not (spec_of(command).tier is Tier.READ and not session.via_assistant
-                and outcome == "done"):
+        if audit and not (spec_of(command).tier is Tier.READ and not session.via_assistant
+                          and outcome == "done"):
             self._audit(session, name, target, outcome, "", conversation=conversation)
         return result
 
@@ -630,7 +637,8 @@ def _list_requests(w, c, p):
 def _list_approvals(w, c, p):
     mine = (lambda a: a.client_id == p.client_id) if p.role is Role.CLIENT else (lambda a: True)
     return [_approval(a) for a in w.approvals.values()
-            if mine(a) and w._outstanding(a)]
+            if mine(a) and w._outstanding(a)
+            and (c.plan_id is None or a.plan_id == int(c.plan_id))]
 
 
 def _list_services(w, c, p):
@@ -731,6 +739,7 @@ def _respond(w, c, p):
 
 def _propose(w, c, p):
     out = w.propose(alpha=c.alpha, max_displacements=c.max_displacements,
+                    allow_chains=c.allow_chains,
                     request_ids=[int(r) for r in c.request_ids] if c.request_ids else None,
                     horizon_days=c.horizon_days, reason=c.reason or "manual")
     return {k: out.get(k) for k in ("ran", "plan_id", "placements", "displacements", "reason")}
@@ -904,6 +913,11 @@ TOOL_HINTS = {
 }
 
 
+# Fields the contract has but the handlers do not use yet. Offering them would
+# let a model write a note or a reason that silently goes nowhere.
+_NOT_OFFERED = {("request.submit", "note"), ("appointment.cancel", "reason")}
+
+
 def tools_for(session: Session) -> List[dict]:
     """The commands an assistant acting for this person may ask for, as tool
     definitions. Cut to the person: a client's assistant is not even told
@@ -920,6 +934,8 @@ def tools_for(session: Session) -> List[dict]:
         props, required = {}, []
         for f in dataclasses.fields(cls):
             if f.name == "client_id" and role is Role.CLIENT:
+                continue
+            if (name, f.name) in _NOT_OFFERED:
                 continue
             schema = _schema_for(hints[f.name])
             if f.name == "client_id":

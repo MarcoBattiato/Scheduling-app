@@ -305,15 +305,24 @@ def load(path: Path) -> Scenario:
 # --------------------------------------------------------------------------
 
 
-def build_page(scenario: Scenario, alphas: Sequence[float]) -> str:
-    sections = []
+def _runs(scenario: Scenario, alphas: Sequence[float]) -> list:
+    """One solve per alpha, done once: the page and the terminal summary must
+    describe the same plans, and a time-limited solve run twice need not
+    return the same one."""
+    out = []
     for alpha in alphas:
         config = CostConfig(
             alpha=alpha,
             grid_minutes=scenario.config.grid_minutes,
             service_durations=scenario.config.service_durations,
         )
-        result = _run(scenario, config)
+        out.append((alpha, config, _run(scenario, config)))
+    return out
+
+
+def build_page(scenario: Scenario, alphas: Sequence[float], runs: Optional[list] = None) -> str:
+    sections = []
+    for alpha, config, result in (runs if runs is not None else _runs(scenario, alphas)):
         heading = (
             scenario.title if len(alphas) == 1
             else f"{scenario.title} — alpha {alpha:g}"
@@ -402,7 +411,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             alphas = [float(a) for a in args.alpha.split(",")]
         else:
             alphas = [scenario.config.alpha]
-        page_html = build_page(scenario, alphas)
+        runs = _runs(scenario, alphas)
+        page_html = build_page(scenario, alphas, runs)
     except ScenarioError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -415,13 +425,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           f"({len(scenario.movable)} movable) · "
           f"max_displacements={scenario.max_displacements}")
 
-    for alpha in alphas:
-        config = CostConfig(
-            alpha=alpha,
-            grid_minutes=scenario.config.grid_minutes,
-            service_durations=scenario.config.service_durations,
-        )
-        result = _run(scenario, config)
+    for alpha, config, result in runs:
         rebooked = (f" · rebooked {len(result.displacements)}"
                     if result.displacements else "")
         print(f"alpha {alpha:g}: placed {len(result.placements)}/"

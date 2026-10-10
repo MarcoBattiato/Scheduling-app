@@ -481,3 +481,50 @@ def test_ollama_down_is_said_plainly(world):
 
     with pytest.raises(assistant_mod.AssistantError, match="Ollama"):
         helper.send(DAN, None, "hi")
+
+
+def test_later_distress_in_the_same_conversation_can_be_passed_on_too(world):
+    """Once sent, the card used to stay hidden for good."""
+    helper, claude = make(world, reply("I'm sorry."), reply("I'm sorry."))
+    first = helper.send(DAN, None, "I can't cope")
+    helper.handoff(DAN, first["conversation_id"])
+
+    again = helper.send(DAN, first["conversation_id"], "It is getting worse, I can't cope")
+    assert again["handoff_offered"] is True
+    helper.handoff(DAN, first["conversation_id"])
+
+    second = world.conversation("dan")[-1].text
+    assert "getting worse" in second and "“I can't cope”" not in second, "only the new words"
+
+
+def test_a_long_hand_off_keeps_the_latest_words(world):
+    world.MAX_MESSAGE = 200
+    helper, claude = make(world, *[reply("ok")] * 4)
+    convo = helper.send(DAN, None, "x" * 150)["conversation_id"]
+    helper.send(DAN, convo, "y" * 150)
+    helper.send(DAN, convo, "please tell my clinician I can't cope")
+
+    helper.handoff(DAN, convo)
+
+    sent = world.conversation("dan")[-1].text
+    assert "I can't cope" in sent and len(sent) <= 200
+
+
+def test_with_messaging_off_the_card_shows_help_but_no_send_button(world):
+    world.chat.enabled = False
+    helper, claude = make(world, reply("I'm sorry."))
+
+    out = helper.send(DAN, None, "I can't cope")
+
+    assert out["handoff_offered"] and out["can_hand_off"] is False and out["emergency_note"]
+    with pytest.raises(Exception):
+        helper.handoff(DAN, out["conversation_id"])
+
+
+def test_a_first_name_typed_alone_is_still_pseudonymised(world):
+    world.clients["dan"].name = "Dan Lim"
+    helper, claude = make(world, reply("ok"))
+
+    helper.send(PROVIDER, None, "When is Dan coming in?")
+
+    assert "Dan" not in claude.sent()

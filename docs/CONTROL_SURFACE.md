@@ -153,9 +153,11 @@ deciding this.
 | `availability.clear_exception` | Undo an override | W | ● | ◐ | ✎ | gap |
 | `availability.read` | Resolved segments | R | ● | ◐ | ◐ | gap |
 
-> Changing availability **never reschedules anybody** — stranded bookings become a
-> query, not an event. That property is load-bearing and must survive the
-> refactor.
+> Changing availability **never reschedules anybody by itself**. Since October
+> 2026 the provider taking time off over existing bookings must choose first —
+> ask them all to move, or don't take the time off (`TimeOffConflict`, a 409
+> listing them) — so bookings are never left in time nobody is working. That
+> property is load-bearing and must survive the refactor.
 
 ### C. Requests
 
@@ -450,13 +452,18 @@ load-bearing before real data exists.
    provider's, corrupting the provenance that anchoring will read.
 4. **`approval.respond` has no ownership check.** Anyone can answer anyone's
    consent question. This is the most serious of the four — it forges agreement.
-5. **`snapshot()` returns the whole world.** Filtering happens in the browser.
+5. **`snapshot()` returns the whole world to the provider's screens and to any
+   request that names no person.** A client's screens get only their own slice
+   (`World.snapshot_for`, `/api/state?as=<client>`), but with no sign-in the
+   `as` is still just a claim.
 6. **Optimiser parameters are unbounded.** `horizon_days` is clamped only at the
    bottom (`max(1, …)`), so a four-digit value is accepted and the solve grows
    with it. `grid_minutes` and `time_limit_seconds` are not exposed but are not
    bounded either once they are. Needs `optimiser.set_bounds` and clamping on
    both the standing-default and per-run-override paths.
-7. **No audit log.**
+7. **The audit log exists** (`World.audit`, persisted) but only for what goes
+   through the gate: assistant actions, the clinician chat, and refused probes.
+   The screens' own routes are not on it yet.
 8. **Negotiation lives in `mock_ui`,** which is documented as throwaway. It needs
    to move behind the gate — into the domain — rather than be reimplemented in
    whatever replaces the front end.

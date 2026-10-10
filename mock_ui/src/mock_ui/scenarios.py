@@ -192,7 +192,7 @@ def busy(world: World) -> None:
         ("frank", "Frank", (2, 4), "14:00", "17:00"),
         ("gina", "Gina", (0, 3), "09:00", "12:00"),         # school hours
         ("hugo", "Hugo", (1, 3), "15:00", "17:00"),
-        ("iris", "Iris", (4,), "09:00", "13:00"),           # Fridays only
+        ("iris", "Iris", (3, 4), "09:00", "13:00"),         # Thursdays and Fridays
     ]
     for client_id, name, days, start, end in people:
         world.add_client(client_id, name)
@@ -257,7 +257,8 @@ def busy(world: World) -> None:
     # -- and what is waiting --------------------------------------------
     # Carol again: one morning a week, and it is taken.
     world.submit_request("carol", "session-60", _at(monday, 1, 9).isoformat())
-    # Iris only does Fridays, and the morning is filling up.
+    # Iris would like Friday, already booked that morning; Thursday is her
+    # other day, so there is somewhere to offer.
     world.submit_request("iris", "session-60", _at(monday, 4, 11).isoformat())
     # Straightforward, for contrast.
     world.submit_request("erin", "session-60", _at(monday, 3, 10).isoformat())

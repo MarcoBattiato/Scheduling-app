@@ -317,3 +317,18 @@ def test_a_displaced_booking_can_be_moved_back_towards_its_wish_for_free():
     (moved,) = result.displacements
     assert moved.now.start == at(9), "moved back to where alice actually wanted"
     assert result.preference_gap_minutes == 0
+
+
+def test_two_clients_with_the_same_windows_are_not_treated_as_interchangeable():
+    """Forcing the first-listed request into the earlier slot would hand each
+    client the other's wished-for hour. Only identical requests (same client,
+    same wish) may be ordered for speed."""
+    result = solve_placements(
+        [wants("late", 60, [(at(9), at(11))], preferred=at(10), client="alice"),
+         wants("early", 60, [(at(9), at(11))], preferred=at(9), client="bob")],
+        [free(at(9), at(11))], CostConfig(alpha=0.0),
+    )
+
+    starts = {p.request_id: p.range.start for p in result.placements}
+    assert starts == {"late": at(10), "early": at(9)}
+    assert result.preference_gap_minutes == 0

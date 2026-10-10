@@ -96,11 +96,11 @@ class Request:
     # The client has been told no time has been found yet (once, not per run).
     told_unplaced: bool = False
     # A session the clinic has to move must find its new time before this
-    # (SchedulingPolicy.reschedule_window). When it passes: a one-off booking
-    # is looked for further out (`keep_looking`, "if there is no
-    # alternative"); a repeating session lapses — next week's is the next one.
+    # (SchedulingPolicy.reschedule_window). A repeating session lapses when it
+    # passes — next week's is the next one. A booking being moved never gets
+    # that far: its own time comes first, and then it is the provider's to
+    # decide (needs_decision).
     latest: Optional[datetime] = None
-    keep_looking: bool = True
 
 
 def every(weeks: int) -> str:
@@ -474,7 +474,8 @@ class World:
     # -- bookings ----------------------------------------------------
 
     def submit_request(
-        self, client_id: str, service_id: str, preferred_start: str
+        self, client_id: str, service_id: str, preferred_start: str,
+        allow_withdrawn: bool = False,
     ) -> Request:
         """A client asks for a service at a time they would like.
 
@@ -484,6 +485,10 @@ class World:
         wish never narrows what is possible for them.
         """
         service = self.catalogue.get_service(service_id)
+        # A withdrawn service is off sale: no new requests for it. Moving a
+        # booking already made for one still works (allow_withdrawn).
+        if not service.active and not allow_withdrawn:
+            raise ValueError(f"{service.name} is no longer offered")
         request = Request(
             id=next(self._ids),
             client_id=client_id,
@@ -663,6 +668,8 @@ class World:
         if client_id not in self.clients:
             raise KeyError(f"no client called {client_id!r}")
         service = self.catalogue.get_service(service_id)       # KeyError if unknown
+        if not service.active:
+            raise ValueError(f"{service.name} is no longer offered")
         if not 1 <= int(every_weeks) <= self.MAX_EVERY_WEEKS:
             raise ValueError(f"every_weeks must be 1 to {self.MAX_EVERY_WEEKS}")
         start = _parse_dt(first_start)
@@ -713,6 +720,17 @@ class World:
         raised = []
         for series in self.series.values():
             if series.status != "active":
+                continue
+            service = self.catalogue.get_service(series.service_id)
+            if not service.active:
+                # Withdrawn from sale: the series ends rather than selling it on
+                # every week. What is already booked stays.
+                series.status = "stopped"
+                self._tell(series.client_id, "changed",
+                           f"Your repeating {service.name} has ended: the practice no longer "
+                           f"offers it. Sessions already booked stay as they are.")
+                self._note(f"{series.client_id}'s repeating {service.name} ended — "
+                           f"the service was withdrawn")
                 continue
             exhausted = True
             for start in series.sessions():
@@ -1222,7 +1240,6 @@ class World:
         # lapse at the end of its own day as if never moved: a month.
         request.latest = self.reschedule_deadline(original) or (
             original + timedelta(days=31) if request.series_id is not None else None)
-        request.keep_looking = request.series_id is None
         request.note = "the clinic is closed then"
         self._tell(request.client_id, "changed",
                    f"The clinic is closed at the time of your session on {self._when(original)}. "
@@ -1280,11 +1297,6 @@ class World:
         lapsed = []
         for r in self.requests.values():
             if r.status not in ("pending", "on_hold"):
-                continue
-            if r.latest is not None and r.latest <= now + self.OFFER_LEAD and r.keep_looking:
-                # Nothing inside the window: a one-off booking is looked for
-                # further out rather than dropped — there is no alternative.
-                r.latest = None
                 continue
             if r.series_id is None or not self._session_gone(r, now):
                 continue
@@ -1396,8 +1408,15 @@ class World:
                 self._cascade_refusal(a)
                 self._settle_if_answered(a.plan_id)
 
-    def mark_attendance(self, appointment_id: int, attended: bool) -> Appointment:
-        """The provider recording whether the client turned up."""
+    def mark_attendance(self, appointment_id: int, attended: bool,
+                        now: Optional[datetime] = None) -> Appointment:
+        """The provider recording whether the client turned up — once the
+        session has begun. Before that it would charge a session that has not
+        happened, or propose a fee for a no-show that has not happened."""
+        appointment = self.store.get_appointment(appointment_id)
+        if appointment.status is AppointmentStatus.BOOKED \
+                and appointment.range.start > (now or datetime.now()):
+            raise ValueError("that session has not started yet")
         marked = self.store.mark_attendance(appointment_id, attended=attended)
         self._note(
             f"{marked.client_id} {'attended' if attended else 'did not show for'} "
@@ -1512,8 +1531,13 @@ class World:
     def start_checkout(self, charge_id: int, return_url: str) -> Payment:
         """Send the client to the processor's hosted page to pay one charge."""
         charge = self.charges[charge_id]
+        open_ = self._pending_payment(charge_id)
         if charge.status != "due":
             raise ValueError(f"charge {charge_id} is {charge.status}, not owed")
+        if open_ is not None:
+            # Pay tapped twice: the same checkout again, never a second one
+            # that could take the money twice.
+            return open_
         payment = Payment(id=next(self._ids), charge_id=charge_id, amount=charge.amount,
                           processor=self.processor.name, reference="")
         joiner = "&" if "?" in return_url else "?"
@@ -1524,6 +1548,15 @@ class World:
         payment.return_url = back
         self.payments[payment.id] = payment
         return payment
+
+    def _pending_payment(self, charge_id: int) -> Optional[Payment]:
+        """A checkout for this charge still in progress, after asking the
+        processor about each (one that went through settles the charge)."""
+        for p in list(self.payments.values()):
+            if p.charge_id == charge_id and p.status == "pending":
+                if self.check_payment(p.id).status == "pending":
+                    return p
+        return None
 
     def payment_by_reference(self, reference: str) -> Optional[Payment]:
         return next((p for p in self.payments.values() if p.reference == reference), None)
@@ -1548,6 +1581,8 @@ class World:
         if method not in billing.RECORDED_METHODS:
             raise ValueError(f"a recorded payment is one of {list(billing.RECORDED_METHODS)}")
         charge = self.charges[charge_id]
+        if self._pending_payment(charge_id) is not None and charge.status == "due":
+            raise ValueError("a payment for this is in progress; wait for it to finish")
         if charge.status != "due":
             raise ValueError(f"charge {charge_id} is {charge.status}, not owed")
         payment = Payment(id=next(self._ids), charge_id=charge_id, amount=charge.amount,
@@ -1677,12 +1712,12 @@ class World:
             request = self.submit_request(
                 appointment.client_id, appointment.service_type_id,
                 (appointment.preferred_start or appointment.range.start).isoformat(),
+                allow_withdrawn=True,
             )
             request.replaces_appointment_id = appointment.id
             request.origin = Origin.DISPLACED
             request.note = "the provider is not available then"
             request.latest = self.reschedule_deadline(appointment.range.start)
-            request.keep_looking = True
             self.told_closed.add(appointment.id)
             self._tell(appointment.client_id, "changed",
                        f"The clinic is not available at the time of your appointment on "
@@ -1810,7 +1845,8 @@ class World:
                 "we have already asked about moving that one — answer that first")
 
         request = self.submit_request(
-            appointment.client_id, appointment.service_type_id, preferred_start
+            appointment.client_id, appointment.service_type_id, preferred_start,
+            allow_withdrawn=True,
         )
         if release_slot:
             self.cancel_appointment(appointment_id, by=Party.CLIENT, as_move=True)
@@ -2054,6 +2090,15 @@ class World:
         )
 
         availability = self.availability_segments(PROVIDER, window_start, window_end)
+        # Each client's hours once per run, not once per booking and request:
+        # it is the most expensive call in here.
+        known_hours = {}
+
+        def hours(client_id, start, end):
+            key = (client_id, start, end)
+            if key not in known_hours:
+                known_hours[key] = self.availability_segments(client_id, start, end)
+            return known_hours[key]
         live = self._live_appointments(window_start, window_end)
         # Anything already promised is treated as taken. This is the whole of
         # "lock and re-optimise": the engine is a pure function of the world it
@@ -2082,7 +2127,7 @@ class World:
             current = TimeRange(appointment.range.start, appointment.range.end)
             allowed = _from(reschedule_windows(
                 current,
-                self.availability_segments(
+                hours(
                     appointment.client_id, window_start, horizon_end
                 ),
                 self.bounds,
@@ -2107,7 +2152,7 @@ class World:
                     str(r.id), r.client_id, r.duration_minutes,
                     # From now on, and before its reschedule deadline if it has
                     # one (a session the clinic had to move stays in its window).
-                    [TimeRange(x.start, x.end) for x in _from(_until(self.availability_segments(
+                    [TimeRange(x.start, x.end) for x in _from(_until(hours(
                         r.client_id, window_start,
                         window_end if r.latest and r.replaces_appointment_id is not None
                         else horizon_end), r.latest), earliest)],
