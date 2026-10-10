@@ -359,8 +359,8 @@ minutes late"), and it is where the assistant hands over:
   clinician unless you send it to them.
 - **When a message suggests distress** — or the client simply asks for a
   person — the assistant stops handling it as scheduling. It immediately
-  shows emergency contacts (in Singapore, 995 and the SOS 24-hour line 1767;
-  the practice confirms the numbers and wording), and offers: *"Would you
+  shows emergency contacts (in Singapore, 995 or SMS 70995, Samaritans of
+  Singapore on 1767 and the National Mindline on 1771; the practice confirms the numbers and wording), and offers: *"Would you
   like me to pass this to your clinician?"*
 - **On yes, the conversation is transferred to the clinician chat**, the
   client's own words included, and the provider is notified. The client is

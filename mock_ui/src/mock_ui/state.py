@@ -132,8 +132,13 @@ class ChatSettings:
     # Told to clients so nobody waits for a reply that is not coming tonight.
     reply_expectation: str = "Your clinician usually replies within one working day."
     # The practice confirms the numbers and wording.
-    emergency_note: str = ("This is not an emergency service. If you are in danger "
-                           "or need help now, call 995, or the SOS 24-hour line on 1767.")
+    # Singapore, checked October 2026: 995 (ambulance; SMS 70995 when it is not
+    # safe to talk), Samaritans of Singapore 1767 (24 hours, free), National
+    # Mindline 1771 (24 hours, MOH).
+    emergency_note: str = ("This is not an emergency service. If you are in danger or need "
+                           "help now, call 995, or SMS 70995 if you cannot talk. To talk to "
+                           "someone at any hour, call Samaritans of Singapore on 1767 or the "
+                           "National Mindline on 1771.")
 
 
 @dataclass
