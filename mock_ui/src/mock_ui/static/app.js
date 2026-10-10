@@ -270,7 +270,7 @@ function renderStranded() {
           <span class="time">${fmt(a.start)}</span>
         </div>`).join("")}</div>
       ${dealtWith ? `<p class="hint">${dealtWith} already being dealt with.</p>` : ""}
-      <div class="row" style="margin-top:10px">
+      <div class="row mt-3">
         <button ${idle.length ? "" : "disabled"}
           onclick="fixStranded('rehouse')">Find the ${idle.length} a new slot</button>
         <button class="ghost warn" ${idle.length ? "" : "disabled"}
@@ -331,13 +331,13 @@ function renderQueue() {
         <span class="tag">${inWindow(r) ? r.status.replace(/_/g, " ") : "later"}</span>
         <button class="link" onclick="placeByHand(event, ${r.id})">place</button>
       </label>`).join("")}</div>
-    <div class="row" style="margin-top:8px">
+    <div class="row mt-2">
       <button ${runOver.size ? "" : "disabled"} onclick="runOnPicked()">Run on ${
         runOver.size} selected</button>
       <button class="ghost" onclick="pickWindow()">Just this window</button>
       <button class="ghost" onclick="pickAll()">All</button>
     </div>
-    <label class="row hint" style="margin-top:6px">
+    <label class="row hint mt-2">
       <input type="checkbox" ${scoped ? "checked" : ""} onchange="setScoping(this.checked)">
       Runs cover only wishes inside the ${(state.scheduler || {}).horizon_days}-day window
     </label>
@@ -433,7 +433,7 @@ function renderSettlement() {
             is in the calendar until you say so.</span></div>
         <div class="answers">${
           [...agreed, ...waiting, ...said_no, ...done].map(row).join("")}</div>
-        <div class="row" style="margin-top:10px">
+        <div class="row mt-3">
           <button ${agreed.length ? "" : "disabled"}
             onclick="settle(${plan.id}, 'agreed')">Apply the ${agreed.length} agreed</button>
           <button class="ghost" ${waiting.length ? "" : "disabled"}
@@ -527,7 +527,7 @@ function draftShell(p) {
       <div class="draft-cal" id="draftcal-${p.id}"></div>
       ${p.placements.map((x) => item(x, "book")).join("")}
       ${p.displacements.map((x) => item(x, "move")).join("")}
-      <div class="row" style="margin-top:10px">
+      <div class="row mt-3">
         <button onclick="approvePlan(${p.id})">Approve selected</button>
         <button class="ghost" onclick="lockAndRerun(${p.id})">Lock selected, re-plan rest</button>
         <button class="ghost" onclick="discardPlan(${p.id})">Discard</button>

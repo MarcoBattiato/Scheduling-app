@@ -340,12 +340,13 @@ def test_the_calendar_palette_is_defined():
     import re
 
     css = (STATIC / "style.css").read_text()
+    tokens = (STATIC / "tokens.css").read_text()     # the shared palette and scales
     scripts = "".join((STATIC / s).read_text() for s in SCRIPTS)
 
-    used = set(re.findall(r"var\((--[a-z-]+)\)", css))
+    used = set(re.findall(r"var\((--[a-z0-9-]+)\)", css))
     # Several are declared per line, and some are set inline by the scripts.
-    declared = set(re.findall(r"(--[a-z-]+)\s*:", css))
-    declared |= set(re.findall(r"(--[a-z-]+)\s*:", scripts))
+    declared = set(re.findall(r"(--[a-z0-9-]+)\s*:", css + tokens))
+    declared |= set(re.findall(r"(--[a-z0-9-]+)\s*:", scripts))
 
     assert not (used - declared), f"CSS variables used but never defined: {used - declared}"
 
@@ -446,10 +447,14 @@ def test_a_proposal_calendar_is_readable_rather_than_a_thumbnail():
 
     css = (STATIC / "style.css").read_text()
     rows = re.search(r"\.draft-cal \.cal-day[^{]*\{[^}]*var\(--rows\) \* (\d+)px", css)
-    font = re.search(r"\.draft-cal \.cal-block \{[^}]*font-size: (\d+)px", css)
+    font = re.search(r"\.draft-cal \.cal-block \{[^}]*font-size: (?:var\((--[a-z0-9-]+)\)|(\d+)px)", css)
+    assert font, "draft labels have no size of their own"
+    size = font.group(2)
+    if font.group(1):                    # a named size: read what it is set to
+        size = re.search(rf"{font.group(1)}:\s*(\d+)px", css).group(1)
 
     assert rows and int(rows.group(1)) >= 15, "draft rows too short to read"
-    assert font and int(font.group(1)) >= 9, "draft labels too small to read"
+    assert int(size) >= 9, "draft labels too small to read"
 
 
 @node
