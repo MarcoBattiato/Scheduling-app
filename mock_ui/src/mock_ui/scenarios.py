@@ -270,7 +270,154 @@ def busy(world: World) -> None:
     world._note("loaded the realistic example: ten clients, a full-ish week")
 
 
-SCENARIOS = {"simple": simple, "busy": busy}
+# -- the one to show ---------------------------------------------------
+
+
+def _message(world: World, client_id: str, author: str, text: str,
+             at: datetime, read: bool = True) -> None:
+    """A message written in the past, as a lived-in conversation has."""
+    message = world.send_message(client_id, author, text)
+    message.at = at
+    message.read_at = at + timedelta(hours=2) if read else None
+
+
+def practice(world: World) -> None:
+    """The realistic example dressed as a practice: a fictional psychology
+    practice in Singapore, with full names, the services such a practice
+    offers at plausible prices, three weeks of history, and a few
+    conversations. For showing the app to people who run a practice.
+
+    The scheduling underneath is the realistic example's, client for client,
+    so the first run negotiates in the same way: the client who can only
+    manage Tuesday mornings, the client wanting a Friday that is taken, a
+    straightforward request, and a new client's first appointment.
+    """
+    world.practice_name = "Quiet Harbour Psychology"
+    world.catalogue.add_service("therapy-60", "Individual therapy", 60, 22000)
+    world.catalogue.add_service("therapy-90", "Extended therapy session", 90, 30000)
+    world.catalogue.add_service("intake", "Initial consultation", 90, 28000)
+    world.catalogue.add_service("couples-90", "Couples therapy", 90, 32000)
+    world.catalogue.add_service("notes", "Clinical notes", 60, 0, client_bookable=False)
+
+    world.set_weekly_availability(PROVIDER, [
+        *_hours(range(5), "09:00", "13:00"),
+        *_hours(range(5), "14:00", "17:00"),
+    ])
+
+    people = [
+        ("meiling", "Mei Ling Tan", (0, 2, 4), "09:00", "13:00"),    # works from home
+        ("arjun", "Arjun Menon", (0, 1, 2, 3, 4), "16:00", "17:00"),  # office job; end of day
+        ("aisyah", "Nur Aisyah Rahman", (1,), "09:00", "11:00"),     # nurse on shifts
+        ("daniel", "Daniel Koh", (1, 3), "09:00", "13:00"),
+        ("priya", "Priya Raman", (0, 1, 2, 3, 4), "09:00", "17:00"),  # on study leave
+        ("weijie", "Lim Wei Jie", (2, 4), "14:00", "17:00"),         # university student
+        ("sarah", "Sarah Goh", (0, 3), "09:00", "12:00"),            # school hours
+        ("farid", "Farid Ismail", (1, 3), "15:00", "17:00"),
+        ("hannah", "Hannah Chua", (3, 4), "09:00", "13:00"),
+        ("krishnan", "Ravi & Anita Krishnan", (0,), "14:00", "16:00"),  # couple
+    ]
+    for client_id, name, days, start, end in people:
+        world.add_client(client_id, name)
+        world.set_weekly_availability(client_id, _hours(days, start, end))
+
+    monday = next_monday()
+    world.policy.horizon_days = _horizon_reaching(monday)
+    world.policy.auto_run = False        # the demonstrator decides when it runs
+    _close_the_run_up(world, monday)
+
+    # -- three weeks behind them (at least three days back, as in busy) --
+    regulars = [("meiling", 0, 9), ("priya", 0, 14), ("daniel", 1, 10),
+                ("aisyah", 1, 9), ("sarah", 3, 10), ("hannah", 4, 10),
+                ("arjun", 2, 16)]
+    for weeks_back in (28, 21):
+        for appointment_id in _book(world, monday - timedelta(days=weeks_back),
+                                    regulars, service="therapy-60"):
+            world.mark_attendance(appointment_id, attended=True)
+    couples = _book(world, monday - timedelta(days=21), [("krishnan", 0, 14)],
+                    service="couples-90")
+    world.mark_attendance(couples[0], attended=True)
+    intake = _book(world, monday - timedelta(days=28), [("weijie", 2, 14)],
+                   service="intake")
+    world.mark_attendance(intake[0], attended=True)
+
+    last = monday - timedelta(days=14)
+    attended = _book(world, last, [
+        ("meiling", 0, 9), ("priya", 0, 14), ("daniel", 1, 10),
+        ("aisyah", 1, 9), ("weijie", 2, 15), ("sarah", 3, 10),
+    ], service="therapy-60")
+    for appointment_id in attended[:-2]:
+        world.mark_attendance(appointment_id, attended=True)
+    world.mark_attendance(attended[-2], attended=False)                # a no-show
+    dropped = world.store.get_appointment(attended[-1])
+    world.cancel_appointment(attended[-1], by=Party.CLIENT,
+                             now=dropped.range.start - timedelta(days=3))
+
+    # Most of it is paid. Daniel and Aisyah owe for last fortnight, and Wei
+    # Jie's no-show fee waits for the provider to confirm or waive it.
+    last_unpaid = {"daniel", "aisyah"}
+    for charge in list(world.charges.values()):
+        if charge.kind != "session":
+            continue
+        charge.created = world.store.get_appointment(charge.appointment_id).range.end
+        recent = charge.client_id in last_unpaid and any(
+            charge.appointment_id == a for a in attended)
+        if not recent:
+            payment = world.record_payment(charge.id, "cash" if charge.client_id == "priya"
+                                           else "paynow_direct")
+            # Paid on the day, as people do, rather than all of it today.
+            payment.created = charge.created + timedelta(hours=2)
+
+    moved = world.store.book_appointment(
+        "farid", "therapy-60", _at(last, 1, 15), _at(last, 1, 16),
+        preferred_start=_at(last, 3, 16), origin=Origin.DISPLACED,
+    )
+    world.mark_attendance(moved.id, attended=True)
+
+    # -- the week in front of them --------------------------------------
+    _book(world, monday, [
+        ("meiling", 0, 9), ("sarah", 0, 10), ("priya", 0, 11), ("arjun", 0, 16),
+        ("daniel", 1, 9), ("priya", 1, 10), ("farid", 1, 15), ("arjun", 1, 16),
+        ("meiling", 2, 9), ("priya", 2, 11), ("weijie", 2, 15), ("arjun", 2, 16),
+        ("sarah", 3, 9), ("daniel", 3, 11), ("farid", 3, 16),
+        ("meiling", 4, 9), ("hannah", 4, 10), ("weijie", 4, 14), ("arjun", 4, 16),
+    ], service="therapy-60")
+    _book(world, monday, [("priya", 3, 14)], service="therapy-90")
+    _book(world, monday, [("krishnan", 0, 14)], service="couples-90")
+    world.set_exception(PROVIDER, monday + timedelta(days=2),
+                        time(12), time(13), available=False)
+
+    # -- what is waiting --------------------------------------------------
+    world.submit_request("aisyah", "therapy-60", _at(monday, 1, 9).isoformat())
+    world.submit_request("hannah", "therapy-60", _at(monday, 4, 11).isoformat())
+    world.submit_request("priya", "therapy-60", _at(monday, 3, 10).isoformat())
+    world.add_client("joanne", "Joanne Teo")
+    world.set_weekly_availability("joanne", _hours((0, 2), "09:00", "13:00"))
+    world.submit_request("joanne", "intake", _at(monday, 2, 9).isoformat())
+
+    # -- a few conversations ----------------------------------------------
+    days_ago = lambda n, hour, minute=0: datetime.combine(
+        date.today() - timedelta(days=n), time(hour, minute))
+    _message(world, "aisyah", "client",
+             "Hi, my shifts change next month. Is it still possible to keep "
+             "Tuesday mornings? It's the only time I can come.", days_ago(3, 21, 14))
+    _message(world, "aisyah", "provider",
+             "Hi Aisyah, thanks for letting me know. Please send a request for "
+             "Tuesday in the app and I'll do my best to keep that time for you.",
+             days_ago(2, 9, 5))
+    _message(world, "daniel", "client",
+             "Thank you for last week. The breathing exercise has been helping "
+             "before meetings.", days_ago(5, 18, 40))
+    _message(world, "daniel", "provider",
+             "That's really good to hear, Daniel. Keep practising and we'll "
+             "talk about how it went on Tuesday.", days_ago(4, 10, 20))
+    _message(world, "hannah", "client",
+             "Hello, could I get a receipt for my last two sessions? My "
+             "insurer needs it for the claim.", days_ago(0, 8, 30), read=False)
+
+    world._note("loaded the practice example: Quiet Harbour Psychology")
+
+
+SCENARIOS = {"simple": simple, "busy": busy, "practice": practice}
 
 
 def load(world: World, name: str) -> None:
