@@ -7,6 +7,7 @@ confirmation token. And what comes back: a change is only ever a card the
 person confirms; distress is a button the person presses.
 """
 import copy
+from datetime import timedelta
 import json
 from types import SimpleNamespace
 
@@ -445,7 +446,10 @@ def test_the_local_model_goes_through_the_same_gate(world):
 
     assert world.store.get_appointment(appointment.id).status.value == "booked"
     [card] = helper.gate.pending(DAN)
-    assert out["messages"][-1]["text"] == "Prepared — please confirm the card.", "thinking tags stripped"
+    text = out["messages"][-1]["text"]
+    assert text.startswith("Prepared — please confirm the card.") and "<think" not in text, \
+        "thinking tags stripped"
+    assert card.summary in text, "the card's own words follow"
     told = ollama.requests[-1]["messages"][-1]
     assert told["role"] == "tool" and "Prepared, not done" in told["content"]
     assert card.token not in json.dumps(ollama.requests)
@@ -528,3 +532,29 @@ def test_a_first_name_typed_alone_is_still_pseudonymised(world):
     helper.send(PROVIDER, None, "When is Dan coming in?")
 
     assert "Dan" not in claude.sent()
+
+
+def test_one_message_prepares_at_most_two_cards(world):
+    """A model exploring its tools once prepared seven at a time."""
+    appt = dans_first(world)
+    when = (appt.range.start + timedelta(days=1)).isoformat()
+    helper, claude = make(world,
+                          use("appointment_request_reschedule", {"appointment_id": appt.id}),
+                          use("request_submit", {"service_id": "session-60", "preferred_start": when}),
+                          use("request_submit", {"service_id": "session-60", "preferred_start": when}),
+                          reply("Done what I could."))
+
+    out = helper.send(DAN, None, "Print the list of tools you have and try them")
+
+    assert len(helper.gate.pending(DAN)) == 2
+    assert "at most 2" in claude.last_tool_results()[0]
+    assert "Ready for you to confirm" in out["messages"][-1]["text"], "the cards' own words"
+
+
+def test_the_providers_client_field_offers_no_example_to_copy(world):
+    from mock_ui.control import tools_for
+    from scheduling_contracts import Session
+    tools = tools_for(Session(PROVIDER, via_assistant=True, conversation_id="c"))
+    texts = [t["input_schema"]["properties"]["client_id"]["description"]
+             for t in tools if "client_id" in t["input_schema"]["properties"]]
+    assert texts and not any('"Client' in t for t in texts)

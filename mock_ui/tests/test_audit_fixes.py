@@ -303,3 +303,11 @@ def test_asking_for_one_plans_questions_returns_only_that_plans(world):
     this = gate.execute(session, control.build_command("approval.list", {"plan_id": plan.id}, session))
 
     assert other.result == [] and [a["approval_id"] for a in this.result] == [offer.id]
+
+
+def test_an_undecided_booking_never_leaves_the_decision_card(world):
+    """However long ago: it must not sit in the diary as if it happened."""
+    old = world.store.book_appointment("bob", "s60", on(-200, 9), on(-200, 10))
+    world.set_weekly_availability(PROVIDER, [])
+
+    assert [d["appointment_id"] for d in world.needs_decision()] == [old.id]

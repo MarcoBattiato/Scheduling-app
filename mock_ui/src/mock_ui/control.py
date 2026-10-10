@@ -939,7 +939,12 @@ def tools_for(session: Session) -> List[dict]:
                 continue
             schema = _schema_for(hints[f.name])
             if f.name == "client_id":
-                schema = {"type": "string", "description": 'a client as shown to you, e.g. "Client B"'}
+                # No literal example: a model copied it for questions about
+                # nobody in particular, then reported that client missing.
+                schema = {"type": "string", "description":
+                          "the pseudonym of a client you have been shown in a tool result. "
+                          "Leave it out for your own diary or practice-wide questions; "
+                          "never make one up."}
             props[f.name] = schema
             if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING \
                     and not _unwrap_optional(hints[f.name])[1]:

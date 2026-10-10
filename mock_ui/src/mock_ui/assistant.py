@@ -52,6 +52,9 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 # silently change how hard it thinks about someone's diary.
 EFFORT = os.environ.get("ASSISTANT_EFFORT", "medium")
 MAX_STEPS = 8                  # model round-trips per message, tool calls included
+# Cards one message may prepare. Every card is something the person must read
+# and confirm; a model exploring its tools once prepared seven at a time.
+MAX_DRAFTS_PER_MESSAGE = 2
 MAX_TEXT = 2000
 MAX_CONVERSATIONS = 200
 
@@ -95,6 +98,8 @@ class Conversation:
     visible: List[dict] = field(default_factory=list)    # what the person sees
     typed: List[str] = field(default_factory=list)       # the person's own words, for a hand-off
     handoff_offered: bool = False
+    drafting: set = field(default_factory=set)        # tools that prepare a card
+    prepared: List[str] = field(default_factory=list)  # cards prepared by this message
     # How many of `typed` have been passed to the clinician. A later message
     # in distress can be passed on too — only what was not sent before.
     sent_upto: int = 0
@@ -430,6 +435,8 @@ class Assistant:
 
         tools = control.tools_for(session)
         by_name = {t["name"]: t["command"] for t in tools}
+        convo.drafting = {t["name"] for t in tools if t["needs_confirmation"]}
+        convo.prepared = []
         api_tools = [{k: t[k] for k in ("name", "description", "input_schema")} for t in tools]
         if not provider:
             api_tools.append(HANDOFF_TOOL)
@@ -454,6 +461,11 @@ class Assistant:
             with self.lock:
                 reply = self._restore_names(session, reply)
         reply = reply.strip() or "Done."
+        if convo.prepared:
+            # The server's own words for what will happen, beside the model's:
+            # its paraphrase has contradicted the card ("19–30 Oct" for a card
+            # reading "Mon 19 Oct 09–13"). The card is what gets confirmed.
+            reply += "\n\nReady for you to confirm:\n" + "\n".join(f"• {t}" for t in convo.prepared)
         convo.visible.append({"role": "assistant", "text": reply})
         return self.view(convo)
 
@@ -515,6 +527,10 @@ class Assistant:
         command = by_name.get(call.name)
         if command is None:
             return f"There is no tool called {call.name}.", True
+        if call.name in getattr(convo, "drafting", ()) and \
+                len(getattr(convo, "prepared", [])) >= MAX_DRAFTS_PER_MESSAGE:
+            return (f"Not prepared: at most {MAX_DRAFTS_PER_MESSAGE} changes can be prepared "
+                    f"in one message. Ask the person which change they want next."), True
         # The card text and error messages are written by the server for the
         # person, with real names; the provider's model sees pseudonyms only.
         hide = ((lambda t: self._pseudonymise(session, t))
@@ -525,8 +541,10 @@ class Assistant:
             return hide(str(exc)), True
         if outcome.status == "needs_confirmation":
             # The token stays here: the model cannot confirm what it prepared.
+            convo.prepared.append(outcome.summary)
             return (f'Prepared, not done. The person now sees a card reading "{hide(outcome.summary)}" '
-                    f"and must confirm it in the app themselves."), False
+                    f"and must confirm it in the app themselves. Do not restate it in other "
+                    f"words; the card is shown with your reply."), False
         return json.dumps(outcome.result, default=str), False
 
     # -- names, for the provider's conversations ----------------------------------

@@ -916,21 +916,25 @@ class World:
         sitting in the diary looking as if they happened.
         """
         now = now or datetime.now()
-        # A past one stays until the provider says what became of it — for
-        # three months, which no real decision should take (and every poll
-        # pays for the reach).
-        start = (now - timedelta(days=90)).date()
+        # A past one stays until the provider says what became of it, however
+        # long ago — it never leaves the card on its own. Cheap despite the
+        # reach: a past session still "booked" is rare (attended or missed is
+        # recorded), and the provider's hours are worked out only for the
+        # dates that have one.
         end = (now + self.DECIDE_AHEAD).date() + timedelta(days=1)
-        free = self.availability_segments(PROVIDER, start, end)
         moving = self._asked_to_move()
+        hours = {}
         out = []
-        for a in self._live_appointments(start, end):
+        for a in self._live_appointments(date(2000, 1, 1), end):
             # Only still booked: one that was attended or missed already has
             # its answer, and decide() would refuse every choice for it.
             if a.client_id == PROVIDER or a.status is not AppointmentStatus.BOOKED \
                     or a.range.start > now + self.DECIDE_AHEAD:
                 continue
-            if any(x.start <= a.range.start and a.range.end <= x.end for x in free):
+            day = a.range.start.date()
+            if day not in hours:
+                hours[day] = self.availability_segments(PROVIDER, day, day + timedelta(days=1))
+            if any(x.start <= a.range.start and a.range.end <= x.end for x in hours[day]):
                 continue
             out.append({"appointment_id": a.id, "client_id": a.client_id,
                         "service": self._service_name(a.service_type_id),
