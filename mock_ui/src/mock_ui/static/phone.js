@@ -71,7 +71,7 @@ const relDay = (iso) => {
   return fmtDay(key);
 };
 const fmtWhen = (iso) => `${relDay(iso)}, ${fmtTime(iso)}`;
-const money = (minor) => (minor / 100).toFixed(2);
+const money = (minor) => sgd(minor);       // prices are shown with their currency
 const todayKey = () => (state && state.today) || dayKey(new Date());
 const nowMinutes = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
 const isPast = (iso) => parse(iso) < new Date();
@@ -357,6 +357,8 @@ function currentView() {
   return views[base] ? base : "home";
 }
 
+let lastShown = "";
+
 function render(force) {
   if (!state) return;
   const known = Array.isArray(people) && people.length ? people.map((p) => p.id) : ["provider", me];
@@ -389,6 +391,15 @@ function render(force) {
   $("view").innerHTML = VIEWS[isProvider() ? "provider" : "client"][base]();
   restoreForms($("view"), kept);
   restoreScrolls($("view"), scrolls);
+  // A gentle fade when the screen itself changes; never on a poll's redraw,
+  // which would make the page flicker every few seconds.
+  const shown = `${me}|${tab}`;
+  if (shown !== lastShown) {
+    $("view").classList.remove("entering");
+    void $("view").offsetWidth;          // restart the animation
+    $("view").classList.add("entering");
+    lastShown = shown;
+  }
   // The sheet is redrawn too, so it never shows a booking that has since
   // changed — unless someone is in the middle of one of its fields.
   const inSheet = active && active.closest && active.closest("#sheet")
@@ -445,7 +456,10 @@ function renderHeader() {
   const name = isProvider() ? "Provider" : (client ? client.name : me);
   $("who").textContent = name;
   $("avatar").textContent = name.slice(0, 1).toUpperCase();
-  $("subtitle").textContent = isProvider() ? "Practice diary" : "Your appointments";
+  // The practice's own name, once it has one: the app carries its brand.
+  const practice = state && state.practice_name && state.practice_name !== "the practice"
+    ? state.practice_name : "";
+  $("subtitle").textContent = practice || (isProvider() ? "Practice diary" : "Your appointments");
   const sel = $("role");
   const options = (Array.isArray(people) && people.length ? people : [{id: me, name: me}])
     .map((p) => [p.id, p.name]);
@@ -1731,7 +1745,8 @@ function moreView() {
     <h2>Demo</h2><div class="card">
       <label class="field"><span>Start again from</span>
         <select data-role="scenario"><option value="simple">Small example</option>
-          <option value="busy">Realistic practice</option><option value="empty">Empty</option></select></label>
+          <option value="busy">Realistic practice</option>
+          <option value="practice">Demo practice (Quiet Harbour)</option><option value="empty">Empty</option></select></label>
       <button class="btn danger block" data-act="reset">Start over</button>
       <p class="hint">Throws away everything in this session.</p>
     </div>

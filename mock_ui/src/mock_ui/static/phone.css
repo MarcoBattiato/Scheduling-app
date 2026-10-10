@@ -41,11 +41,13 @@ button, a, input, select, label { touch-action: manipulation; }
   display: grid; place-items: center;
   background: var(--accent-soft); color: var(--accent); font-weight: 650;
 }
-.who { font-weight: 650; font-size: var(--font-lg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.subtitle { color: var(--muted); font-size: var(--font-sm); }
-.viewas { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.who { font-family: var(--font-display); font-weight: 650; font-size: var(--font-lg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.subtitle { color: var(--muted); font-size: var(--font-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top-who > div { min-width: 0; }
+.viewas { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex-shrink: 0; }
 .viewas span { font-size: var(--font-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .viewas select {
+  max-width: 140px;     /* long names would push the header's own name off screen */
   min-height: 36px; padding: var(--space-1) var(--space-6) var(--space-1) var(--space-3); border-radius: var(--radius-sm);
   border: 1px solid var(--line); background: var(--surface);
   appearance: none; -webkit-appearance: none;
@@ -62,7 +64,7 @@ button, a, input, select, label { touch-action: manipulation; }
   padding: 16px 16px calc(var(--tabbar) + 24px + env(safe-area-inset-bottom));
   max-width: 640px; margin: 0 auto;
 }
-h1 { font-size: var(--font-xl); margin: var(--space-1) 0 var(--space-1); letter-spacing: -.01em; }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: var(--font-xl); margin: var(--space-1) 0 var(--space-1); letter-spacing: -.01em; }
 h2 { font-size: var(--font-sm); text-transform: uppercase; letter-spacing: .05em;
      color: var(--muted); margin: var(--space-5) var(--space-1) var(--space-2); font-weight: 600; }
 h2:first-child { margin-top: var(--space-1); }
@@ -77,7 +79,7 @@ h2:first-child { margin-top: var(--space-1); }
 .card.attention { border-color: var(--accent); }
 .card.held { border-color: var(--held); }
 .card.warn { border-color: var(--warn); }
-.card h3 { margin: 0 0 var(--space-1); font-size: var(--font-lg); }
+.card h3 { font-family: var(--font-display); margin: 0 0 var(--space-1); font-size: var(--font-lg); }
 .card p { margin: var(--space-1) 0; }
 .card.tap { display: flex; align-items: center; gap: var(--space-3); width: 100%;
             text-align: left; cursor: pointer; }
@@ -108,10 +110,10 @@ button.row:active { background: var(--surface-2); }
 
 .datebox {
   flex: none; width: 48px; text-align: center; border-radius: var(--radius-sm);
-  background: var(--surface-2); padding: var(--space-1) 0; line-height: 1.15;
+  background: var(--accent-soft); color: var(--accent); padding: var(--space-1) 0; line-height: 1.15;
 }
 .datebox b { display: block; font-size: var(--font-lg); }
-.datebox span { font-size: var(--font-xs); text-transform: uppercase; color: var(--muted); }
+.datebox span { font-size: var(--font-xs); text-transform: uppercase; opacity: .8; }
 
 /* -- buttons -------------------------------------------------------- */
 
@@ -239,24 +241,29 @@ input[type=range] { width: 100%; accent-color: var(--accent); min-height: 36px; 
 
 /* -- a day as a vertical timeline (provider diary) ------------------ */
 
-.timeline { position: relative; margin-left: 48px; border-left: 1px solid var(--line); }
+.timeline { position: relative; margin-left: 48px; border-left: 1px solid var(--line);
+  /* Closed time is hatched; open time is plain paper the bookings sit on. */
+  background: repeating-linear-gradient(135deg, var(--surface-2) 0 6px, transparent 6px 12px); }
 .timeline .hour {
   position: absolute; left: -48px; width: 40px; text-align: right;
   font-size: var(--font-xs); color: var(--muted); transform: translateY(-50%);
 }
 .timeline .hourline { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line); }
-.timeline .open { position: absolute; left: 0; right: 0; background: var(--avail); }
+.timeline .open { position: absolute; left: 0; right: 0; background: var(--surface); }
 .timeline .now { position: absolute; left: -4px; right: 0; border-top: 2px solid var(--danger); }
 .slot {
   position: absolute; left: 6px; right: 6px; border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3); overflow: hidden; text-align: left; cursor: pointer;
-  border: 0; background: var(--ok); color: var(--on-accent); font-size: var(--font-sm); line-height: 1.25;
+  border: 0; font-size: var(--font-sm); line-height: 1.25;
+  /* An ordinary booking is calm: a soft fill with the brand on its edge.
+     Solid colour is kept for what needs a look (moved, asked to move). */
+  background: var(--accent-soft); color: var(--text); border-left: 4px solid var(--accent);
   box-shadow: var(--shadow);
 }
 .slot b { display: block; }
-.slot.moved { background: var(--move); }
-.slot.asked { background: var(--warn); }
-.slot.self { background: var(--muted); }
+.slot.moved { background: var(--move); color: var(--on-accent); border-left: 0; }
+.slot.asked { background: var(--warn); color: var(--on-accent); border-left: 0; }
+.slot.self { background: var(--surface-2); color: var(--muted); border-left: 4px solid var(--muted); }
 .slot.stranded { outline: 3px solid var(--danger); outline-offset: -3px; }
 .slot.past { opacity: .6; }
 .slot.cancelled { background: transparent; color: var(--muted); border: 1.5px dashed var(--line);
@@ -353,7 +360,20 @@ p.because { margin: var(--space-2) var(--space-1); }
 .log { font: var(--font-sm)/1.5 var(--font-mono); color: var(--muted);
        padding: var(--space-3) var(--space-4); max-height: 320px; overflow-y: auto; white-space: pre-wrap; }
 
+.view.entering { animation: enter .2s ease-out; }
+@keyframes enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Before the first answer from the server: a quiet pulse, not a blank page. */
+.view:empty::before {
+  content: ""; display: block; width: 40px; height: 40px; margin: 30vh auto 0;
+  border-radius: 50%; border: 3px solid var(--accent-soft); border-top-color: var(--accent);
+  animation: spin .9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 @media (prefers-reduced-motion: reduce) {
+  .view.entering { animation: none; }
+  .view:empty::before { animation: none; }
   .sheet { animation: none; }
   .toast { transition: none; }
 }
