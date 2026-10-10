@@ -4,8 +4,8 @@
   "start_url": "/phone",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f6f7f9",
-  "theme_color": "#f6f7f9",
+  "background_color": "#f5f3ef",
+  "theme_color": "#f5f3ef",
   "icons": [
     {
       "src": "/static/icon-192.png",
