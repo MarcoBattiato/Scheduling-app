@@ -511,7 +511,10 @@ class ListApprovals:
 @dataclass(frozen=True)
 class ProviderAway:
     span: TimeSpan
-    action: str = "flag"     # flag | rehouse | cancel
+    # Bookings in the span: "reschedule" asks them all to move. Left as None
+    # with bookings there, nothing changes and they are listed — the other
+    # answer is not to take the time off.
+    action: Optional[str] = None
 
 
 @command("orphans.list", Tier.READ)
@@ -557,7 +560,6 @@ class SetRunPolicy:
     urgency_hours: Optional[int] = None
     retry_after_minutes: Optional[int] = None
     scope_to_horizon: Optional[bool] = None
-    rehouse_orphans_on_run: Optional[bool] = None
 
 
 @command("optimiser.set_budget", Tier.AUTHORITY)

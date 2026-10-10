@@ -297,8 +297,8 @@ with a script and checks what leaves the practice.
 **Nothing about a client's bookings changes behind their back** (`Notice`,
 `World._tell`). An offer or a move ask we take back (agreed to or not), a
 repeating session called off, a booking the clinic cancels or makes by hand, a
-request still without a time after a run (once), and a booking left in time
-the clinic is closed (checked on every tick, once per booking) each leave a
+request still without a time after a run (once), and an offer withdrawn
+because the provider took that time off each leave a
 notice on the client's Home — phone and desktop — until they press OK. Notices
 are worded for the client, **say only what happened** — never an explanation
 or a promise that might not hold ("the clinic will offer you another time") —

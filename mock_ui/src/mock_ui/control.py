@@ -47,7 +47,7 @@ from calendar_store import Party
 import scheduling_contracts as sc
 from scheduling_contracts import (
     ASSISTANT, FORBIDDEN, MATRIX, Access, Deny, NeedsConfirmation, Principal,
-    Role, Session, Target, TargetKind, TimeSpan, WeeklyWindow, by_name, decide,
+    Role, Session, Target, TargetKind, Tier, TimeSpan, WeeklyWindow, by_name, decide,
     spec_of, unresolved_target,
 )
 
@@ -438,7 +438,13 @@ class Gate:
         except ValueError as exc:
             self._audit(session, name, target, "failed", str(exc))
             raise Invalid(str(exc)) from None
-        self._audit(session, name, target, outcome, "", conversation=conversation)
+        # A person reading their own screens is not worth a row: the phone
+        # polls message.list every few seconds, and recording each one grew
+        # the saved audit without limit. Reads through an assistant, writes,
+        # refusals and failures are all still recorded.
+        if not (spec_of(command).tier is Tier.READ and not session.via_assistant
+                and outcome == "done"):
+            self._audit(session, name, target, outcome, "", conversation=conversation)
         return result
 
     def _for(self, session: Session, result):

@@ -19,13 +19,42 @@ const weeksShown = () => Number($("weeks")?.value) || 2;
 const isProvider = () => me === "provider";
 const whose = () => (isProvider() ? "provider-self" : me);
 
+// The server's reason, whatever shape it came in: a string, a 409 with
+// {message, bookings}, or FastAPI's list of validation errors.
+function reasonOf(detail) {
+  if (!detail) return "request failed";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+  return detail.message || JSON.stringify(detail);
+}
+
 async function api(path, body) {
   const res = await fetch(path, body ? {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body),
   } : {method: "POST"});
-  if (!res.ok) alert((await res.json()).detail || "request failed");
-  return res.json().catch(() => ({}));
+  const data = await res.json().catch(() => ({}));       // read once
+  if (!res.ok) { alert(reasonOf(data.detail)); return null; }
+  return data;
+}
+
+// Taking time off over bookings: the server answers 409 with them, and the
+// provider either asks them all to move or does not take the time off.
+async function timeOff(path, body, key = "then") {
+  const send = (extra) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+                                       body: JSON.stringify({...body, ...extra})});
+  let res = await send({});
+  let data = await res.json().catch(() => ({}));
+  if (res.status === 409 && data.detail && data.detail.bookings) {
+    const list = data.detail.bookings.map((b) => `  ${nameOf(b.client_id)} · ${fmt(b.start)}`).join("\n");
+    if (!confirm(`${data.detail.bookings.length} booking(s) fall in that time:\n${list}\n\n`
+                 + "OK: ask them all to move (each keeps their booking until a new time is agreed).\n"
+                 + "Cancel: don't take the time off.")) return null;
+    res = await send({[key]: "reschedule"});
+    data = await res.json().catch(() => ({}));
+  }
+  if (!res.ok) { alert(reasonOf(data.detail)); return null; }
+  return data;
 }
 
 async function refresh() {
@@ -185,7 +214,7 @@ function renderSchedule() {
 function setException(date, from, to, available) {
   // Drag adds availability on that date; shift-drag takes it away. Either way
   // it is a single-date exception, not a change to the weekly pattern.
-  api("/api/exceptions", {
+  timeOff("/api/exceptions", {
     client_id: whose(), date, from_time: from, to_time: to, available,
   }).then(refresh);
 }
@@ -638,9 +667,20 @@ function renderGrid() {
 
 function money(minor) { return (minor / 100).toFixed(2); }
 
+let pickerOptions = null;   // what the service picker last showed
+
 function renderCatalogue() {
-  if (!isProvider()) return;
   const services = state.services || [];
+  // Clients book from this picker too, so it is filled whoever is viewing —
+  // and only rewritten when the list changes, so a choice survives the poll.
+  const picker = $("service-picker");
+  if (picker) {
+    const options = services.filter((s) => s.active && s.client_bookable)
+      .map((s) => `<option value="${s.id}">${esc(s.name)} · ${s.duration}m · ${money(s.price)}</option>`)
+      .join("");
+    if (pickerOptions !== options) { picker.innerHTML = options; pickerOptions = options; }
+  }
+  if (!isProvider()) return;
   $("catalogue").innerHTML = services.map((s) => `
     <div class="req ${s.active ? "" : "withdrawn"}">
       <span>${esc(s.name)}</span>
@@ -651,12 +691,6 @@ function renderCatalogue() {
         ${s.active ? "discontinue" : "re-list"}</button>
     </div>`).join("");
 
-  const picker = $("service-picker");
-  if (picker) {
-    picker.innerHTML = services.filter((s) => s.active && s.client_bookable)
-      .map((s) => `<option value="${s.id}">${esc(s.name)} · ${s.duration}m · ${money(s.price)}</option>`)
-      .join("");
-  }
 }
 
 function renderClients() {
@@ -863,8 +897,8 @@ window.approvePlan = async (id) => {
   refresh();
 };
 window.clearException = async (date, from, to, wasAvailable) => {
-  await api("/api/exceptions", {client_id: whose(), date, from_time: from,
-                                to_time: to, available: wasAvailable, clear: true});
+  await timeOff("/api/exceptions", {client_id: whose(), date, from_time: from,
+                                    to_time: to, available: wasAvailable, clear: true});
   refresh();
 };
 window.discardPlan = async (id) => { await api(`/api/plans/${id}/discard`); refresh(); };
@@ -917,7 +951,7 @@ $("solve").onclick = async () => {
     max_displacements: Number($("try-moves").value)}));
   refresh();
 };
-$("save").onclick = async () => { const r = await api("/api/snapshot/save"); alert("Saved " + r.saved); };
+$("save").onclick = async () => { const r = await api("/api/snapshot/save"); if (r) alert("Saved " + r.saved); };
 $("reset").onclick = async () => {
   const which = $("scenario").value;
   const named = $("scenario").selectedOptions[0].textContent.toLowerCase();
@@ -938,7 +972,7 @@ $("save-avail").onclick = async () => {
     }
     if (run) ranges.push(runToRange(d, run));
   }
-  await api("/api/availability", {client_id: whose(), ranges});
+  await timeOff("/api/availability", {client_id: whose(), ranges});
   pendingGrid = null;
   refresh();
 };
@@ -964,14 +998,9 @@ $("request-form").onsubmit = async (e) => {
 $("away-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
-  const cancelling = f.get("action") === "cancel";
-  if (cancelling && !confirm(
-      "Cancel every appointment in that stretch outright?\n\n"
-      + "Nobody is offered another slot. Choose \"rehouse\" instead if they "
-      + "should be found one.")) return;
-  const outcome = await api("/api/provider/away", {
-    start: f.get("start"), end: f.get("end"), action: f.get("action"),
-  });
+  const outcome = await timeOff("/api/provider/away", {
+    start: f.get("start"), end: f.get("end"),
+  }, "action");
   if (outcome && outcome.affected === 0) alert("Nothing was booked in that time.");
   e.target.reset();
   refresh();

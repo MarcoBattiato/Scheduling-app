@@ -771,17 +771,15 @@ def test_a_booking_its_own_client_is_moving_reads_as_provisional():
 
 
 @node
-def test_the_provider_is_offered_both_ways_of_being_away():
-    """Rehousing and cancelling are very different things to do to somebody,
-    so the page must not quietly pick one."""
+def test_time_off_over_bookings_is_a_question_not_a_setting():
+    """The desktop asks, as the phone does: move them all, or keep the time.
+    There is no "flag" or "cancel everyone" to pick in advance any more."""
     page = (STATIC / "index.html").read_text()
     app = (STATIC / "app.js").read_text()
 
-    assert 'value="reschedule"' in page and 'value="cancel"' in page
-    assert "/api/provider/away" in app
-    assert "Nobody is offered another slot" in app, (
-        "cancelling everybody outright has to be confirmed, not merely clicked"
-    )
+    assert 'name="action"' not in page and 'value="cancel"' not in page
+    assert 'timeOff("/api/provider/away"' in app and 'timeOff("/api/availability"' in app
+    assert "don't take the time off" in app
 
 
 @node

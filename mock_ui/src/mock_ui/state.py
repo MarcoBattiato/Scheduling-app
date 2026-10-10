@@ -285,8 +285,9 @@ class World:
         # calendar app can present, so it has to be unguessable.
         self.feed_tokens: Dict[str, str] = {}
         # What happened to each client's bookings without them doing it —
-        # see Notice. `told_closed`: appointments already reported as being
-        # in time the clinic is closed, so a poll does not repeat it.
+        # see Notice. `told_closed`: appointments whose client has been told
+        # the clinic is not available then (rehouse_orphans), so keeping one
+        # after all (decide "keep") knows to tell them it goes ahead.
         self.notices: Dict[int, Notice] = {}
         self.told_closed: set = set()
         # Every command that went through the gate (control.py): who, through
@@ -300,12 +301,12 @@ class World:
         self.billing = BillingSettings()
         self.charges: Dict[int, Charge] = {}
         self.payments: Dict[int, Payment] = {}
+        self.log: List[str] = []
         self.processor, warning = billing.processor_from_environment()
         if warning:
             self._note(warning)
         self.approvals: Dict[int, Approval] = {}
         self.plans: Dict[int, Plan] = {}
-        self.log: List[str] = []
         self.alpha = 0.5
         self.max_displacements = 1
         self.bounds = RescheduleBounds(max_days_earlier=2, max_days_later=4)
@@ -377,9 +378,12 @@ class World:
                 hi = datetime.combine(on_date + timedelta(days=1), time.min)
             affected = self._would_strand(lambda a: a.range.start < hi and lo < a.range.end)
             self._time_off_check(affected, then)
+            inside = self._sessions_in_hours()
             self._apply_exception(client_id, on_date, start, end, available)
+            self._withdraw_offers_in_closed_time()
             if affected:
                 self.rehouse_orphans([a.id for a in affected])
+            self._displace_sessions_in_closed_time(inside)
             return
         self._apply_exception(client_id, on_date, start, end, available)
 
@@ -429,9 +433,12 @@ class World:
         if client_id == PROVIDER:
             affected = self._would_strand(lambda a: not self._weekly_covers(ranges, a))
             self._time_off_check(affected, then)
+            inside = self._sessions_in_hours()
             self._set_weekly(client_id, ranges)
+            self._withdraw_offers_in_closed_time()
             if affected:
                 self.rehouse_orphans([a.id for a in affected])
+            self._displace_sessions_in_closed_time(inside)
             return
         self._set_weekly(client_id, ranges)
 
@@ -560,10 +567,14 @@ class World:
         monday = moment.date() - timedelta(days=moment.weekday())
         span = (datetime.combine(monday, time.min),
                 datetime.combine(monday + timedelta(days=7), time.min))
+        # Counted as _client_limits counts them (no-shows included), and a
+        # booking being moved counts once — its move request is not a second.
         booked = [a for a in self.store.appointment_history(client_id, *span)
-                  if a.status in (AppointmentStatus.BOOKED, AppointmentStatus.COMPLETED)]
+                  if a.status in (AppointmentStatus.BOOKED, AppointmentStatus.COMPLETED,
+                                  AppointmentStatus.NO_SHOW)]
         waiting = [r for r in self.requests.values()
                    if r.client_id == client_id and span[0] <= r.preferred_start < span[1]
+                   and r.replaces_appointment_id is None
                    and r.status in ("pending", "on_hold", "awaiting_client")]
         return len(booked) + len(waiting) >= client.per_week
 
@@ -864,6 +875,8 @@ class World:
             self._note(f"{a.client_id}'s {a.kind} for {a.now_start:%a %d %b %H:%M} "
                        f"expired before it was settled")
             expired.append(a)
+            if a.kind == "reschedule":
+                self._cascade_refusal(a)        # offers resting on this move fall through
             self._drop_moves_nobody_needs(a.plan_id)
             self._settle_if_answered(a.plan_id)
         return expired
@@ -894,7 +907,10 @@ class World:
         moving = self._asked_to_move()
         out = []
         for a in self._live_appointments(start, end):
-            if a.client_id == PROVIDER or a.range.start > now + self.DECIDE_AHEAD:
+            # Only still booked: one that was attended or missed already has
+            # its answer, and decide() would refuse every choice for it.
+            if a.client_id == PROVIDER or a.status is not AppointmentStatus.BOOKED \
+                    or a.range.start > now + self.DECIDE_AHEAD:
                 continue
             if any(x.start <= a.range.start and a.range.end <= x.end for x in free):
                 continue
@@ -1069,6 +1085,23 @@ class World:
     def _stale_items(self, plan: "Plan", chosen) -> Optional[str]:
         """The first chosen time that now overlaps a live booking (other than
         one this plan moves away, or the one it replaces) or another promise."""
+        # What the draft rests on must still be true: each request still
+        # waiting, each booking it moves still booked and not already being
+        # asked about. Otherwise approving revives a withdrawn request or
+        # books a hand-placed one twice.
+        asked = self._asked_to_move()
+        for p in plan.placements:
+            if plan.item_key("booking", p["request_id"]) in chosen and \
+                    self.requests[p["request_id"]].status not in ("pending", "on_hold"):
+                return (f"{p['client_id']}'s request has since been "
+                        f"{self.requests[p['request_id']].status.replace('_', ' ')}")
+        for d in plan.displacements:
+            if plan.item_key("reschedule", d["appointment_id"]) not in chosen:
+                continue
+            a = self.store.get_appointment(d["appointment_id"])
+            if a.status is not AppointmentStatus.BOOKED or a.locked \
+                    or a.id in self.immovable or a.id in asked:
+                return f"{d['client_id']}'s booking has since changed"
         moving_away = {d["appointment_id"] for d in plan.displacements
                        if plan.item_key("reschedule", d["appointment_id"]) in chosen}
         targets = [(p["start"], p["end"], self.requests[p["request_id"]].replaces_appointment_id)
@@ -1088,9 +1121,9 @@ class World:
                 if a.id in moving_away or a.id == own:
                     continue
                 if a.range.start < end and start < a.range.end:
-                    return f"{start:%a %d %b %H:%M}"
+                    return f"{start:%a %d %b %H:%M} has since been booked"
             if any(h.start < end and start < h.end for h in holds):
-                return f"{start:%a %d %b %H:%M}"
+                return f"{start:%a %d %b %H:%M} has since been offered to somebody"
         return None
 
     def _queue_fingerprint(self) -> tuple:
@@ -1118,13 +1151,18 @@ class World:
             raise ValueError("who must be client or provider")
         request.seen_by.add(who)
 
+    # How far ahead time off is checked against bookings — and so how far the
+    # rehousing that answers it must reach too, or a booking listed in the
+    # question would be left where it is.
+    TIME_OFF_REACH_DAYS = 366
+
     def _would_strand(self, leaves_it_out) -> List[Appointment]:
         """Future bookings, now inside the provider's hours, that a change
         would leave outside them."""
         now = datetime.now()
         start = now.date()
-        end = start + timedelta(days=366)
-        already = {a.id for a in self.orphaned_appointments(366)}
+        end = start + timedelta(days=self.TIME_OFF_REACH_DAYS)
+        already = {a.id for a in self.orphaned_appointments(self.TIME_OFF_REACH_DAYS)}
         return [a for a in self._live_appointments(start, end)
                 if a.client_id != PROVIDER and a.range.start > now
                 and a.id not in already and leaves_it_out(a)]
@@ -1180,7 +1218,10 @@ class World:
         """This session is the clinic's to move: find it another time inside
         the reschedule window, and tell the client now."""
         request.origin = Origin.DISPLACED
-        request.latest = self.reschedule_deadline(original)
+        # "Anywhere" still needs an end for a repeating session, or it would
+        # lapse at the end of its own day as if never moved: a month.
+        request.latest = self.reschedule_deadline(original) or (
+            original + timedelta(days=31) if request.series_id is not None else None)
         request.keep_looking = request.series_id is None
         request.note = "the clinic is closed then"
         self._tell(request.client_id, "changed",
@@ -1281,6 +1322,7 @@ class World:
         going away. It is cancelled all the same, but it is not a cancellation
         in the sense a fee cares about: nobody is charged for moving."""
         appointment = self.store.cancel_appointment(appointment_id, by=by)
+        self._withdraw_move_asks(appointment_id)
         self._note(
             f"{by.value} cancelled {appointment.client_id}'s "
             f"{appointment.range.start:%a %d %b %H:%M}"
@@ -1292,6 +1334,67 @@ class World:
                        f"The clinic has cancelled your {self._service_name(appointment.service_type_id)} "
                        f"on {self._when(appointment.range.start)}.")
         return appointment
+
+    def _withdraw_offers_in_closed_time(self) -> None:
+        """Offers and move asks still out for time the provider has just
+        taken off. Left alone, an accepted one would be booked into closed
+        time on settle. Taken back, and the client told; a booking request
+        goes back to the queue, and whatever rested on a move falls through."""
+        for a in list(self.approvals.values()):
+            if a.applied or not self._outstanding(a):
+                continue
+            free = self.availability_segments(PROVIDER, a.now_start.date(),
+                                              a.now_start.date() + timedelta(days=1))
+            if any(x.start <= a.now_start and a.now_end <= x.end for x in free):
+                continue
+            self._tell_taken_back(a)
+            a.status = "withdrawn"
+            if a.kind == "booking":
+                request = self.requests.get(a.request_id)
+                if request and request.status not in ("placed", "withdrawn", "lapsed"):
+                    request.status = "on_hold"
+                self._drop_moves_nobody_needs(a.plan_id)
+            else:
+                self._cascade_refusal(a)
+            self._settle_if_answered(a.plan_id)
+
+    def _sessions_in_hours(self) -> set:
+        """Repeating sessions raised and waiting, whose wished time is inside
+        the provider's hours — taken before a change to them, so only those
+        the change closes are told the clinic is closed (a wish at an odd
+        time never was inside, and nothing about it changed)."""
+        inside = set()
+        for r in self.requests.values():
+            if r.series_id is None or r.status not in ("pending", "on_hold") or r.latest:
+                continue
+            if self._provider_free_for(r.preferred_start, r.duration_minutes):
+                inside.add(r.id)
+        return inside
+
+    def _provider_free_for(self, start: datetime, minutes: int) -> bool:
+        end = start + timedelta(minutes=minutes)
+        free = self.availability_segments(PROVIDER, start.date(), start.date() + timedelta(days=1))
+        return any(x.start <= start and end <= x.end for x in free)
+
+    def _displace_sessions_in_closed_time(self, inside: set) -> None:
+        """Those of `inside` the change has closed: offered another time
+        within the reschedule window, as provider_away does."""
+        for rid in inside:
+            r = self.requests[rid]
+            if r.status in ("pending", "on_hold") and not r.latest \
+                    and not self._provider_free_for(r.preferred_start, r.duration_minutes):
+                self._displace(r, r.preferred_start)
+
+    def _withdraw_move_asks(self, appointment_id: int) -> None:
+        """The booking was cancelled or moved: a move still being asked about
+        for it has nothing left to move. Taken back now, so its slot is freed
+        and whatever rested on it falls through."""
+        for a in list(self.approvals.values()):
+            if a.kind == "reschedule" and a.appointment_id == appointment_id \
+                    and self._outstanding(a):
+                a.status = "withdrawn"
+                self._cascade_refusal(a)
+                self._settle_if_answered(a.plan_id)
 
     def mark_attendance(self, appointment_id: int, attended: bool) -> Appointment:
         """The provider recording whether the client turned up."""
@@ -1515,8 +1618,9 @@ class World:
         # in that week then), with the same priority as everybody else's.
         # Only what is already booked is moved now.
 
-        stranded = [a.id for a in self.orphaned_appointments()
+        stranded = [a.id for a in self.orphaned_appointments(self.TIME_OFF_REACH_DAYS)
                     if a.range.start < end and start < a.range.end]
+        self._withdraw_offers_in_closed_time()
         self._note(f"provider away {start:%a %d %b %H:%M} – {end:%a %d %b %H:%M}"
                    + (f": {len(stranded)} appointment(s) now stranded"
                       if stranded else ""))
@@ -1544,8 +1648,10 @@ class World:
         free = self.availability_segments(PROVIDER, start, end)
         return [
             a for a in self._live_appointments(start, end)
-            if not any(s.start <= a.range.start and a.range.end <= s.end
-                       for s in free)
+            if a.client_id != PROVIDER          # the provider's own blocks are theirs
+            and a.status is AppointmentStatus.BOOKED
+            and not any(s.start <= a.range.start and a.range.end <= s.end
+                        for s in free)
         ]
 
     def rehouse_orphans(self, appointment_ids: Optional[Sequence[int]] = None) -> List[int]:
@@ -1563,7 +1669,7 @@ class World:
         wanted = None if appointment_ids is None else {int(i) for i in appointment_ids}
         being_dealt_with = self._asked_to_move()
         raised = []
-        for appointment in self.orphaned_appointments():
+        for appointment in self.orphaned_appointments(self.TIME_OFF_REACH_DAYS):
             if wanted is not None and appointment.id not in wanted:
                 continue
             if appointment.id in being_dealt_with:
@@ -1591,7 +1697,7 @@ class World:
         """End them outright instead. Nobody is offered another slot."""
         wanted = None if appointment_ids is None else {int(i) for i in appointment_ids}
         cancelled = 0
-        for appointment in self.orphaned_appointments():
+        for appointment in self.orphaned_appointments(self.TIME_OFF_REACH_DAYS):
             if wanted is None or appointment.id in wanted:
                 self.cancel_appointment(appointment.id, by=Party.PROVIDER)
                 cancelled += 1
@@ -1638,6 +1744,14 @@ class World:
             locked=lock, preferred_start=request.preferred_start,
         )
         request.status = "placed"
+        if request.replaces_appointment_id is not None:
+            # A move: the old time goes now that the new one exists, as when a
+            # move is settled (see _book).
+            old = self.store.get_appointment(request.replaces_appointment_id)
+            if old.status is AppointmentStatus.BOOKED:
+                self.cancel_appointment(
+                    old.id, by=Party.PROVIDER if request.origin is Origin.DISPLACED
+                    else Party.CLIENT, as_move=True)
         self._tell(request.client_id, "booked",
                    f"The clinic has booked your {service.name} for {self._when(start)}.")
         free = self.availability_segments(PROVIDER, start.date(),
@@ -1672,7 +1786,7 @@ class World:
         wherever they land is a choice of theirs, not one imposed on them.
         """
         appointment = self.store.get_appointment(appointment_id)
-        if not appointment.occupies_slot:
+        if appointment.status is not AppointmentStatus.BOOKED or appointment.range.start <= datetime.now():
             raise ValueError("that appointment is not live")
         # "Move it to when it already is" is not a move. Accepted, it blocked
         # the client's corrected request ("already waiting to be moved") and a
@@ -1725,6 +1839,7 @@ class World:
         moved = self.store.reschedule_appointment(
             appointment_id, start, end, origin=Origin.CLIENT
         )
+        self._withdraw_move_asks(appointment_id)
         self._note(f"{moved.client_id} moved their own booking to {start:%a %d %b %H:%M}")
         return moved
 
@@ -1898,6 +2013,10 @@ class World:
 
         window_start = now.date()
         window_end = window_start + timedelta(days=horizon_days)
+        # The ordinary horizon. The run as a whole may reach further (below),
+        # but only for the bookings that need it: every other request keeps
+        # this window, for scope and for where it may be placed.
+        horizon_end = window_end
         # A booking the clinic has to move — booked far ahead, so presumably
         # for a reason — is planned at once, within its reschedule window, even
         # beyond the usual horizon. (Repeating sessions are not raised early:
@@ -1917,7 +2036,7 @@ class World:
         open_requests = [r for r in self.requests.values()
                          if r.status in ("pending", "on_hold")
                          and not self._session_gone(r, now)]
-        waiting, skipped = self._in_scope(open_requests, request_ids, window_end)
+        waiting, skipped = self._in_scope(open_requests, request_ids, horizon_end)
         if not waiting:
             return {"ran": False,
                     "reason": "nothing in this window" if skipped else "nothing waiting",
@@ -1964,7 +2083,7 @@ class World:
             allowed = _from(reschedule_windows(
                 current,
                 self.availability_segments(
-                    appointment.client_id, window_start, window_end
+                    appointment.client_id, window_start, horizon_end
                 ),
                 self.bounds,
             ), earliest)
@@ -1989,7 +2108,9 @@ class World:
                     # From now on, and before its reschedule deadline if it has
                     # one (a session the clinic had to move stays in its window).
                     [TimeRange(x.start, x.end) for x in _from(_until(self.availability_segments(
-                        r.client_id, window_start, window_end), r.latest), earliest)],
+                        r.client_id, window_start,
+                        window_end if r.latest and r.replaces_appointment_id is not None
+                        else horizon_end), r.latest), earliest)],
                     preferred_start=r.preferred_start,
                  )
                  for r in waiting],
@@ -2121,8 +2242,7 @@ class World:
             # or offered there, it is out of date, whatever made it so.
             plan.status = "rejected"
             self._note(f"plan {plan_id} was out of date ({clash}); not sent")
-            raise ValueError(f"this proposal is out of date — {clash} has since been "
-                             f"booked or offered to somebody; make a new one")
+            raise ValueError(f"this proposal is out of date — {clash}; make a new one")
         plan.status = "awaiting_clients"
 
         for placement in plan.placements:
@@ -2306,14 +2426,21 @@ class World:
         return dropped
 
     def discard_plan(self, plan_id: int) -> None:
+        # Only a draft: one out with clients has offers and holds of its own,
+        # which settle_plan(.., "reoptimise") takes back properly.
+        if self.plans[plan_id].status != "draft":
+            raise ValueError(f"plan {plan_id} is {self.plans[plan_id].status}, not a draft")
         self.plans[plan_id].status = "rejected"
         self._note(f"discarded draft {plan_id}")
 
     def provider_reject(self, plan_id: int) -> None:
         plan = self.plans[plan_id]
+        if plan.status != "draft":
+            raise ValueError(f"plan {plan_id} is {plan.status}, not a draft")
         plan.status = "rejected"
         for request in self.requests.values():
-            if request.id in {p["request_id"] for p in plan.placements}:
+            if request.id in {p["request_id"] for p in plan.placements} \
+                    and request.status == "pending":     # never one placed meanwhile
                 request.status = "on_hold"
         self._note(f"provider rejected plan {plan_id}")
 
@@ -2396,6 +2523,13 @@ class World:
             return                      # still waiting, or never happening
 
         if approval.kind == "reschedule":
+            if self.store.get_appointment(approval.appointment_id).status \
+                    is not AppointmentStatus.BOOKED:
+                # Cancelled or moved since they agreed: writing the move now
+                # would resurrect it. Whatever rested on it falls through.
+                approval.status = "withdrawn"
+                self._cascade_refusal(approval)
+                return
             # Agreed to, but not chosen: the client said yes to moving, they
             # did not pick the slot. Recording it as CLIENT would teach the
             # anchoring model that being pushed around is a preference.
@@ -2562,6 +2696,10 @@ class World:
             elif other.status != "accepted":
                 continue
             self._strand(other, refused)
+            # With chains a move can rest on a move: what rested on this one
+            # falls through too, however many links down.
+            if other.kind == "reschedule":
+                self._cascade_refusal(other)
 
     def _record_refusal(self, approval: Approval, pin: bool) -> None:
         """A rejected slot becomes a hole in that client's availability.
@@ -2609,7 +2747,7 @@ class World:
             seen.extend(self.store.appointments_for(client_id, *window))
         return sorted(seen, key=lambda a: a.range.start)
 
-    def snapshot(self, horizon_days: int = 28) -> dict:
+    def snapshot(self, horizon_days: int = 28, only: Optional[str] = None) -> dict:
         """What every view needs. Deliberately wider than the planning horizon:
         the calendar can show four weeks, and it should not go blank just
         because the scheduler only plans one week ahead."""
@@ -2617,9 +2755,14 @@ class World:
         end = start + timedelta(days=horizon_days)
         window = (datetime.combine(start, time.min), datetime.combine(end, time.min))
 
-        stranded = {a.id for a in self.orphaned_appointments(horizon_days)}
+        # `only`: one client's poll. Their slice is all they are sent (see
+        # snapshot_for), so everybody else's hours and history — most of the
+        # cost of a snapshot — are not worked out at all; nor are the
+        # provider's own lists.
+        people = [only] if only else list(self.clients) + [PROVIDER]
+        stranded = set() if only else {a.id for a in self.orphaned_appointments(horizon_days)}
         overdue = {a.id for a in self.overdue_asks()}
-        decisions = self.needs_decision()
+        decisions = [] if only else self.needs_decision()
 
         # What is hanging over each booking, so a client can see at a glance
         # whether their slot is settled — the question they actually have.
@@ -2639,7 +2782,7 @@ class World:
                                    {"state": "moving", "now": None, "now_end": None})
 
         history = []
-        for client_id in list(self.clients) + [PROVIDER]:
+        for client_id in people:
             for a in self.store.appointment_history(client_id, *window):
                 history.append({
                     "id": a.id, "client_id": a.client_id,
@@ -2671,7 +2814,7 @@ class World:
                 {"id": c.id, "name": c.name, "per_day": c.per_day,
                  "per_week": c.per_week, "billing_mode": c.billing_mode,
                  **self.client_summary(c.id)}
-                for c in self.clients.values()
+                for c in self.clients.values() if only is None or c.id == only
             ],
             "services": [
                 {"id": s.id, "name": s.name, "duration": s.duration_minutes,
@@ -2722,7 +2865,7 @@ class World:
                     {"start": s.start.isoformat(), "end": s.end.isoformat()}
                     for s in self.availability_segments(client_id, start, end)
                 ]
-                for client_id in list(self.clients) + [PROVIDER]
+                for client_id in people
             },
             "exceptions": {
                 client_id: [
@@ -2732,7 +2875,7 @@ class World:
                      "kind": e.kind.value}
                     for e in self.store.exceptions_for(client_id)
                 ]
-                for client_id in list(self.clients) + [PROVIDER]
+                for client_id in people
             },
             "weekly": {
                 client_id: [
@@ -2741,7 +2884,7 @@ class World:
                      "to": r.end_time.strftime("%H:%M")}
                     for r in self.store.rules_for(client_id)
                 ]
-                for client_id in list(self.clients) + [PROVIDER]
+                for client_id in people
             },
             "requests": [
                 {"id": r.id, "client_id": r.client_id, "service_id": r.service_id,
@@ -2811,7 +2954,7 @@ class World:
                                      for a in x["depends_on"]]}
                      for x in p.displacements]}
                 for p in self.plans.values()
-                if p.status in ("draft", "awaiting_clients")
+                if p.status in ("draft", "awaiting_clients", "answered")
             ],
             "scheduler": {
                 "auto_run": self.policy.auto_run,
@@ -2845,7 +2988,7 @@ class World:
         """
         if client_id not in self.clients:
             raise KeyError(f"no client called {client_id!r}")
-        return self.scope_snapshot(self.snapshot(horizon_days), client_id)
+        return self.scope_snapshot(self.snapshot(horizon_days, only=client_id), client_id)
 
     def scope_snapshot(self, full: dict, client_id: str) -> dict:
         """One client's slice of a full snapshot (see snapshot_for) — a pure
@@ -2853,7 +2996,10 @@ class World:
         if client_id not in self.clients:
             raise KeyError(f"no client called {client_id!r}")
         mine = lambda rows: [r for r in rows if r.get("client_id") == client_id]  # noqa: E731
-        appointments = [{k: v for k, v in a.items() if k != "notes"}   # the clinician's
+        # Not the clinician's notes, nor whether a booking is in time the
+        # provider is not working — the provider decides that before anyone
+        # is told, and the client is told in a notice when they do.
+        appointments = [{k: v for k, v in a.items() if k not in ("notes", "orphaned")}
                         for a in mine(full["appointments"])]
         charges = mine(full["charges"])
         charge_ids = {c["id"] for c in charges}

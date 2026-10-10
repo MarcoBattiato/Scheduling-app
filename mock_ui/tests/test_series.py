@@ -278,15 +278,17 @@ def test_the_api_refuses_a_bad_series(client):
 # -- weeks the provider is away, and sessions that were never placed ---------
 
 
-def test_a_session_in_time_the_provider_has_off_is_skipped_not_raised(world):
+def test_a_session_in_time_the_provider_has_off_is_offered_another_time_in_its_week(world):
+    """Raised with its week, as everyone's is, then looked for elsewhere in
+    that week; if nothing is found by the week's end it lapses, on record."""
     world.provider_away(at(10, 0), at(11, 0))      # all of day 10, before it is raised
     series = world.start_series("carol", "s60", at(3).isoformat(), every_weeks=1)
 
     world.tick(now=later(7))
-    world.tick(now=later(14))
-
     away = next(r for r in sessions(world, series) if r.preferred_start == at(10))
-    assert [r.preferred_start for r in sessions(world, series)] == [at(3), at(10), at(17)]
+    assert away.latest == world.reschedule_deadline(at(10)), "kept within its own week"
+
+    world.tick(now=away.latest)                    # the week ends with nothing found
     assert away.status == "lapsed" and away.lapsed_reason == World.SKIP_AWAY, \
         "kept on record with the reason, never just left out"
     assert at(10).date() in series.raised, "and it is not tried again"

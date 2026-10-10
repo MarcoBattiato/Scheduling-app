@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from calendar_store import Party
-from scheduling_contracts import Principal, Role, Session
+from scheduling_contracts import Principal, Role, Session, Tier
 
 from . import assistant as assistant_mod, billing, calendar_sync, control, persistence, scenarios
 from .state import TimeOffConflict, World
@@ -1091,9 +1091,21 @@ async def autosave(request, call_next):
     async with _world_lock():                        # one at a time; see _world_lock
         response = await call_next(request)
         if request.method == "POST" and response.status_code < 400 \
-                and not request.url.path.endswith("/reset"):
+                and request.url.path != "/api/reset" and not _is_read(request.url.path):
             await run_in_threadpool(_save)           # never a half-changed World
     return response
+
+
+def _is_read(path: str) -> bool:
+    """A gate command that only reads (message.list, polled by every phone)
+    changes nothing worth writing the whole session to disk for."""
+    prefix = "/api/commands/"
+    if not path.startswith(prefix):
+        return False
+    try:
+        return control.by_name(path[len(prefix):]).__command_spec__.tier is Tier.READ
+    except (KeyError, LookupError):
+        return False
 
 
 def _save() -> None:

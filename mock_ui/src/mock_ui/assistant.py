@@ -504,13 +504,17 @@ class Assistant:
         command = by_name.get(call.name)
         if command is None:
             return f"There is no tool called {call.name}.", True
+        # The card text and error messages are written by the server for the
+        # person, with real names; the provider's model sees pseudonyms only.
+        hide = ((lambda t: self._pseudonymise(session, t))
+                if session.principal.role is Role.PROVIDER else (lambda t: t))
         try:
             outcome = self.gate.execute(session, control.build_command(command, call.args, session))
         except control.GateError as exc:
-            return str(exc), True
+            return hide(str(exc)), True
         if outcome.status == "needs_confirmation":
             # The token stays here: the model cannot confirm what it prepared.
-            return (f'Prepared, not done. The person now sees a card reading "{outcome.summary}" '
+            return (f'Prepared, not done. The person now sees a card reading "{hide(outcome.summary)}" '
                     f"and must confirm it in the app themselves."), False
         return json.dumps(outcome.result, default=str), False
 

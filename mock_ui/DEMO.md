@@ -135,24 +135,21 @@ Apply the agreed. *Now* it is in the calendar.
 
 ## 7. You are ill on Wednesday (3 min) — *the other moment worth taking slowly*
 
-**"I cannot work"** panel. Wednesday, all day. Leave the action on **just flag
-what is in it**.
+**"I cannot work"** panel. Wednesday, all day. Mark me away.
 
-A warning appears listing the bookings now sitting in time the provider does
-not have. **Nothing has been rescheduled.** Nobody has been contacted.
+Before anything changes, the app lists the bookings in that time and asks one
+question: **ask them all to move**, or **don't take the time off**. Nothing has
+been rescheduled and nobody has been contacted yet.
 
 Say why: a mistyped date must never put half the week's clients through a
-rescheduling nobody asked for. Changing your hours is not the same as deciding
-what to do about it.
+rescheduling nobody asked for — and the diary must never hold bookings in time
+nobody is working. So there is no third option of "leave them there".
 
-Then decide, explicitly:
+Choose to move them: each client's hour is *kept* until there is somewhere to
+move it to, each client is told, and it goes through the queue like any
+request, so they are asked rather than told.
 
-- **Find them a new slot** — each client's hour is *kept* until there is
-  somewhere to move it to, and it goes through the queue like any request, so
-  they are asked rather than told.
-- or **Cancel them.**
-
-Choose the first, then run the scheduler again to see the replacements found.
+Then run the scheduler again to see the replacements found.
 Those bookings come back marked as moved by the clinic, not chosen — so
 nothing downstream ever mistakes a slot somebody was pushed into for one they
 like.

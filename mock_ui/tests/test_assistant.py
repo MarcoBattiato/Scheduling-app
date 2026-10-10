@@ -189,6 +189,18 @@ def test_the_provider_types_names_but_claude_sees_pseudonyms(world):
     assert out["messages"][-1]["text"].startswith("Dan"), "the provider reads real names"
 
 
+def test_the_providers_card_text_is_pseudonymised(world):
+    helper, claude = make(world, reply("noted"))
+    from scheduling_contracts import Session
+    session = Session(PROVIDER, via_assistant=True, conversation_id="c")
+    out = helper._tool(session, assistant_mod.Conversation(id="c", principal=PROVIDER, created=None),
+                       {"appointment_cancel": "appointment.cancel"},
+                       assistant_mod.Call(id="1", name="appointment_cancel",
+                                          args={"appointment_id": dans_first(world).id}))
+    text, is_error = out
+    assert "Dan" in world.clients["dan"].name and "Dan" not in text, text
+
+
 def _first_alias(request):
     import re
     return re.search(r"Client [A-Z]{1,2}", request["messages"][0]["content"]).group(0)
