@@ -354,7 +354,7 @@ def test_the_phone_page_is_served_fresh_and_versioned(client):
     page = client.get("/phone")
 
     assert page.status_code == 200
-    for asset in ("phone.js", "phone.css"):
+    for asset in ("phone.js", "tokens.css", "phone.css"):
         assert f"/static/{asset}?v=" in page.text, f"{asset} is not cache-busted"
     assert "no-store" in page.headers.get("cache-control", "")
 
@@ -423,9 +423,11 @@ def test_nothing_needs_a_mouse():
 def test_inputs_are_big_enough_that_ios_does_not_zoom():
     """iOS zooms the page into any input under 16px and does not zoom back."""
     css = (STATIC / "phone.css").read_text()
+    tokens = (STATIC / "tokens.css").read_text()
 
-    assert re.search(r"\.field input, \.field select \{[^}]*font-size: 16px", css)
-    assert re.search(r"body \{[^}]*16px", css)
+    assert re.search(r"--font-md:\s*16px", tokens), "the body/input size stays 16px"
+    assert re.search(r"\.field input, \.field select \{[^}]*font-size: var\(--font-md\)", css)
+    assert re.search(r"body \{[^}]*var\(--font-md\)", css)
 
 
 @node

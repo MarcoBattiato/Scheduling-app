@@ -1149,7 +1149,7 @@ async def no_stale_assets(request, call_next):
 
 @app.get("/")
 def index():
-    return _page("index.html", ("calendar.js", "app.js", "style.css"))
+    return _page("index.html", ("calendar.js", "app.js", "tokens.css", "style.css"))
 
 
 @app.get("/phone")
@@ -1157,7 +1157,7 @@ def phone():
     """The same world, laid out for a phone: tabs, taps and sheets instead of
     a week grid driven by hover and drag. Same API, so either page can be
     open on the same session at once."""
-    return _page("phone.html", ("phone.js", "phone.css"))
+    return _page("phone.html", ("phone.js", "tokens.css", "phone.css"))
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

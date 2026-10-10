@@ -14,9 +14,11 @@
 <link rel="manifest" href="/static/phone.webmanifest">
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <title>Appointments</title>
+<link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/phone.css">
 <!-- Inline, so the very first frame of a Home Screen launch already has the
-     app's background instead of a white flash while the stylesheet loads. -->
+     app's background instead of a white flash while the stylesheet loads.
+     The two colours mirror --bg in tokens.css (as do the theme-color metas). -->
 <style>
 html, body { background: #f6f7f9; }
 @media (prefers-color-scheme: dark) { html, body { background: #14161a; } }
