@@ -403,3 +403,42 @@ p.because { margin: var(--space-2) var(--space-1); }
 .confirm-card p { font-size: var(--font-md); }
 .row-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-3); }
 .sheet-body { margin: 0 0 var(--space-3); }
+
+/* -- spacing and layout helpers -------------------------------------
+   For small adjustments in views, instead of style="…". Spacing from the
+   token scale only; a helper that is not here is added here first. Like
+   the inline styles they replace, they win over component rules
+   (`.card p`, `.row`), hence !important. */
+
+.flush { margin: 0 !important; }
+.mt-0 { margin-top: 0 !important; }
+.mt-1 { margin-top: var(--space-1) !important; }
+.mt-2 { margin-top: var(--space-2) !important; }
+.mt-3 { margin-top: var(--space-3) !important; }
+.mt-4 { margin-top: var(--space-4) !important; }
+.mt-pull { margin-top: calc(-1 * var(--space-1)) !important; }   /* a hint tucked under its field */
+.mb-1 { margin-bottom: var(--space-1) !important; }
+.mb-2 { margin-bottom: var(--space-2) !important; }
+.mb-3 { margin-bottom: var(--space-3) !important; }
+.indent { padding-left: var(--space-5) !important; }
+.block { display: block; }
+.full { width: 100%; }
+.grow { flex: 1; }
+.wrap { flex-wrap: wrap; }
+.spread { display: flex; justify-content: space-between; align-items: center; }
+.ta-right { text-align: right !important; }
+.ta-center { text-align: center !important; }
+.text-sm { font-size: var(--font-sm) !important; }
+.text-md { font-size: var(--font-md) !important; }
+.struck { text-decoration: line-through; }
+.loud { opacity: 1; font-weight: 600; }
+.inline-icon { vertical-align: -3px; }
+/* A row or card used as a plain container: no padding or border of its own. */
+.bare { padding: 0 !important; border: 0 !important; }
+.bare.touch { min-height: 44px !important; }
+/* A list nested inside a card: no second shadow. */
+.inset { box-shadow: none !important; }
+/* A text link inside a sentence, not a touch target of its own. */
+.link.inline { min-height: 0 !important; padding: 0 !important; }
+.back-link { margin: calc(-1 * var(--space-2)) 0 0 calc(-1 * var(--space-1)) !important; }
+.timeline-card { padding: var(--space-3) var(--space-2) var(--space-3) 0 !important; }

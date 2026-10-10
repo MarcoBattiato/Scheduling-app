@@ -182,9 +182,9 @@ function frequencyPicker(current, act) {
 // The optional last date, inside a form so a redraw keeps what was typed.
 function untilField(name) {
   return `<form data-form="${name}">
-    <label class="field" style="margin-top:12px"><span>Last session (optional)</span>
+    <label class="field mt-3"><span>Last session (optional)</span>
       <input type="date" name="until" min="${todayKey()}"></label></form>
-    <p class="hint" style="margin-top:-4px">Leave it empty to keep going until you stop it.</p>`;
+    <p class="hint mt-pull">Leave it empty to keep going until you stop it.</p>`;
 }
 
 // -- the clinician chat: fetched through the gate, never in /api/state ---
@@ -260,7 +260,7 @@ async function timeOff(path, body, key = "then") {
   if (res.status === 409 && data.detail && data.detail.bookings) {
     const list = data.detail.bookings.map((b) => `<li>${esc(nameOf(b.client_id))} · ${fmtWhen(b.start)}</li>`).join("");
     const yes = await ask(`${plural(data.detail.bookings.length, "booking falls", "bookings fall")} in that time`,
-      `<ul style="margin:0 0 8px;padding-left:18px">${list}</ul>Ask ${data.detail.bookings.length === 1 ? "this client" : "all of them"}
+      `<ul class="flush mb-2 indent">${list}</ul>Ask ${data.detail.bookings.length === 1 ? "this client" : "all of them"}
        to move to another time? Each keeps their booking until a new time is agreed. Otherwise the time is not taken off.`,
       "Ask them to move", false, "Don't take the time off");
     if (!yes) { toast("Nothing changed — the time stays as it was"); return null; }
@@ -479,7 +479,7 @@ function installTip() {
   if (!isIOSSafari() || tipDismissed()) return "";
   return `<div class="install-tip"><img src="/static/icon-180.png" alt="">
     <div class="main"><b>Use it like an app.</b> Tap <b>Share</b>
-      <svg viewBox="0 0 24 24" width="16" height="16" style="vertical-align:-3px" aria-label="the Share icon"
+      <svg class="inline-icon" viewBox="0 0 24 24" width="16" height="16" aria-label="the Share icon"
         fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 3v12M8 7l4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>,
       then <b>Add to Home Screen</b>.</div>
@@ -518,7 +518,7 @@ function clientNotices() {
     const good = n.kind === "confirmed" || n.kind === "booked";
     return `<div class="card ${good ? "" : "warn"}">
       <div class="main"><span class="tag ${good ? "ok" : "warn"}">${esc(NOTICE_TAGS[n.kind] || "update")}</span>
-        <p style="margin:8px 0 0">${esc(n.text)}</p>
+        <p class="flush mt-2">${esc(n.text)}</p>
         <div class="row-actions"><button class="btn small" data-act="notice-seen" data-id="${n.id}">OK</button>
         <button class="btn small ghost" data-act="tab" data-tab="messages">Message the clinic</button></div></div>
     </div>`;
@@ -552,10 +552,10 @@ function clientHome() {
   const owed = chargesOf(me, "due");
   if (owed.length) {
     html += `<div class="card attention"><span class="tag accent">to pay</span>
-      <h3 style="margin-top:8px">${sgd(owed.reduce((t, c) => t + c.amount, 0))} to pay</h3>
-      <div class="list" style="box-shadow:none;margin:8px 0 0">${owed.map((c) => payRow(c,
+      <h3 class="mt-2">${sgd(owed.reduce((t, c) => t + c.amount, 0))} to pay</h3>
+      <div class="list inset flush mt-2">${owed.map((c) => payRow(c,
         `<button class="btn small" data-act="pay" data-id="${c.id}">Pay</button>`)).join("")}</div>
-      <p class="hint" style="margin:8px 0 0">PayNow (works with DBS PayLah! and any bank app), card or GrabPay.</p>
+      <p class="hint flush mt-2">PayNow (works with DBS PayLah! and any bank app), card or GrabPay.</p>
     </div>`;
   }
 
@@ -597,16 +597,16 @@ function askCard(a) {
   if (a.status === "accepted") {
     return `<div class="card held">
       <span class="tag held">waiting for the clinic</span>
-      <h3 style="margin-top:8px">${move ? "Move agreed" : "Booking agreed"}</h3>
+      <h3 class="mt-2">${move ? "Move agreed" : "Booking agreed"}</h3>
       <p>${service}, <b>${fmtWhen(a.now)}</b>${move ? ` (was ${fmtWhen(a.was)})` : ""}.</p>
-      <p class="hint" style="margin:6px 0 0">You said yes. The time is held for you
+      <p class="hint flush mt-2">You said yes. The time is held for you
         and becomes final once the clinic confirms it.</p>
     </div>`;
   }
   if (!move) {
     return `<div class="card attention">
       <span class="tag accent">needs your answer</span>
-      <h3 style="margin-top:8px">A time for your ${service}</h3>
+      <h3 class="mt-2">A time for your ${service}</h3>
       <div class="when">${fmtWhen(a.now)}</div>
       <p class="meta">until ${fmtTime(a.now_end)}</p>
       <div class="pair">
@@ -620,17 +620,17 @@ function askCard(a) {
   // them apart — so the choice is put to them rather than inferred.
   return `<div class="card attention">
     <span class="tag accent">needs your answer</span>
-    <h3 style="margin-top:8px">Could you move your ${service}?</h3>
-    <p class="meta" style="text-decoration:line-through">${fmtWhen(a.was)}</p>
+    <h3 class="mt-2">Could you move your ${service}?</h3>
+    <p class="meta struck">${fmtWhen(a.was)}</p>
     <div class="when">${fmtWhen(a.now)}</div>
     <div class="stack">
       <button class="btn ok" data-act="respond" data-id="${a.id}" data-answer="accept">Yes, move me</button>
-      <div class="pair" style="margin-top:0">
+      <div class="pair mt-0">
         <button class="btn secondary" data-act="respond" data-id="${a.id}" data-answer="decline">Not that time</button>
         <button class="btn danger" data-act="respond" data-id="${a.id}" data-answer="refuse">Keep my slot</button>
       </div>
     </div>
-    <p class="hint" style="margin:10px 0 0"><b>Not that time</b> rules out that
+    <p class="hint flush mt-3"><b>Not that time</b> rules out that
       slot only, and they may ask about another. <b>Keep my slot</b> means they
       stop asking.</p>
   </div>`;
@@ -691,7 +691,7 @@ function picker(id, client, duration) {
           aria-pressed="${t === p.time}">${hhmm(t)}</button>`).join("")}</div>`
     : `<p class="hint">${client === me
         ? `You are not free on ${fmtDay(p.day)} for ${duration} minutes. Pick a day with a dot, or
-           <button class="link" data-act="tab" data-tab="hours" style="min-height:0;padding:0">change your hours</button>.`
+           <button class="link inline" data-act="tab" data-tab="hours">change your hours</button>.`
         : `${esc(nameOf(client))} is not free on ${fmtDay(p.day)} for ${duration} minutes.`}</p>`;
 
   return `${strip}<h2>${fmtDay(p.day)}</h2>${chips}`;
@@ -840,7 +840,7 @@ function bookingSheet(id) {
   return `<h3>${esc(a.service)}</h3>
     <div class="when">${relDay(a.start)}, ${fmtTime(a.start)}</div>
     ${factsHtml(facts)}
-    <p class="hint" style="margin:0 0 8px">${status}</p>
+    <p class="hint flush mb-2">${status}</p>
     <div class="stack">
       ${p ? "" : `<button class="btn secondary" data-act="move-open" data-id="${a.id}">Ask to move</button>`}
       <button class="btn danger" data-act="cancel-booking" data-id="${a.id}">Cancel booking</button>
@@ -855,7 +855,7 @@ function moveSheet(id) {
   const start = pickedStart(`move-${id}`);
   const release = ui.pickers[`move-${id}`]?.release || false;
   return `<h3>Move your ${esc(a.service)}</h3>
-    <p class="hint" style="margin:0 0 8px">Now ${fmtWhen(a.start)}. When would you rather come?</p>
+    <p class="hint flush mb-2">Now ${fmtWhen(a.start)}. When would you rather come?</p>
     ${picker(`move-${id}`, a.client_id, duration)}
     <h2>Meanwhile</h2>
     <div class="segmented">
@@ -939,9 +939,9 @@ function rangeSheet(weekday) {
 function exceptionSheet(presetDate) {
   const available = ui.exceptionAvailable;
   return `<h3>Change one date</h3>
-    <p class="hint" style="margin:0 0 10px">Only that day changes. Your normal week stays as it is.</p>
+    <p class="hint flush mb-3">Only that day changes. Your normal week stays as it is.</p>
     <form data-form="exception">
-      <div class="segmented" style="margin-bottom:12px">
+      <div class="segmented mb-3">
         <button type="button" data-act="exception-kind" data-on="0" aria-pressed="${!available}">I'm away</button>
         <button type="button" data-act="exception-kind" data-on="1" aria-pressed="${available}">I'm free</button>
       </div>
@@ -951,7 +951,7 @@ function exceptionSheet(presetDate) {
         <label class="field"><span>From</span><select name="from">${timeOptions("09:00", 0, 23 * 60 + 30)}</select></label>
         <label class="field"><span>Until</span><select name="to">${timeOptions("17:00", 0, 23 * 60 + 30)}</select></label>
       </div>
-      ${isProvider() && !available ? `<p class="hint" style="margin-top:0">If anyone is booked in that
+      ${isProvider() && !available ? `<p class="hint mt-0">If anyone is booked in that
         time, you'll be asked whether to move them or keep the time. For more than a day, use
         <b>Time off</b> in More.</p>` : ""}
       <div class="stack"><button class="btn block" type="submit">Save</button>
@@ -962,10 +962,10 @@ function exceptionSheet(presetDate) {
 // -- the clinician chat ----------------------------------------------
 
 function bubbles(messages, mineAuthor) {
-  if (!messages.length) return `<p class="hint" style="text-align:center">No messages yet.</p>`;
+  if (!messages.length) return `<p class="hint ta-center">No messages yet.</p>`;
   return `<div class="bubbles">${messages.map((m) => `
     <div class="bubble ${m.author === mineAuthor ? "mine" : "theirs"}">
-      ${m.handoff ? `<div class="bubble-meta" style="opacity:1;font-weight:600">Passed on by the assistant</div>` : ""}
+      ${m.handoff ? `<div class="bubble-meta loud">Passed on by the assistant</div>` : ""}
       <div>${esc(m.text).replace(/\n/g, "<br>")}</div>
       <div class="bubble-meta">${fmtWhen(m.at)}${m.author === mineAuthor && m.read ? " · read" : ""}</div>
     </div>`).join("")}</div>`;
@@ -986,7 +986,7 @@ function clientMessages() {
   }
   return `<h1>Messages</h1>
     <p class="lead">Write to your clinician. ${esc(settings.reply_expectation || "")}</p>
-    <div class="card warn" style="font-size:14px">${esc(settings.emergency_note || "")}</div>
+    <div class="card warn text-sm">${esc(settings.emergency_note || "")}</div>
     ${bubbles(convo.messages, "client")}
     ${composer("Write a message")}
     <p class="hint">Only you and your clinician see this conversation. It never goes to an AI assistant.</p>`;
@@ -996,7 +996,7 @@ function messagesView() {
   const open = openThread();
   if (open) {
     const convo = chat.thread[open];
-    return `<button class="link" data-act="tab" data-tab="more/messages" style="margin:-8px 0 0 -4px">‹ Messages</button>
+    return `<button class="link back-link" data-act="tab" data-tab="more/messages">‹ Messages</button>
       <h1>${esc(nameOf(open))}</h1>
       ${convo ? bubbles(convo.messages, "provider") : `<p class="hint">Loading…</p>`}
       ${composer(`Reply to ${nameOf(open)}`)}`;
@@ -1013,14 +1013,14 @@ function messagesView() {
       : empty("No conversations yet", "<p>Clients can write to you from the Messages tab in their app.</p>")}
     <h2>What clients are told</h2>
     <form data-form="chat-settings" class="card">
-      <label class="row" style="padding:0;min-height:44px;border:0">
+      <label class="row bare touch">
         <span class="main"><span class="title">Offer messaging</span></span>
         <input type="checkbox" name="enabled" ${c.enabled !== false ? "checked" : ""}></label>
       <label class="field"><span>When to expect a reply</span>
         <input name="reply" value="${esc(c.reply_expectation || "")}" autocomplete="off"></label>
       <label class="field"><span>Where to get urgent help</span>
         <textarea name="emergency" rows="3">${esc(c.emergency_note || "")}</textarea></label>
-      <p class="hint" style="margin-top:-4px">Shown above every client's conversation. Confirm the numbers and wording are right for your practice.</p>
+      <p class="hint mt-pull">Shown above every client's conversation. Confirm the numbers and wording are right for your practice.</p>
       <button class="btn secondary block" type="submit">Save</button>
     </form>`;
 }
@@ -1044,7 +1044,7 @@ function assistantSheet() {
       <div class="stack"><button class="btn ghost" data-act="close">Close</button></div>`;
   }
   if (!st.opted_in) {
-    return `${head}<p class="lead" style="margin:0 0 10px">Talk to the app instead of tapping through it.</p>
+    return `${head}<p class="lead flush mb-3">Talk to the app instead of tapping through it.</p>
       <div class="card">${esc(st.notice)}</div>
       <div class="stack"><button class="btn block" data-act="helper-opt-in">Turn on the assistant</button>
         <button class="btn ghost" data-act="close">Not now</button></div>
@@ -1055,23 +1055,23 @@ function assistantSheet() {
   const cards = helper.drafts.map((d) => `
     <div class="card attention confirm-card">
       <span class="tag accent">please confirm</span>
-      <p style="margin:8px 0 10px">${esc(d.summary)}</p>
-      <div class="pair" style="margin-top:0">
+      <p class="flush mt-2 mb-3">${esc(d.summary)}</p>
+      <div class="pair mt-0">
         <button class="btn ok" data-act="draft-confirm" data-token="${esc(d.token)}">Confirm</button>
         <button class="btn secondary" data-act="draft-discard" data-token="${esc(d.token)}">Not now</button>
       </div></div>`).join("");
   const handoff = convo && convo.handoff_offered ? `
     <div class="card warn">
-      <p style="margin:0 0 8px"><b>${esc(convo.emergency_note || "")}</b></p>
+      <p class="flush mb-2"><b>${esc(convo.emergency_note || "")}</b></p>
       ${convo.can_hand_off === false ? "" : `
-      <p style="margin:0 0 10px">Would you like to send what you've written here to your clinician?</p>
-      <div class="pair" style="margin-top:0">
+      <p class="flush mb-3">Would you like to send what you've written here to your clinician?</p>
+      <div class="pair mt-0">
         <button class="btn" data-act="helper-handoff">Send to my clinician</button>
         <button class="btn secondary" data-act="tab" data-tab="messages">Write to them myself</button>
       </div>`}</div>` : "";
-  return `<div style="display:flex;justify-content:space-between;align-items:center">${head}
+  return `<div class="spread">${head}
       ${convo ? `<button class="link" data-act="helper-new">New conversation</button>` : ""}</div>
-    ${lines.length ? "" : `<p class="hint" style="margin-top:0">${isProvider()
+    ${lines.length ? "" : `<p class="hint mt-0">${isProvider()
       ? 'Try "What is waiting this week?" or "Compare packing the diary with booking people closest to the times they asked for."'
       : 'Try "When is my next appointment?" or "Can I move Tuesday\'s session to later in the week?"'}</p>`}
     <div class="bubbles">${lines.map((m) => `
@@ -1084,10 +1084,10 @@ function assistantSheet() {
       <button class="btn" type="submit" ${helper.busy ? "disabled" : ""}>Send</button></form>
     <p class="hint">It can only prepare changes — you confirm each one.${isProvider() ? "" :
       " It never sees your name or your messages to your clinician."}</p>
-    ${isProvider() ? "" : `<div class="pair" style="margin-top:4px">
+    ${isProvider() ? "" : `<div class="pair mt-1">
       ${convo && convo.can_hand_off !== false && !convo.handoff_offered && !convo.handoff_sent && lines.length
         ? `<button class="link" data-act="helper-handoff-ask">Send this to my clinician</button>` : "<span></span>"}
-      <button class="link" data-act="helper-opt-out" style="text-align:right">Turn the assistant off</button></div>`}`;
+      <button class="link ta-right" data-act="helper-opt-out">Turn the assistant off</button></div>`}`;
 }
 
 function assistantSettingsView() {
@@ -1100,7 +1100,7 @@ function assistantSettingsView() {
         <input type="checkbox" data-act="helper-offer" ${st.offered ? "checked" : ""}></label>
     </div>
     <h2>What clients are told</h2>
-    <div class="card" style="font-size:15px">${esc(st.client_notice || "")}</div>
+    <div class="card text-md">${esc(st.client_notice || "")}</div>
     <h2>Which AI answers</h2>
     <div class="card">${st.configured
       ? (st.provider === "local"
@@ -1131,7 +1131,7 @@ function providerHome() {
     const idle = stuck.filter((a) => !a.pending).length;
     cards.push(`<button class="card warn tap" data-act="stranded">
       <div class="main"><span class="tag warn">needs a decision</span>
-        <h3 style="margin-top:6px">${plural(stuck.length, "booking is", "bookings are")} in time you're not working</h3>
+        <h3 class="mt-2">${plural(stuck.length, "booking is", "bookings are")} in time you're not working</h3>
         <p class="meta">${idle ? "Nothing has been done about them yet." : "Already being moved."}</p></div>
       <span class="chev">›</span></button>`);
   }
@@ -1139,8 +1139,8 @@ function providerHome() {
   if (decide.length) {
     cards.push(`<div class="card warn">
       <div class="main"><span class="tag warn">needs your decision</span>
-        <h3 style="margin-top:6px">${plural(decide.length, "booking is", "bookings are")} in time you're not working</h3>
-        <div class="list" style="box-shadow:none;margin:8px 0 0">${decide.map((d) => `<div class="row">
+        <h3 class="mt-2">${plural(decide.length, "booking is", "bookings are")} in time you're not working</h3>
+        <div class="list inset flush mt-2">${decide.map((d) => `<div class="row">
           <div class="main"><div class="title">${esc(nameOf(d.client_id))} · ${fmtWhen(d.start)}</div>
             <div class="meta">${d.past ? "This time has passed — did it go ahead?"
               : d.being_moved ? "No new time found yet." : "Nothing has been done about it."}</div>
@@ -1149,33 +1149,33 @@ function providerHome() {
               <button class="btn small secondary" data-act="decide" data-id="${d.appointment_id}" data-how="keep">${d.past ? "It went ahead" : "Keep it, I'll be there"}</button>
               <button class="btn small danger" data-act="decide" data-id="${d.appointment_id}" data-how="cancel">Cancel it</button>
             </div></div></div>`).join("")}</div>
-        <p class="hint" style="margin:8px 0 0">Nothing happens to these until you choose. The client is told what you decide.</p></div>
+        <p class="hint flush mt-2">Nothing happens to these until you choose. The client is told what you decide.</p></div>
     </div>`);
   }
   const overdue = (state.approvals || []).filter((a) => a.overdue);
   if (overdue.length) {
     cards.push(`<div class="card warn">
       <div class="main"><span class="tag warn">no answer</span>
-        <h3 style="margin-top:6px">${plural(overdue.length, "client has", "clients have")} not answered in ${
+        <h3 class="mt-2">${plural(overdue.length, "client has", "clients have")} not answered in ${
           (state.scheduler || {}).answer_within_hours} hours</h3>
-        <div class="list" style="box-shadow:none;margin:8px 0 0">${overdue.map((a) => `<div class="row">
+        <div class="list inset flush mt-2">${overdue.map((a) => `<div class="row">
           <div class="main"><div class="title">${esc(nameOf(a.client_id))}</div>
           <div class="meta">${a.kind === "reschedule" ? `asked to move ${fmtWhen(a.was)} → ${fmtWhen(a.now)}`
             : `offered ${fmtWhen(a.now)}`}</div></div></div>`).join("")}</div>
         <div class="row-actions"><button class="btn small" data-act="decline-overdue">Stop waiting and re-plan</button></div>
-        <p class="hint" style="margin:8px 0 0">Treated as "not that time": the client is told, and a new draft plans around it.</p></div>
+        <p class="hint flush mt-2">Treated as "not that time": the client is told, and a new draft plans around it.</p></div>
     </div>`);
   }
   const skipped = skippedFor("provider");
   if (skipped.length) {
     cards.push(`<div class="card warn">
       <div class="main"><span class="tag warn">not happening</span>
-        <h3 style="margin-top:6px">${plural(skipped.length, "repeating session")} won't take place</h3>
-        <div class="list" style="box-shadow:none;margin:8px 0 0">${skipped.map((r) => `<div class="row">
+        <h3 class="mt-2">${plural(skipped.length, "repeating session")} won't take place</h3>
+        <div class="list inset flush mt-2">${skipped.map((r) => `<div class="row">
           <div class="main"><div class="title">${esc(nameOf(r.client_id))} · ${fmtWhen(r.preferred)}</div>
           <div class="meta">${esc(skipWhy(r))}</div></div>
           <button class="btn small" data-act="skip-seen" data-id="${r.id}" data-who="provider">OK</button></div>`).join("")}</div>
-        <p class="hint" style="margin:8px 0 0">The client is told on their Home too. Nothing booked was cancelled.</p></div>
+        <p class="hint flush mt-2">The client is told on their Home too. Nothing booked was cancelled.</p></div>
     </div>`);
   }
   const unreadThreads = chat.summary.filter((t) => t.unread);
@@ -1184,7 +1184,7 @@ function providerHome() {
       unreadThreads.length === 1 ? `more/messages/${esc(unreadThreads[0].client_id)}` : "more/messages"}">
       <div class="main"><span class="tag ${unreadThreads.some((t) => t.attention) ? "warn" : "accent"}">${
         unreadThreads.some((t) => t.attention) ? "may need attention" : "messages"}</span>
-        <h3 style="margin-top:6px">${plural(unreadThreads.reduce((n, t) => n + t.unread, 0), "new message")}</h3>
+        <h3 class="mt-2">${plural(unreadThreads.reduce((n, t) => n + t.unread, 0), "new message")}</h3>
         <p class="meta">From ${unreadThreads.slice(0, 3).map((t) => esc(t.name)).join(", ")}</p></div>
       <span class="chev">›</span></button>`);
   }
@@ -1192,21 +1192,21 @@ function providerHome() {
   if (fees.length) {
     cards.push(`<button class="card warn tap" data-act="more-open" data-page="payments">
       <div class="main"><span class="tag warn">your decision</span>
-        <h3 style="margin-top:6px">${plural(fees.length, "fee")} to confirm or waive</h3>
+        <h3 class="mt-2">${plural(fees.length, "fee")} to confirm or waive</h3>
         <p class="meta">${fees.slice(0, 3).map((c) => esc(nameOf(c.client_id))).join(", ")} — nothing is charged until you confirm.</p></div>
       <span class="chev">›</span></button>`);
   }
   if (drafts.length) {
     cards.push(`<button class="card attention tap" data-act="tab" data-tab="plans">
       <div class="main"><span class="tag accent">to review</span>
-        <h3 style="margin-top:6px">${drafts.length === 1 ? "A new schedule is ready" : `${drafts.length} schedules to compare`}</h3>
+        <h3 class="mt-2">${drafts.length === 1 ? "A new schedule is ready" : `${drafts.length} schedules to compare`}</h3>
         <p class="meta">Nobody has been asked anything yet.</p></div>
       <span class="chev">›</span></button>`);
   }
   if (out.length) {
     cards.push(`<button class="card ${agreed ? "attention" : ""} tap" data-act="tab" data-tab="plans">
       <div class="main"><span class="tag ${agreed ? "ok" : ""}">${agreed ? "ready to confirm" : "with clients"}</span>
-        <h3 style="margin-top:6px">${agreed} ready · ${waitingOn} waiting</h3>
+        <h3 class="mt-2">${agreed} ready · ${waitingOn} waiting</h3>
         <p class="meta">${agreed ? "Confirm to put them in the diary." : "Waiting for clients to answer."}</p></div>
       <span class="chev">›</span></button>`);
   }
@@ -1237,7 +1237,7 @@ function providerHome() {
 function diaryRow(a) {
   const self = a.client_id === PROVIDER;
   return `<button class="row" data-act="slot" data-id="${a.id}">
-    <div class="datebox"><b style="font-size:15px">${fmtTime(a.start)}</b><span>${fmtTime(a.end)}</span></div>
+    <div class="datebox"><b class="text-md">${fmtTime(a.start)}</b><span>${fmtTime(a.end)}</span></div>
     <div class="main"><div class="title">${self ? esc(a.service) : esc(nameOf(a.client_id))}</div>
       <div class="meta">${self ? "your own time" : esc(a.service)}</div>
       ${slotTags(a)}</div>
@@ -1258,7 +1258,7 @@ function strandedSheet() {
   const stuck = stranded();
   const idle = stuck.filter((a) => !a.pending);
   return `<h3>Bookings in time you're not working</h3>
-    <p class="hint" style="margin:0 0 8px">They are still in the diary and still the
+    <p class="hint flush mb-2">They are still in the diary and still the
       clients'. Nothing happens to them until you decide.</p>
     <div class="list">${stuck.map((a) => `<div class="row">${datebox(a.start)}
       <div class="main"><div class="title">${esc(nameOf(a.client_id))} · ${fmtTime(a.start)}</div>
@@ -1368,7 +1368,7 @@ function timeline(key) {
   }
   flush();
 
-  let html = `<div class="card" style="padding:12px 8px 12px 0"><div class="timeline" style="height:${y(to)}px">`;
+  let html = `<div class="card timeline-card"><div class="timeline" style="height:${y(to)}px">`;
   html += open.map((s) => `<div class="open" style="top:${y(s.from)}px;height:${y(s.to) - y(s.from)}px"></div>`).join("");
   for (let h = from; h <= to; h += 60) {
     html += `<div class="hourline" style="top:${y(h)}px"></div><div class="hour" style="top:${y(h)}px">${hhmm(h)}</div>`;
@@ -1410,7 +1410,7 @@ function slotSheet(id) {
   return `<h3>${self ? esc(a.service) : esc(nameOf(a.client_id))}</h3>
     ${factsHtml(facts)}
     <div class="stack">
-      ${started ? `<div class="pair" style="margin-top:0">
+      ${started ? `<div class="pair mt-0">
         <button class="btn ok" data-act="attendance" data-id="${a.id}" data-attended="1">Attended</button>
         <button class="btn secondary" data-act="attendance" data-id="${a.id}" data-attended="0">Didn't show</button></div>` : ""}
       ${!self ? `<button class="btn secondary" data-act="view-as" data-who="${esc(a.client_id)}">See ${esc(nameOf(a.client_id))}'s view</button>` : ""}
@@ -1485,10 +1485,10 @@ function queueView() {
       </div>`;
 
     html += `<h2>How to plan</h2><div class="card">
-      <label class="field" style="margin:0"><span>Priority</span>
+      <label class="field flush"><span>Priority</span>
         <input type="range" min="0" max="1" step="0.05" value="${ui.alpha}" data-act="alpha" aria-label="Priority"></label>
       <div class="range-ends"><span>Times people asked for</span><span>No unusable gaps</span></div>
-      <p class="hint" style="margin:10px 0 4px">Move people already booked, at most</p>
+      <p class="hint flush mt-3 mb-1">Move people already booked, at most</p>
       <div class="segmented">${[0, 1, 2, 3].map((n) => `
         <button data-act="moves" data-n="${n}" aria-pressed="${ui.moves === n}">${n === 0 ? "Nobody" : n}</button>`).join("")}</div>
     </div>
@@ -1510,7 +1510,7 @@ function placeSheet(id) {
   if (!r) return `<h3>Gone</h3>`;
   const start = pickedStart(`place-${id}`);
   return `<h3>Book ${esc(nameOf(r.client_id))} yourself</h3>
-    <p class="hint" style="margin:0 0 8px">${esc(r.service)} · wanted ${fmtWhen(r.preferred)}.
+    <p class="hint flush mb-2">${esc(r.service)} · wanted ${fmtWhen(r.preferred)}.
       Showing when ${esc(nameOf(r.client_id))} is free.</p>
     ${picker(`place-${id}`, r.client_id, r.duration)}
     <div class="stack">
@@ -1575,7 +1575,7 @@ function draftCard(plan, label) {
     return `<label class="change">
       <input type="checkbox" data-act="tick" data-plan="${plan.id}" data-key="${x.key}"
         ${on.has(x.key) ? "checked" : ""} ${forced.has(x.key) ? "disabled" : ""}>
-      <div style="flex:1"><div><span class="tag ${move ? "move" : "ok"}">${move ? "move" : "book"}</span>
+      <div class="grow"><div><span class="tag ${move ? "move" : "ok"}">${move ? "move" : "book"}</span>
         <b>${esc(nameOf(x.client_id))}</b></div>
         <div class="meta">${move ? `${fmtWhen(x.was)} → <b>${fmtWhen(x.now)}</b>` : `${esc(x.service)} · <b>${fmtWhen(x.start)}</b>`}</div>
         ${needs.length ? `<div class="because">Only if ${needs.map(esc).join(" and ")} move${needs.length > 1 ? "" : "s"} first</div>` : ""}
@@ -1585,7 +1585,7 @@ function draftCard(plan, label) {
 
   return `<div class="card">
     ${label ? `<span class="tag accent">${label}</span>` : ""}
-    <h3 style="margin-top:${label ? 8 : 0}px">${describeAlpha(q.alpha)[0].toUpperCase() + describeAlpha(q.alpha).slice(1)}</h3>
+    <h3 class="${label ? "mt-2" : "mt-0"}">${describeAlpha(q.alpha)[0].toUpperCase() + describeAlpha(q.alpha).slice(1)}</h3>
     <p class="meta">priority ${q.alpha} · up to ${plural(q.max_displacements, "move")}</p>
     <div class="metrics">
       <div class="metric"><b>${m.placed}</b><span>booked</span></div>
@@ -1595,12 +1595,12 @@ function draftCard(plan, label) {
     </div>
     ${m.unplaced ? `<p class="because">${plural(m.unplaced, "request")} could not be fitted in.</p>` : ""}
     ${planStrips(plan)}
-    <div style="margin-top:8px">${plan.placements.map((x) => change(x, false)).join("")}
+    <div class="mt-2">${plan.placements.map((x) => change(x, false)).join("")}
       ${plan.displacements.map((x) => change(x, true)).join("")}</div>
     <div class="stack">
       <button class="btn block" data-act="approve" data-id="${plan.id}" ${on.size ? "" : "disabled"}>
         Ask ${plural(new Set([...plan.placements, ...plan.displacements].filter((x) => on.has(x.key)).map((x) => x.client_id)).size, "client")}</button>
-      <div class="pair" style="margin-top:0">
+      <div class="pair mt-0">
         <button class="btn secondary" data-act="lock-rerun" data-id="${plan.id}">Keep ticked, re-plan rest</button>
         <button class="btn danger" data-act="discard" data-id="${plan.id}">Discard</button>
       </div>
@@ -1684,12 +1684,12 @@ function settlementCard(plan) {
   const held = agreed.length - ready.length;
   return `<div class="card ${ready.length ? "attention" : ""}">
     <h3>${agreed.length} agreed · ${waiting.length} waiting · ${saidNo.length} said no</h3>
-    <p class="hint" style="margin:2px 0 10px">Agreeing is an answer, not a booking — nothing here is in the diary until you confirm.</p>
-    <div class="list" style="box-shadow:none">${[...agreed, ...waiting, ...saidNo, ...done].map(row).join("")}</div>
+    <p class="hint flush mb-3">Agreeing is an answer, not a booking — nothing here is in the diary until you confirm.</p>
+    <div class="list inset">${[...agreed, ...waiting, ...saidNo, ...done].map(row).join("")}</div>
     <div class="stack">
       <button class="btn ok" data-act="settle" data-id="${plan.id}" data-how="agreed" ${ready.length ? "" : "disabled"}>
         ${ready.length ? `Confirm the ${ready.length} agreed` : "Nothing ready to confirm yet"}</button>
-      ${held ? `<p class="hint" style="margin:0">${plural(held, "agreed change waits", "agreed changes wait")}
+      ${held ? `<p class="hint flush">${plural(held, "agreed change waits", "agreed changes wait")}
         for someone else to move first. It goes in once they say yes.</p>` : ""}
       <button class="btn secondary" data-act="settle" data-id="${plan.id}" data-how="agreed_only" ${waiting.length ? "" : "disabled"}>
         Confirm agreed, stop waiting for ${waiting.length}</button>
@@ -1715,7 +1715,7 @@ const MORE = [
   ["activity", "Activity", "Everything that has happened"],
 ];
 
-const backLink = () => `<button class="link" data-act="tab" data-tab="more" style="margin:-8px 0 0 -4px">‹ More</button>`;
+const backLink = () => `<button class="link back-link" data-act="tab" data-tab="more">‹ More</button>`;
 
 function moreView() {
   const page = tab.split("/")[1];
@@ -1745,7 +1745,7 @@ function awayView() {
     <p class="lead">Marks the time as not working. If anyone is booked in it, you choose:
       ask them all to move, or don't take the time off.</p>
     <form data-form="away" class="card">
-      <div class="segmented" style="margin-bottom:12px">
+      <div class="segmented mb-3">
         <button type="button" data-act="away-mode" data-mode="days" aria-pressed="${a.mode === "days"}">Whole days</button>
         <button type="button" data-act="away-mode" data-mode="part" aria-pressed="${a.mode === "part"}">Part of a day</button>
       </div>
@@ -1757,7 +1757,7 @@ function awayView() {
           <label class="field"><span>From</span><select name="from">${timeOptions("09:00", 0, 23 * 60 + 30)}</select></label>
           <label class="field"><span>Until</span><select name="to">${timeOptions("13:00", 0, 23 * 60 + 30)}</select></label>
         </div>`}
-      <span class="hint" style="margin:0 0 6px;display:block">If anyone is booked in that time, you'll be asked
+      <span class="hint flush mb-2 block">If anyone is booked in that time, you'll be asked
         whether to move them ${windowWords()} or keep the time.</span>
       <div class="stack"><button class="btn block" type="submit">Mark me away</button></div>
     </form>`;
@@ -1774,7 +1774,7 @@ function clientsView() {
     <h2>Add a client</h2>
     <form data-form="client" class="card">
       <label class="field"><span>Name</span><input name="name" required autocomplete="off" placeholder="Dana"></label>
-      <label class="row" style="padding:0;min-height:44px;border:0">
+      <label class="row bare touch">
         <input type="checkbox" name="mirror" checked> <span class="main">Give them your working hours to start with</span></label>
       <button class="btn block" type="submit">Add</button>
     </form>`;
@@ -1798,7 +1798,7 @@ function clientSheet(id) {
       aria-pressed="${(c.billing_mode || "") === m}">${label}</button>`).join("")}</div>
   ${chargesOf(id, "due").length ? `<p class="hint">Owes ${sgd(chargesOf(id, "due").reduce((t, x) => t + x.amount, 0))}.</p>` : ""}
   <h2>Sessions allowed</h2>
-  <p class="hint" style="margin-top:0">The scheduler never books or moves ${esc(c.name)} past these.</p>
+  <p class="hint mt-0">The scheduler never books or moves ${esc(c.name)} past these.</p>
   <div class="field"><span>A day</span>${choice("per_day", c.per_day, [[1, "1"], [2, "2"], [3, "3"], ["", "No limit"]])}</div>
   <div class="field"><span>A week</span>${choice("per_week", c.per_week, [[1, "1"], [2, "2"], [3, "3"], ["", "No limit"]])}</div>
   ${(() => {
@@ -1875,7 +1875,7 @@ function settingsView() {
     <input type="checkbox" data-act="setting-toggle" data-key="${key}" ${on ? "checked" : ""}></label>`;
   return `${backLink()}<h1>Scheduling</h1>
     <h2>Planning window</h2><div class="card">
-      <div class="row" style="padding:0;border:0">
+      <div class="row bare">
         <div class="main"><div class="title">Plan ${s.horizon_days} days ahead</div>
           <div class="meta">Further takes longer to work out.</div></div>
         <button class="btn small secondary" data-act="horizon" data-delta="-1" aria-label="Fewer days">−</button>
@@ -1897,13 +1897,13 @@ function settingsView() {
       ["any", "Anywhere", "As far as the planning window reaches."],
     ].map(([id, title, meta]) => `<button type="button" class="choice" data-act="reschedule-window" data-window="${id}"
         aria-pressed="${(s.reschedule_window || "week") === id}"><span><b>${title}</b>${meta ? `<br><span class="meta">${meta}</span>` : ""}</span></button>`).join("")}</div>
-    ${(s.reschedule_window || "week") === "days" ? `<div class="card"><div class="row" style="padding:0;border:0">
+    ${(s.reschedule_window || "week") === "days" ? `<div class="card"><div class="row bare">
         <div class="main"><div class="title">${s.reschedule_window_days || 7} days</div></div>
         <button class="btn small secondary" data-act="window-days" data-delta="-1" aria-label="Fewer days">−</button>
         <button class="btn small secondary" data-act="window-days" data-delta="1" aria-label="More days">+</button>
       </div></div>` : ""}
     <h2>Waiting for answers</h2><div class="card">
-      <div class="row" style="padding:0;border:0">
+      <div class="row bare">
         <div class="main"><div class="title">${s.answer_within_hours ? `Warn after ${s.answer_within_hours} hours` : "Never warn"}</div>
           <div class="meta">When a client has not answered an offer or a request to move.</div></div>
         <button class="btn small secondary" data-act="answer-hours" data-delta="-12" aria-label="Sooner">−</button>
@@ -1912,7 +1912,7 @@ function settingsView() {
     <div class="list">${toggle("decline_when_overdue", s.decline_when_overdue, "Stop waiting automatically",
       "Past the deadline, take no answer as \"not that time\" and make a new draft.")}</div>
     <h2>Asking booked clients to move</h2><div class="card">
-      <div class="row" style="padding:0;border:0">
+      <div class="row bare">
         <div class="main"><div class="title">At least ${s.min_notice_hours ?? 24} hours' notice</div>
           <div class="meta">Nobody is asked to give up a session sooner than this.</div></div>
         <button class="btn small secondary" data-act="min-notice" data-delta="-12" aria-label="Less notice">−</button>
@@ -1940,22 +1940,22 @@ function calendarBody() {
   const path = `${location.host}/calendar/${token}.ics`;
   const https = `${location.protocol}//${path}`;
   return `
-    <div class="stack" style="margin-top:0">
+    <div class="stack mt-0">
       <a class="btn block" href="webcal://${path}">Add to Apple Calendar</a>
     </div>
-    <label class="field" style="margin-top:14px"><span>Your private link</span>
+    <label class="field mt-4"><span>Your private link</span>
       <input readonly value="${esc(https)}" data-role="feed-link"></label>
     <button class="btn secondary block" data-act="calendar-copy">Copy link</button>
     <h2>Google Calendar</h2>
-    <p class="hint" style="margin-top:0">On a computer: Google Calendar → <b>Other calendars +</b> →
+    <p class="hint mt-0">On a computer: Google Calendar → <b>Other calendars +</b> →
       <b>From URL</b> → paste the link. It then appears on your phone too.
       Google checks for changes every few hours, not instantly.</p>
     ${reachableFromInternet() ? "" : `<p class="because">This address only works on this Wi-Fi, so Google
       cannot read it yet. It will once the app has a public address.</p>`}
     <h2>Outlook</h2>
-    <p class="hint" style="margin-top:0">Add calendar → <b>Subscribe from web</b> → paste the link.</p>
+    <p class="hint mt-0">Add calendar → <b>Subscribe from web</b> → paste the link.</p>
     <h2>Privacy</h2>
-    <p class="hint" style="margin-top:0">${isProvider()
+    <p class="hint mt-0">${isProvider()
       ? "Your diary shows client names and services, never notes."
       : "Each entry says only \"Appointment\" and the practice name — nothing about what it is for."}
       Anyone with the link can see these, so keep it to yourself.</p>
@@ -1973,7 +1973,7 @@ function calendarView() {
     <form data-form="practice" class="card">
       <label class="field"><span>Practice name</span>
         <input name="name" value="${esc(state.practice_name || "")}" autocomplete="off"></label>
-      <p class="hint" style="margin-top:-4px">The only thing clients' calendars say about an appointment.</p>
+      <p class="hint mt-pull">The only thing clients' calendars say about an appointment.</p>
       <button class="btn secondary block" type="submit">Save name</button>
     </form>
     <h2>Your diary</h2><div class="card">${calendarBody()}</div>`;
@@ -1993,9 +1993,9 @@ function paymentsView() {
       ? "Stripe, test mode." : "Simulated payments — no real money moves."}</p>`;
 
   html += `<h2>Fees to decide</h2>`;
-  html += fees.length ? `<div class="list">${fees.map((c) => `<div class="row" style="flex-wrap:wrap">
+  html += fees.length ? `<div class="list">${fees.map((c) => `<div class="row wrap">
       <div class="main">${who(c)}<div class="because">${esc(c.reason)}</div></div>
-      <div class="pair" style="width:100%;margin-top:6px">
+      <div class="pair full mt-2">
         <button class="btn small" data-act="fee-confirm" data-id="${c.id}">Charge it</button>
         <button class="btn small secondary" data-act="charge-waive" data-id="${c.id}">Waive</button>
       </div></div>`).join("")}</div>
@@ -2023,7 +2023,7 @@ function recordSheet(id) {
   if (!c) return `<h3>Gone</h3>`;
   const methods = (state.billing || {}).recorded_methods || [];
   return `<h3>${esc(nameOf(c.client_id))} paid ${sgd(c.amount)}</h3>
-    <p class="hint" style="margin:0 0 8px">${esc(c.description)}. How?</p>
+    <p class="hint flush mb-2">${esc(c.description)}. How?</p>
     <div class="stack">${methods.map((m) => `
       <button class="btn secondary block" data-act="record" data-id="${c.id}" data-method="${m}">${esc(methodWords(m))}</button>`).join("")}
       <button class="btn danger block" data-act="charge-waive" data-id="${c.id}">Waive it instead</button>
@@ -2038,7 +2038,7 @@ function billingView() {
       <label class="field"><span>Clients pay</span>
         <select name="default_mode">${Object.entries(modes).map(([k, v]) =>
           `<option value="${k}" ${k === b.default_mode ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
-      <p class="hint" style="margin-top:-4px">Paying at booking, packages and monthly invoices are coming next.
+      <p class="hint mt-pull">Paying at booking, packages and monthly invoices are coming next.
         Any client can be set differently on their card.</p>
       <label class="field"><span>A cancellation is late if it is within (hours)</span>
         <input name="late_cancel_window_hours" type="number" inputmode="numeric" min="0" max="336"
@@ -2049,26 +2049,26 @@ function billingView() {
         <label class="field"><span>No-show fee</span>
           <input name="no_show_fee" value="${esc(b.no_show_fee)}" autocomplete="off"></label>
       </div>
-      <p class="hint" style="margin-top:-4px">"100%" or "50%" of the session price, or an amount like "40.00".
+      <p class="hint mt-pull">"100%" or "50%" of the session price, or an amount like "40.00".
         "0" for none. Fees are always proposed to you first, never charged on their own.</p>
-      <label class="row" style="padding:0;min-height:44px;border:0">
+      <label class="row bare touch">
         <span class="main"><span class="title">GST-registered</span><br>
           <span class="meta">Off: prices are final and GST is never mentioned.</span></span>
         <input type="checkbox" name="gst_registered" ${b.gst_registered ? "checked" : ""}></label>
-      <div class="field-row" style="margin-top:8px">
+      <div class="field-row mt-2">
         <label class="field"><span>GST registration no.</span>
           <input name="gst_number" value="${esc(b.gst_number)}" autocomplete="off"></label>
         <label class="field"><span>Rate (%)</span>
           <input name="gst_rate_percent" type="number" inputmode="decimal" step="0.1" min="0" max="30"
             value="${b.gst_rate_percent}"></label>
       </div>
-      <p class="hint" style="margin-top:-4px">Prices include GST, as Singapore requires for prices shown to
+      <p class="hint mt-pull">Prices include GST, as Singapore requires for prices shown to
         clients; receipts show the GST part.</p>
       <button class="btn block" type="submit">Save</button>
     </form>
     <h2>Payment processor</h2>
     <div class="card"><b>${esc(b.processor_label || "")}</b>
-      <p class="hint" style="margin:6px 0 0">To use Stripe's test mode, start the server with a Stripe
+      <p class="hint flush mt-2">To use Stripe's test mode, start the server with a Stripe
         <b>test</b> secret key in <code>STRIPE_SECRET_KEY</code>. Live keys are refused until sign-in exists.</p></div>`;
 }
 
