@@ -387,3 +387,12 @@ rather than keep a second implementation of it.
 
 Run tests: `../scheduling_engine/.venv/bin/pytest tests/` (this package shares
 the engine's venv — one interpreter can import all three).
+
+## The showcase is kept current
+
+`showcase/` in the repo root holds screenshots of every main screen and a
+walkthrough video, all generated from the running app by
+`node showcase/capture.mjs` (`--shots` for screenshots only). After a change
+a user would see, rebuild it and commit the result with the change. If the
+script stops at a step because a screen or button changed, update its screen
+list or walkthrough, and the captions in `showcase/README.md`, to match.

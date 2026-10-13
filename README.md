@@ -1,5 +1,8 @@
 # Scheduling app
 
+**See it running:** the [showcase](showcase/README.md) has screenshots of every
+screen and a one-minute walkthrough video.
+
 A constraint-solver scheduling engine for a single-provider appointment calendar.
 It takes a queue of pending booking requests and decides, **jointly**, where all of
 them go — and when the calendar is too full to fit them, it works out which
