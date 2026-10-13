@@ -8,6 +8,11 @@ availability, bookings are subtracted from it, and the solver sees only what a
 repository adapter would hand it — so what you look at is what the engine
 actually did, not a mock-up of it.
 
+**This is the one part of the package that depends on calendar_store**, and the
+reason it is a dev extra rather than a runtime requirement. Being a harness, it
+plays the repository adapter's part itself; the solver it drives has no such
+dependency and never imports this module.
+
 See `examples/scenario.json` for the format; `SCENARIO_HELP` below documents
 every field.
 """
@@ -22,7 +27,16 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from calendar_store import Appointment, AvailabilityStore, TimeSegment
+try:
+    from calendar_store import Appointment, AvailabilityStore, TimeSegment
+except ImportError as exc:  # pragma: no cover - depends on how you installed
+    # Deliberately an ImportError and not a SystemExit: this module is imported
+    # by the test suite as well as run as a script, and exiting during
+    # collection aborts the whole run instead of skipping one file.
+    raise ImportError(
+        "The playground needs calendar_store, which the engine itself does not. "
+        "Install it with:  pip install -e '.[dev]' -e ../calendar_store"
+    ) from exc
 
 from . import report
 from .availability import free_time, reschedule_windows
@@ -291,15 +305,24 @@ def load(path: Path) -> Scenario:
 # --------------------------------------------------------------------------
 
 
-def build_page(scenario: Scenario, alphas: Sequence[float]) -> str:
-    sections = []
+def _runs(scenario: Scenario, alphas: Sequence[float]) -> list:
+    """One solve per alpha, done once: the page and the terminal summary must
+    describe the same plans, and a time-limited solve run twice need not
+    return the same one."""
+    out = []
     for alpha in alphas:
         config = CostConfig(
             alpha=alpha,
             grid_minutes=scenario.config.grid_minutes,
             service_durations=scenario.config.service_durations,
         )
-        result = _run(scenario, config)
+        out.append((alpha, config, _run(scenario, config)))
+    return out
+
+
+def build_page(scenario: Scenario, alphas: Sequence[float], runs: Optional[list] = None) -> str:
+    sections = []
+    for alpha, config, result in (runs if runs is not None else _runs(scenario, alphas)):
         heading = (
             scenario.title if len(alphas) == 1
             else f"{scenario.title} — alpha {alpha:g}"
@@ -388,7 +411,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             alphas = [float(a) for a in args.alpha.split(",")]
         else:
             alphas = [scenario.config.alpha]
-        page_html = build_page(scenario, alphas)
+        runs = _runs(scenario, alphas)
+        page_html = build_page(scenario, alphas, runs)
     except ScenarioError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -401,13 +425,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           f"({len(scenario.movable)} movable) · "
           f"max_displacements={scenario.max_displacements}")
 
-    for alpha in alphas:
-        config = CostConfig(
-            alpha=alpha,
-            grid_minutes=scenario.config.grid_minutes,
-            service_durations=scenario.config.service_durations,
-        )
-        result = _run(scenario, config)
+    for alpha, config, result in runs:
         rebooked = (f" · rebooked {len(result.displacements)}"
                     if result.displacements else "")
         print(f"alpha {alpha:g}: placed {len(result.placements)}/"

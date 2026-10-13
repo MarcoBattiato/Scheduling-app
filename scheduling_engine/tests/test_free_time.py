@@ -1,8 +1,15 @@
+"""`free_time` in isolation, plus two tests that deliberately are not isolated.
+
+The engine owns `TimeSegment` and depends on no store, so everything here runs
+without calendar_store installed. The last two tests pin the boundary itself —
+that a store's own segments and appointments go in unconverted — and so they
+skip rather than fail when the dev extra is absent.
+"""
 from datetime import date, datetime, time
 
-from calendar_store import AvailabilityStore, TimeSegment
+import pytest
 
-from scheduling_engine import TimeRange, free_time
+from scheduling_engine import TimeRange, TimeSegment, free_time
 
 DAY = date(2026, 5, 5)
 
@@ -59,6 +66,7 @@ def test_output_is_sorted_even_when_input_is_not():
 
 def test_accepts_calendar_store_appointments_directly():
     """Appointments carry their span on `.range`, unlike a bare segment."""
+    AvailabilityStore = pytest.importorskip("calendar_store").AvailabilityStore
     store = AvailabilityStore()
     appointment = store.book_appointment("dana", "review", at(12), at(13))
 
@@ -68,11 +76,16 @@ def test_accepts_calendar_store_appointments_directly():
 def test_end_to_end_against_calendar_store():
     """The seam SPEC.md §3 describes: availability from the store, bookings
     subtracted by the caller, because the store never nets them itself.
+
+    Also pins the decoupling: what the store returns is *its* segment type, what
+    `free_time` returns is the engine's, and no conversion happens in between —
+    the shape is the whole contract.
     """
-    store = AvailabilityStore()
+    calendar_store = pytest.importorskip("calendar_store")
+    store = calendar_store.AvailabilityStore()
     store.add_exception_availability("provider-self", DAY, time(9), time(17))
     booked = [store.book_appointment("dana", "review", at(11), at(12))]
 
     availability = store.get_availability_segments("provider-self", DAY, date(2026, 5, 6))
-    assert availability == [seg(9, 17)]
+    assert availability == [calendar_store.TimeSegment(at(9), at(17))]
     assert free_time(availability, booked) == [seg(9, 11), seg(12, 17)]

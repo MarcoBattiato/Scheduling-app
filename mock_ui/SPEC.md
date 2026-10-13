@@ -267,14 +267,12 @@ snapshot (`appointment.orphaned`) and outlined on the calendar.
 Only the *provider's* availability counts. A client narrowing theirs says
 nothing about an hour they have already committed to.
 
-Two ways to act, deliberately redundant — a provider who edits their hours and
-then forgets is exactly who the second is for:
-
-1. **Explicitly.** `rehouse_orphans()` or `cancel_orphans()`, optionally on
-   named bookings. The banner offers both, because only the provider knows
-   which is right.
-2. **At the next run.** `SchedulingPolicy.rehouse_orphans_on_run`, off by
-   default. When on, a run raises the rehousing requests itself and says so.
+Since October 2026 time off over bookings cannot be taken without a decision
+(`TimeOffConflict`; see CLAUDE.md): ask them all to move, or keep the time. So
+stranded bookings arise only from data older than that rule, and between
+asking a client to move and the move happening. `rehouse_orphans()` and
+`cancel_orphans()` remain for those; the standing "rehouse at the next run"
+setting is gone, since there is nothing left for it to catch.
 
 A run **always reports** stranded bookings in `warnings`, whichever setting is
 in force. Doing nothing about them is a decision; being quiet about them is

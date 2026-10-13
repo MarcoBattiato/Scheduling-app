@@ -274,6 +274,13 @@ class AvailabilityStore:
         history. Making the caller state it means it cannot be forgotten.
         """
         appointment = self._get_appointment(appointment_id)
+        if appointment.status is not AppointmentStatus.BOOKED:
+            # A session that happened, was missed, moved or already cancelled
+            # is history; rewriting it would erase that record.
+            raise ValueError(
+                f"appointment {appointment_id} is {appointment.status.value}, "
+                "so it cannot be cancelled"
+            )
         cancelled = replace(appointment, status=(
             AppointmentStatus.CANCELLED_BY_CLIENT if by is Party.CLIENT
             else AppointmentStatus.CANCELLED_BY_PROVIDER
@@ -319,6 +326,13 @@ class AvailabilityStore:
         Returns the new row; the old one keeps its id with status SUPERSEDED.
         """
         appointment = self._get_appointment(appointment_id)
+        if appointment.status is not AppointmentStatus.BOOKED:
+            # Moving a cancelled row would resurrect it; moving a superseded
+            # one would leave two live bookings from one appointment.
+            raise ValueError(
+                f"appointment {appointment_id} is {appointment.status.value}, "
+                "so it cannot be moved"
+            )
         retired = replace(appointment, status=AppointmentStatus.SUPERSEDED)
         self._appointments[self._appointments.index(appointment)] = retired
 

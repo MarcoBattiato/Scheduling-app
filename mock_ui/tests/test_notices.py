@@ -1,0 +1,217 @@
+"""Nothing about a client's bookings changes behind their back.
+
+Every way one of their bookings, offers or requests can change without them
+doing it leaves a notice on their Home until they press OK — worded for them,
+and never saying why in terms of anybody else. And a client's screens are sent
+only their own things: what is hidden on screen is still readable in the
+browser's developer tools.
+"""
+from datetime import datetime, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+
+from mock_ui import app as app_module
+from mock_ui import scenarios
+from mock_ui.state import World
+
+
+@pytest.fixture
+def world():
+    """Carol's offer only works if Dan moves; Bob's stands alone."""
+    w = World()
+    scenarios.load(w, "simple")
+    plan_id = w.propose()["plan_id"]
+    w.provider_approve(plan_id)
+    w.plan_id = plan_id
+    return w
+
+
+def ask(world, client_id):
+    return next(a for a in world.approvals.values() if a.client_id == client_id)
+
+
+def told(world, client_id):
+    return world.notices_for(client_id)
+
+
+def test_an_offer_agreed_to_and_then_dropped_is_not_silent(world):
+    world.respond_to_approval(ask(world, "bob").id, "accept")
+
+    world.settle_plan(world.plan_id, "reoptimise")
+
+    notes = told(world, "bob")
+    assert [n["kind"] for n in notes] == ["withdrawn"]
+    assert "you agreed to" in notes[0]["text"] and "withdrawn" in notes[0]["text"]
+    assert "will offer" not in notes[0]["text"], "says what happened, promises nothing"
+
+
+def test_an_offer_taken_back_never_says_who_was_in_the_way(world):
+    world.respond_to_approval(ask(world, "dan").id, "refuse")
+
+    notes = told(world, "carol")
+    assert [n["kind"] for n in notes] == ["withdrawn"]
+    assert not {"Dan", "dan", "refuse"} & set(notes[0]["text"].replace(",", " ").split())
+
+
+def test_a_move_no_longer_needed_says_the_appointment_stays(world):
+    world.withdraw_request(ask(world, "carol").request_id)    # the move was only for her
+
+    notes = told(world, "dan")
+    assert [n["kind"] for n in notes] == ["withdrawn"] and "stays on" in notes[0]["text"]
+
+
+def test_a_booking_left_in_time_the_clinic_is_closed_is_told_once(world):
+    dans = next(a for a in world.store.appointments_for(
+        "dan", datetime.now(), datetime.now() + timedelta(days=28)))
+    day = dans.range.start.replace(hour=0, minute=0)
+
+    world.provider_away(day, day + timedelta(hours=23), action="reschedule")
+    world.tick()
+    world.tick()
+
+    assert [n["kind"] for n in told(world, "dan")] == ["changed"], "told, and only once"
+
+
+def test_a_booking_made_by_hand_is_told(world):
+    world.settle_plan(world.plan_id, "reoptimise")
+    request = next(r for r in world.requests.values()
+                   if r.client_id == "bob" and r.status in ("pending", "on_hold"))
+    world.place_manually(request.id, request.preferred_start)
+
+    assert "booked" in [n["kind"] for n in told(world, "bob")]
+
+
+def test_a_request_without_a_time_yet_is_told_once():
+    w = World()
+    scenarios.load(w, "simple")
+    w.set_weekly_availability("bob", [])            # nowhere he can be placed
+
+    w.propose()
+    w.propose()
+
+    assert [n["kind"] for n in w.notices_for("bob")] == ["unplaced"]
+
+
+def test_only_the_client_can_clear_their_notice(world):
+    world.respond_to_approval(ask(world, "dan").id, "refuse")
+    notice = told(world, "carol")[0]
+
+    with pytest.raises(KeyError):
+        world.acknowledge_notice(notice["id"], "bob")
+    world.acknowledge_notice(notice["id"], "carol")
+
+    assert told(world, "carol") == []
+
+
+# -- what a client's screens are sent ---------------------------------------
+
+
+def test_a_client_is_sent_only_their_own_things(world):
+    payload = world.snapshot_for("carol")
+    text = repr(payload)
+
+    leaked = [w for w in ("Dan", "Bob", "Alice", "'dan'", "'bob'", "'alice'") if w in text]
+    assert not leaked, leaked
+    assert set(payload["availability"]) == {"carol"}, "never the provider's hours"
+    assert "plans" not in payload and "log" not in payload and "scheduler" not in payload
+
+
+def test_nothing_anybody_else_does_changes_what_a_client_is_sent(world):
+    """Not just no names: nothing a client receives may depend on other
+    people's bookings, or the diary could be worked out from it."""
+    before = world.snapshot_for("carol")
+
+    bob = next(a for a in world.approvals.values() if a.client_id == "bob")
+    world.respond_to_approval(bob.id, "accept")
+    when = datetime.now() + timedelta(days=3)
+    world.store.book_appointment("alice", "session-60", when.replace(hour=20, minute=0),
+                                 when.replace(hour=21, minute=0))
+
+    assert world.snapshot_for("carol") == before
+
+
+def test_the_api_scopes_state_and_notices_to_the_person():
+    client = TestClient(app_module.app)
+    client.post("/api/reset")
+    everyone = client.get("/api/state").json()
+    carol = client.get("/api/state?as=carol").json()
+
+    assert len(everyone["clients"]) > 1 and [c["id"] for c in carol["clients"]] == ["carol"]
+    assert client.get("/api/state?as=nobody").status_code == 404
+    assert client.post("/api/notices/987654/seen?as=carol").status_code == 404
+    names = [p["id"] for p in client.get("/api/people").json()]
+    assert names[0] == "provider" and "carol" in names
+
+
+def test_declining_an_offer_stops_asking_whoever_was_moving_for_it(world):
+    world.respond_to_approval(ask(world, "carol").id, "decline")
+
+    assert ask(world, "dan").status == "withdrawn", "Dan was only moving to make room for Carol"
+    assert [n["kind"] for n in told(world, "dan")] == ["withdrawn"]
+    assert ask(world, "bob").status == "pending", "Bob's offer did not depend on it"
+
+
+# -- confirmations, unmakeable offers, and answers that do not come -----------
+
+
+def test_a_booking_written_down_is_confirmed_to_the_client(world):
+    world.respond_to_approval(ask(world, "bob").id, "accept")
+
+    world.settle_plan(world.plan_id, "agreed")
+
+    assert "confirmed" in [n["kind"] for n in told(world, "bob")]
+
+
+def test_an_offer_the_client_then_marks_unavailable_is_withdrawn(world):
+    offer = ask(world, "bob")
+    world.respond_to_approval(offer.id, "accept")
+
+    world.set_exception("bob", offer.now_start.date(), offer.now_start.time(),
+                        offer.now_end.time(), available=False)
+    world.settle_plan(world.plan_id, "agreed")
+
+    assert offer.status == "declined" and not offer.applied
+    assert world.store.appointments_for("bob", offer.now_start, offer.now_end) == []
+    assert "You marked" in told(world, "bob")[0]["text"]
+
+
+def test_no_answer_past_the_deadline_warns_and_can_be_taken_as_declined(world):
+    world.policy.answer_within_hours = 48
+    bob = ask(world, "bob")
+    later = bob.asked_at + timedelta(hours=49)
+
+    assert bob.id in [a.id for a in world.overdue_asks(later)]
+    assert world.overdue_asks(bob.asked_at + timedelta(hours=1)) == []
+
+    out = world.decline_overdue([bob.id], now=later)
+
+    assert bob.status == "declined" and bob.id not in world.immovable
+    assert "No answer was received" in told(world, "bob")[0]["text"]
+    assert out["declined"] == [bob.id]
+
+
+def test_stopping_waiting_can_be_automatic(world):
+    world.policy.answer_within_hours = 1
+    world.policy.decline_when_overdue = True
+    bob = ask(world, "bob")
+
+    world.tick(now=bob.asked_at + timedelta(hours=2))
+
+    assert bob.status == "declined"
+
+
+def test_the_api_stops_waiting_on_request():
+    client = TestClient(app_module.app)
+    client.post("/api/reset")
+    client.post("/api/settings", json={"horizon_days": 10, "answer_within_hours": 0})
+    out = client.post("/api/approvals/overdue/decline", json={}).json()
+    assert out == {"declined": [], "plan_id": None}
+
+
+def test_an_offer_names_its_service_on_the_clients_own_screen(world):
+    """A client's screens get no plans, so the offer carries the name."""
+    carol = world.snapshot_for("carol")
+    (offer,) = [a for a in carol["approvals"] if a["status"] == "pending"]
+    assert offer["service"] != "Appointment" and offer["service"] == world._service_name(
+        world.requests[ask(world, "carol").request_id].service_id)

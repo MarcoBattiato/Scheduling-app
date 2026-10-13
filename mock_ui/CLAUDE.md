@@ -30,8 +30,35 @@ Layers, and the rule that keeps them apart:
 
 - `state.py` — the `World`: every behaviour lives here, and it is the only
   module that knows both packages.
-- `app.py` — HTTP only. If a route contains logic, it is in the wrong file;
+- `app.py` — HTTP only. **Automatic runs happen in the background**, every
+  `TICK_SECONDS`, not inside somebody's poll; a poll that finds the World busy
+  answers from the last snapshot instead of waiting (with no background clock,
+  as under the test client, a poll still ticks). **One request at a time touches the World**: the
+  `autosave` middleware holds an asyncio lock (per event loop) around every
+  `/api/`, `/calendar/` and `/pay/` request and its save. Routes run on a thread
+  pool; without it a poll read the plans while another poll's tick added one,
+  and a burst of polls each started a run. It is held in the event loop, not in
+  a dependency: FastAPI 0.128 releases a yield dependency only *after* the
+  response, so a save inside it deadlocked. The assistant's `/send` is outside
+  it and takes it itself around each touch of the World (`_ThreadSideLock`), not
+  while the model thinks. If a route contains logic, it is in the wrong file;
   the flow tests drive `World` directly and never go through HTTP.
+- `control.py` — **the gate**: the one way a command is meant to reach the
+  World. Untrusted JSON → a typed `scheduling_contracts` command
+  (`build_command`, strict) → identity from the `Session`, never the command →
+  owner looked up (`owner_of`) → `scheduling_contracts.decide` → run, draft,
+  or refuse. A refusal of someone else's thing reads exactly like "no such
+  thing". "Needs confirmation" executes nothing: the command waits behind a
+  single-use, expiring token with a summary written *by the server*
+  (`describe`), and only the person, outside the assistant, can `confirm`.
+  What an assistant gets back is cut down (`_strip`): a client's sees no
+  identifiers at all — its tools have no `client_id`, which the gate always
+  fills with "you" — and the provider's sees per-conversation pseudonyms and
+  can only act through ones it was shown. Every attempt goes to
+  `World.audit`. The screens do not go through the gate yet; when they do,
+  `app.session_for` (today: the "as" claim) is where sign-in plugs in.
+  `tests/test_gate.py` checks the guarantees across every handled command —
+  and fails if the gate is made to act instead of draft, or to leak names.
 - `persistence.py` — session save/load. **Deliberately reaches into
   `calendar_store`'s private lists**, because real persistence does not exist
   yet and rebuilding through the public API would issue fresh appointment ids,
@@ -52,6 +79,18 @@ Layers, and the rule that keeps them apart:
   real schedule and a proposed one, which is the point — a proposal is only
   legible against the calendar it would land in.
 - `static/app.js` — state, panels, actions. No build step, no framework.
+- `static/phone.{html,js,css}` — the phone front end at `/phone`, over the
+  same API. A separate page rather than a responsive version of the desktop
+  one, because the desktop page is built on hover and drag, and neither exists
+  on a phone. Views are pure functions from state to HTML; every tap goes
+  through one delegated handler keyed on `data-act`, so a view can be rendered
+  in Node (`tests/test_phone.py`) and a button with no handler fails a test.
+  It polls like the desktop page but **redraws only when the state changed,
+  never while a field has focus, and carries form values across a redraw** —
+  without all three, a poll every 2.5s resets whatever is being typed.
+  Settling a plan shows an agreed booking that is still waiting on somebody
+  else's move as *waiting*, not *ready*; the server would hold it anyway, and
+  a button promising to confirm it would confirm nothing.
 
 Availability is edited in two places on purpose, mirroring calendar_store's own
 split: the side grid is the **weekly pattern** (generic weekdays, what every
@@ -79,13 +118,32 @@ against, so **`origin` has to be right**:
 - a move the scheduler imposed and the client merely accepted →
   `Origin.DISPLACED`
 
-**Changing availability never reschedules anybody.** Stranding is a query
-(`orphaned_appointments`), not an event: bookings left in time the provider no
-longer has are flagged and stay put, and acting on them is always explicit —
-either the provider asks (`rehouse_orphans` / `cancel_orphans`) or they have
-turned on `SchedulingPolicy.rehouse_orphans_on_run`. A run reports them either
-way. One mistyped date must not put half the week through a rescheduling
-nobody asked for.
+**Time off over bookings needs a decision first** (`TimeOffConflict`). The
+provider taking time away — the away screen, a single date, or new weekly
+hours — over future bookings changes *nothing* unless they say what happens to
+those bookings, and there are exactly two answers: ask them all to move
+(`then="reschedule"` / `action="reschedule"`), or do not take the time off. The
+API answers 409 with the bookings; the phone asks. So the diary never holds
+bookings in time nobody is working — the inconsistency that "flag them" and
+"cancel them" used to leave behind, and every rule written to cope with it.
+Nothing is rescheduled by a mistyped date either: nothing happens until the
+provider answers. `orphaned_appointments` / `rehouse_orphans` remain for data
+from before the rule and for the moment between asking and moving.
+
+**Time moves on.** A run offers nothing sooner than `World.OFFER_LEAD` (an hour)
+from now — the window is whole days, so it used to offer that morning; a booked
+client is never asked to move a session less than `min_notice_hours` away
+(default 24); an offer or move ask whose time comes before it is settled
+expires (`_expire_past_asks`, on every tick, answer and settle), so a late "yes"
+can never book the past; and an automatic run is skipped while a draft made
+from the same queue (`Plan.queue`) still waits for the provider.
+
+**A session the clinic has to move** — a booking in the time, or a repeating session
+falling on it — gets `Request.latest` from `SchedulingPolicy.reschedule_window`
+(same week by default; same month, N days, or anywhere) and is only placed
+before it. When the window closes with nothing found, a repeating session
+lapses; a booking being moved reaches its own time first, and goes to the
+provider's decision card. A client who marked themselves away is told exactly that.
 
 `provider_away` is the newest way to get the *origin* wrong. A client rehoused because
 the provider fell ill will accept the slot they are offered, and the booking is
@@ -130,6 +188,155 @@ the solver saw it. `propose(request_ids=[...])` overrides both directions. A
 request left out of a run keeps its status rather than being parked: parked
 means tried and not placed.
 
+**Repeating bookings** (`Series`, `start_series`) are standing *requests*, not
+block bookings. Each session is raised as an ordinary request once it comes
+inside the planning window — on every `tick`, idempotently, tracked in
+`Series.raised` — and goes through the scheduler and the client's agreement
+like any other. Booking a year of Tuesdays up front would hold those hours
+against everyone else without the scheduler ever weighing them. A withdrawn
+session stays withdrawn (it is in `raised`, so it is not raised again); a
+session in time the provider has taken off, or in a week already at the
+client's limit, is not queued; and one not placed before its day is not made up
+in a later week, where it would stack on that week's own session — a one-off
+request, by contrast, stays queued until placed. **None of these is silent**:
+each becomes a request with status `lapsed` and a reason code
+(`World.SKIP_WORDS`), shown on the provider's Home until seen
+(`Request.seen_by`) and to the client as a notice (below). A series whose
+session falls on a day the client is already booked or already asking for
+counts that session as covered — "keep my Tuesday slot going" must not book the
+Tuesday twice;
+stopping a series withdraws what is not yet booked and leaves what is. The
+series' slot is a real client preference — `Origin.CLIENT`, and exactly the
+habitual slot SPEC §10.1 wants to learn.
+
+**How often a client may be booked** is per client (`Client.per_day`, default
+1; `Client.per_week`, default none), set by the provider and enforced by the
+engine as a hard constraint (`ClientLimit`). The engine sees fixed bookings
+only as time subtracted from the provider's day, with no name on them, so
+`_client_limits` has to hand it every session it cannot move: bookings, offers
+still out, and the earlier part of the week the planning window does not
+reach. A booking being asked to move counts where it is going, not where it
+is. A day already over the limit is left alone — nobody is moved to satisfy
+it — and a repeating session is skipped, not raised, in a week already full.
+
+**Calendar sync** (`calendar_sync.py`): `events_for(world, person)` is the one
+place that decides what belongs in someone's calendar app — settled bookings
+only (an offer is not an event), identity by the root of the `supersedes`
+chain so a move updates one event instead of cancelling it, and client events
+titled only "Appointment — {practice}" because their calendars are shared.
+Push channels will send `changes(before, after)` rather than hook every place
+a booking can change. The subscription feed is `/calendar/{token}.ics`; the
+token is the only credential a calendar app can present. **Links are made only
+by a POST** (`/api/calendar/{person}`), never during a read: the session is
+saved after POSTs, and a link handed out but not saved would change on
+restart and break every calendar subscribed to it.
+
+**Money** (`billing.py`; plan stages 1–2). The app keeps its own ledger —
+`Charge` (owed) and `Payment` (received) — and a processor only moves money.
+A session is charged when the provider marks it attended; a no-show or a
+client's late cancellation **proposes** a fee, and nothing is owed until the
+provider confirms it. Fees key off facts already recorded: only
+`cancel_appointment(by=CLIENT)` can propose one, and both move paths pass
+`as_move=True`, so neither the clinic cancelling or moving someone nor a
+client moving their own booking is ever charged. A payment counts only when
+`check_payment` has asked the processor — the redirect back is never trusted.
+`SimulatedProcessor` (default; its "hosted page" is `/pay/simulated/…`) and
+`StripeProcessor` (Checkout, chosen when `STRIPE_SECRET_KEY` holds a **test**
+key; a live key is refused) share one interface. Descriptions sent to the
+processor and shown to clients carry no service name. GST is off by default;
+when on, prices *include* it and the included part is recorded.
+
+**The clinician chat** (`World.messages`, commands `message.*`) is the first
+feature built on the gate from the start: the phone app reaches it only
+through `POST /api/commands/{name}?as=…`, so its permissions are the
+contract's. It is clinical, so it is deliberately **not** in `snapshot()`
+(which anyone can read today) and not in the activity log beyond "X wrote in
+Y's conversation"; each person fetches their own conversation through the
+gate. Who wrote a message is derived from the session. Every `message.*`
+command is FORBIDDEN to assistants, reads included — the assistant's
+hand-off into the chat is a separate path, still to be built. The practice's
+"reply expectation" and "emergency note" are shown above every client's
+conversation, and the emergency note cannot be blanked.
+
+**The assistant** (`assistant.py`) is a model — Claude (`ClaudeBrain`) or a
+free local one through Ollama (`LocalBrain`), chosen by `ASSISTANT_PROVIDER` —
+with the gate's tools and nothing else. A brain only knows how to talk to its
+model; everything that keeps it safe lives in `Assistant` and is shared: every tool call is `Gate.execute` as the person via the assistant
+channel, so changes come back as drafts and the model is told "prepared, not
+done" — never given the token. The provider's typed client names are swapped
+for the conversation's pseudonyms before sending and back on the way out.
+History sent to the model is append-only (thinking blocks are bound to it);
+the current time goes in a mid-conversation system note so the cached prefix
+survives. Distress is `offer_clinician_handoff`, which only shows the client
+a button; `Assistant.handoff` sends *their own words* to the clinician chat
+when they press it, flagged server-side so the provider sees it may need
+attention. The person can also send it themselves at any time ("Send this to
+my clinician"), and a server-side phrase check (`DISTRESS`) shows the
+hand-off card whatever the model does — a model noticing is not reliable
+enough to be the only way to a person. Each client message carries their own
+diary (`_client_context`: upcoming appointments with real ids, waiting
+requests, open questions), read through the gate exactly as the tools would;
+without it a small local model guessed date ranges and invented ids. **A client's assistant can do only what the client's own screens can,
+over data the client can already see** (`CLIENT_SCREENS` in `test_gate.py`
+pins the list). Its own history and summary are fine; nothing that depends on
+another client or on the provider's diary is, because enough answers would let
+it be reverse-engineered — `test_a_clients_assistant_learns_nothing_from_anybody_elses_diary`
+changes other people's bookings and requires its view not to change by a
+character. It cannot see the practice's diary, so it must never say a
+time is free or would clash — it sends a request and says the practice will
+offer a time. A tool answering "is Tuesday 13:00 free?" would leak other
+people's bookings however it were worded; that is a privacy decision, not a
+missing feature. The gate also refuses a booking for an unknown service before
+drafting, so no card is shown that can only fail. Money (`charge.*`) is
+forbidden to every assistant, reads included. Off
+until the practice offers it; each client opts in after the notice. Conversations are in memory only. Model and effort from
+`ASSISTANT_MODEL` / `ASSISTANT_EFFORT` (default Opus 5.5, medium), with
+server-side refusal fallbacks on. `tests/test_assistant.py` replaces Claude
+with a script and checks what leaves the practice.
+
+**Nothing about a client's bookings changes behind their back** (`Notice`,
+`World._tell`). An offer or a move ask we take back (agreed to or not), a
+repeating session called off, a booking the clinic cancels or makes by hand, a
+request still without a time after a run (once), and an offer withdrawn
+because the provider took that time off each leave a
+notice on the client's Home — phone and desktop — until they press OK. Notices
+are worded for the client, **say only what happened** — never an explanation
+or a promise that might not hold ("the clinic will offer you another time") —
+and never give the reason in terms of anybody else. Confirmations too: a booking
+or move written down is confirmed to the client.
+
+A move for a session that has since happened or
+been cancelled ends (`_end_stale_replacements`), and `_book` never cancels an
+appointment that is not still booked — that rewrote a session that took place.
+A client marking a time unavailable takes back any offer to it still in the air.
+
+**Bookings in closed time are the provider's to decide** (`needs_decision`,
+`decide`). From 48 hours before (`DECIDE_AHEAD`) — and after, if still
+undecided — any booking still in time the provider is not working — a new time not found
+yet — is on a "needs your decision" card (for 90 days after, at most):
+find a new time, keep it (marks the provider available then), or cancel it.
+Nothing happens to it on its own, and it never sits in the past looking as if
+it happened. A booking (booked far ahead, presumably for a reason) in time taken off is
+asked to move at once and planned at once, runs reaching as far as its
+reschedule window; repeating sessions not yet raised are not raised early —
+they come in with their week, with the same priority as everybody else's.
+
+**Answers that do not come**: `answer_within_hours` (48 by default) puts a "no
+answer" card on the provider's Home; "stop waiting" (or
+`decline_when_overdue`, automatically) takes the silence as *declined* — not
+refused, which would pin the appointment for good — tells the client, and makes
+a new draft. A solver that runs out of time (`SolverGaveUp`) changes nothing
+and says so, rather than failing the request.
+
+**A client's screens are sent only their own slice** (`World.snapshot_for`,
+`/api/state?as=<client>`): their bookings, requests, questions, hours, charges
+and notices, the bookable catalogue and the practice's public settings —
+never another client, the provider's hours, plans, the scheduler or the log.
+Hiding the rest on screen would still hand it to anyone opening developer
+tools. `/api/people` is the one list of everybody's names, for "view as" only,
+and goes when sign-in arrives. The desktop page is the developer's view and
+still reads everything.
+
 The scheduler **never runs on submission** — see `policy.py` and SPEC.md §4.
 It fires on weekly marks, on urgency, on a retry timer, or when the provider
 says so, and the decision is a pure function so it is testable without waiting
@@ -166,8 +373,27 @@ overlapping times, and follows them transitively — with chains, a move can
 itself be waiting on another. When a move falls through, everything resting on
 it is withdrawn, whether or not those clients had already answered.
 
+A booking can need **more than one** move, and is written down only once all of
+them are — every dependent goes through `_apply_approval`'s gate, never straight
+to `_book`. The example calendars only ever need one move per booking, which is
+how writing it down after the first of two went unnoticed;
+`test_dependent_moves.py` runs every answer order. A booking that falls through
+is withdrawn (final, so no later settle revives the "yes"), and any move made
+only for it and not yet written down is withdrawn with it. Withdrawing a
+request does the same to its outstanding offer.
+
 When the engine grows `AcceptedChange`, this should lose the responsibility
 rather than keep a second implementation of it.
 
 Run tests: `../scheduling_engine/.venv/bin/pytest tests/` (this package shares
 the engine's venv — one interpreter can import all three).
+
+## The showcase is kept current
+
+The top of the main README is the app's showcase, generated from the running
+app into `showcase/` by the scripts in `tools/showcase/` (see its README).
+After a change a user would see, run `node tools/showcase/capture.mjs`, then
+`python3 tools/showcase/buildlog.py`, check the README's captions still match
+the pictures, and commit the result with the change. After a day of visible
+changes, also run `node tools/showcase/timeline.mjs <that day>`. If a script
+stops at a step because a screen or button changed, update it to match.

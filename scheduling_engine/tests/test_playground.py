@@ -4,8 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from scheduling_engine import CostConfig, solve_placements
-from scheduling_engine.playground import (
+# The playground is the one part of the package that depends on calendar_store:
+# it plays the repository adapter's part so a scenario file goes through the
+# real pipeline. Skip rather than fail where only the engine is installed.
+pytest.importorskip("calendar_store")
+
+from scheduling_engine import CostConfig, solve_placements  # noqa: E402
+from scheduling_engine.playground import (  # noqa: E402
     ScenarioError,
     _diagnose,
     build_page,

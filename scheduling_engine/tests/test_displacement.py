@@ -1,7 +1,6 @@
 from datetime import date, datetime, time
 
 import pytest
-from calendar_store import TimeSegment
 
 from scheduling_engine import (
     BookingRequest,
@@ -9,6 +8,7 @@ from scheduling_engine import (
     MovableAppointment,
     RescheduleBounds,
     TimeRange,
+    TimeSegment,
     free_time,
     reschedule_windows,
     solve_placements,

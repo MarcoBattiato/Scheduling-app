@@ -19,13 +19,42 @@ const weeksShown = () => Number($("weeks")?.value) || 2;
 const isProvider = () => me === "provider";
 const whose = () => (isProvider() ? "provider-self" : me);
 
+// The server's reason, whatever shape it came in: a string, a 409 with
+// {message, bookings}, or FastAPI's list of validation errors.
+function reasonOf(detail) {
+  if (!detail) return "request failed";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+  return detail.message || JSON.stringify(detail);
+}
+
 async function api(path, body) {
   const res = await fetch(path, body ? {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body),
   } : {method: "POST"});
-  if (!res.ok) alert((await res.json()).detail || "request failed");
-  return res.json().catch(() => ({}));
+  const data = await res.json().catch(() => ({}));       // read once
+  if (!res.ok) { alert(reasonOf(data.detail)); return null; }
+  return data;
+}
+
+// Taking time off over bookings: the server answers 409 with them, and the
+// provider either asks them all to move or does not take the time off.
+async function timeOff(path, body, key = "then") {
+  const send = (extra) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+                                       body: JSON.stringify({...body, ...extra})});
+  let res = await send({});
+  let data = await res.json().catch(() => ({}));
+  if (res.status === 409 && data.detail && data.detail.bookings) {
+    const list = data.detail.bookings.map((b) => `  ${nameOf(b.client_id)} · ${fmt(b.start)}`).join("\n");
+    if (!confirm(`${data.detail.bookings.length} booking(s) fall in that time:\n${list}\n\n`
+                 + "OK: ask them all to move (each keeps their booking until a new time is agreed).\n"
+                 + "Cancel: don't take the time off.")) return null;
+    res = await send({[key]: "reschedule"});
+    data = await res.json().catch(() => ({}));
+  }
+  if (!res.ok) { alert(reasonOf(data.detail)); return null; }
+  return data;
 }
 
 async function refresh() {
@@ -48,6 +77,7 @@ function render() {
     sel.innerHTML = known.map((id) => `<option value="${id}">${id}</option>`).join("");
   }
   sel.value = me;
+  $("phone-link").href = `/phone?as=${encodeURIComponent(me)}`;
 
   const s = state.settings, sch = state.scheduler || {};
   $("settings").textContent =
@@ -64,6 +94,7 @@ function render() {
   renderAlerts();
   renderSchedule();
   renderGrid();
+  renderSeries();
   renderRequests();
   renderBookings();
   renderQueue();
@@ -183,7 +214,7 @@ function renderSchedule() {
 function setException(date, from, to, available) {
   // Drag adds availability on that date; shift-drag takes it away. Either way
   // it is a single-date exception, not a change to the weekly pattern.
-  api("/api/exceptions", {
+  timeOff("/api/exceptions", {
     client_id: whose(), date, from_time: from, to_time: to, available,
   }).then(refresh);
 }
@@ -221,7 +252,6 @@ function renderStranded() {
     (a) => a.orphaned && a.status === "booked");
   if (!isProvider() || !stranded.length) { $("stranded").innerHTML = ""; return; }
 
-  const onRun = (state.scheduler || {}).rehouse_orphans_on_run;
   const dealtWith = stranded.filter((a) => a.pending).length;
   const idle = stranded.filter((a) => !a.pending);
 
@@ -240,17 +270,12 @@ function renderStranded() {
           <span class="time">${fmt(a.start)}</span>
         </div>`).join("")}</div>
       ${dealtWith ? `<p class="hint">${dealtWith} already being dealt with.</p>` : ""}
-      <div class="row" style="margin-top:10px">
+      <div class="row mt-3">
         <button ${idle.length ? "" : "disabled"}
           onclick="fixStranded('rehouse')">Find the ${idle.length} a new slot</button>
         <button class="ghost warn" ${idle.length ? "" : "disabled"}
           onclick="fixStranded('cancel')">Cancel them</button>
       </div>
-      <label class="row hint" style="margin-top:6px">
-        <input type="checkbox" ${onRun ? "checked" : ""}
-               onchange="setRehouseOnRun(this.checked)">
-        Or let the next scheduler run queue them itself, and warn me it did
-      </label>
     </div>`;
 }
 
@@ -259,10 +284,6 @@ window.fixStranded = async (what) => {
       "Cancel every stranded booking outright?\n\n"
       + "Nobody is offered another slot.")) return;
   await api(`/api/orphans/${what}`, {});
-  refresh();
-};
-window.setRehouseOnRun = async (on) => {
-  await api("/api/settings", {rehouse_orphans_on_run: on});
   refresh();
 };
 
@@ -310,13 +331,13 @@ function renderQueue() {
         <span class="tag">${inWindow(r) ? r.status.replace(/_/g, " ") : "later"}</span>
         <button class="link" onclick="placeByHand(event, ${r.id})">place</button>
       </label>`).join("")}</div>
-    <div class="row" style="margin-top:8px">
+    <div class="row mt-2">
       <button ${runOver.size ? "" : "disabled"} onclick="runOnPicked()">Run on ${
         runOver.size} selected</button>
       <button class="ghost" onclick="pickWindow()">Just this window</button>
       <button class="ghost" onclick="pickAll()">All</button>
     </div>
-    <label class="row hint" style="margin-top:6px">
+    <label class="row hint mt-2">
       <input type="checkbox" ${scoped ? "checked" : ""} onchange="setScoping(this.checked)">
       Runs cover only wishes inside the ${(state.scheduler || {}).horizon_days}-day window
     </label>
@@ -412,7 +433,7 @@ function renderSettlement() {
             is in the calendar until you say so.</span></div>
         <div class="answers">${
           [...agreed, ...waiting, ...said_no, ...done].map(row).join("")}</div>
-        <div class="row" style="margin-top:10px">
+        <div class="row mt-3">
           <button ${agreed.length ? "" : "disabled"}
             onclick="settle(${plan.id}, 'agreed')">Apply the ${agreed.length} agreed</button>
           <button class="ghost" ${waiting.length ? "" : "disabled"}
@@ -506,7 +527,7 @@ function draftShell(p) {
       <div class="draft-cal" id="draftcal-${p.id}"></div>
       ${p.placements.map((x) => item(x, "book")).join("")}
       ${p.displacements.map((x) => item(x, "move")).join("")}
-      <div class="row" style="margin-top:10px">
+      <div class="row mt-3">
         <button onclick="approvePlan(${p.id})">Approve selected</button>
         <button class="ghost" onclick="lockAndRerun(${p.id})">Lock selected, re-plan rest</button>
         <button class="ghost" onclick="discardPlan(${p.id})">Discard</button>
@@ -569,9 +590,14 @@ function renderAlerts() {
   const mine = state.approvals.filter(
     (a) => !a.applied && (a.status === "pending" || a.status === "accepted")
            && (isProvider() || a.client_id === me));
-  if (!mine.length) { $("alerts").innerHTML = ""; return; }
+  // What happened to this client's bookings without them doing it — the same
+  // server-written notices the phone shows, until they press OK.
+  const notices = isProvider() ? [] : (state.notices || []).filter((n) => n.client_id === me);
+  const told = notices.map((n) => `<div class="alert settled-wait"><div>${esc(n.text)}</div>
+    <div class="row"><button onclick="noticeSeen(${n.id})">OK</button></div></div>`).join("");
+  if (!mine.length) { $("alerts").innerHTML = told; return; }
 
-  $("alerts").innerHTML = mine.map((a) => {
+  $("alerts").innerHTML = told + mine.map((a) => {
     const isMove = a.kind === "reschedule";
     if (a.status === "accepted") {
       const what = isMove
@@ -608,6 +634,11 @@ function renderAlerts() {
   }).join("");
 }
 
+async function noticeSeen(id) {
+  await api(`/api/notices/${id}/seen?as=${encodeURIComponent(me)}`);
+  refresh();
+}
+
 // -- side panels ------------------------------------------------------
 
 function renderGrid() {
@@ -636,9 +667,20 @@ function renderGrid() {
 
 function money(minor) { return (minor / 100).toFixed(2); }
 
+let pickerOptions = null;   // what the service picker last showed
+
 function renderCatalogue() {
-  if (!isProvider()) return;
   const services = state.services || [];
+  // Clients book from this picker too, so it is filled whoever is viewing —
+  // and only rewritten when the list changes, so a choice survives the poll.
+  const picker = $("service-picker");
+  if (picker) {
+    const options = services.filter((s) => s.active && s.client_bookable)
+      .map((s) => `<option value="${s.id}">${esc(s.name)} · ${s.duration}m · ${money(s.price)}</option>`)
+      .join("");
+    if (pickerOptions !== options) { picker.innerHTML = options; pickerOptions = options; }
+  }
+  if (!isProvider()) return;
   $("catalogue").innerHTML = services.map((s) => `
     <div class="req ${s.active ? "" : "withdrawn"}">
       <span>${esc(s.name)}</span>
@@ -649,12 +691,6 @@ function renderCatalogue() {
         ${s.active ? "discontinue" : "re-list"}</button>
     </div>`).join("");
 
-  const picker = $("service-picker");
-  if (picker) {
-    picker.innerHTML = services.filter((s) => s.active && s.client_bookable)
-      .map((s) => `<option value="${s.id}">${esc(s.name)} · ${s.duration}m · ${money(s.price)}</option>`)
-      .join("");
-  }
 }
 
 function renderClients() {
@@ -682,6 +718,25 @@ function renderExceptions() {
         <button class="link" onclick="clearException('${e.date}','${e.from}','${e.to}',${e.kind === "add"})">clear</button>
       </span>`).join("");
 }
+
+function renderSeries() {
+  const mine = (state.series || []).filter(
+    (x) => x.status === "active" && (isProvider() || x.client_id === me));
+  $("series").innerHTML = !mine.length ? "" : `<div class="reqs">${mine.map((x) => `
+    <div class="req">
+      <span>${esc(x.service)} · ${x.every_weeks === 1 ? "every week" : `every ${x.every_weeks} weeks`},
+        ${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(x.first_start).getDay()]}s
+        ${x.first_start.slice(11, 16)}${x.next ? `<br><span class="time">next ${fmt(x.next)}</span>` : ""}</span>
+      <span class="tag">repeating</span>
+      <button class="link" onclick="stopSeries(${x.id})">stop</button>
+    </div>`).join("")}</div>`;
+}
+
+window.stopSeries = async (id) => {
+  if (!confirm("Stop this repeating booking?\n\nBooked sessions stay; ones not yet booked are withdrawn.")) return;
+  await api(`/api/series/${id}/stop`);
+  refresh();
+};
 
 function renderRequests() {
   const mine = state.requests.filter((r) => isProvider() || r.client_id === me);
@@ -842,8 +897,8 @@ window.approvePlan = async (id) => {
   refresh();
 };
 window.clearException = async (date, from, to, wasAvailable) => {
-  await api("/api/exceptions", {client_id: whose(), date, from_time: from,
-                                to_time: to, available: wasAvailable, clear: true});
+  await timeOff("/api/exceptions", {client_id: whose(), date, from_time: from,
+                                    to_time: to, available: wasAvailable, clear: true});
   refresh();
 };
 window.discardPlan = async (id) => { await api(`/api/plans/${id}/discard`); refresh(); };
@@ -896,11 +951,14 @@ $("solve").onclick = async () => {
     max_displacements: Number($("try-moves").value)}));
   refresh();
 };
-$("save").onclick = async () => { const r = await api("/api/snapshot/save"); alert("Saved " + r.saved); };
+$("save").onclick = async () => { const r = await api("/api/snapshot/save"); if (r) alert("Saved " + r.saved); };
 $("reset").onclick = async () => {
-  if (confirm("Throw away this session and start again?")) {
-    await api("/api/reset"); pendingGrid = null; picked = {}; refresh();
-  }
+  const which = $("scenario").value;
+  const named = $("scenario").selectedOptions[0].textContent.toLowerCase();
+  if (!confirm(`Throw away this session and start again on the ${named}?`)) return;
+  await api(`/api/reset?scenario=${encodeURIComponent(which)}`);
+  pendingGrid = null; picked = {}; runOver = null;
+  refresh();
 };
 $("save-avail").onclick = async () => {
   const ranges = [];
@@ -914,30 +972,35 @@ $("save-avail").onclick = async () => {
     }
     if (run) ranges.push(runToRange(d, run));
   }
-  await api("/api/availability", {client_id: whose(), ranges});
+  await timeOff("/api/availability", {client_id: whose(), ranges});
   pendingGrid = null;
   refresh();
 };
 $("request-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
-  await api("/api/requests", {
-    client_id: me, service_id: f.get("service"),
-    preferred_start: f.get("preferred"),
-  });
+  const every = Number(f.get("every") || 0);
+  // Repeating: each session is raised as a request when it comes into the
+  // planning window, so the client never has to ask again.
+  if (every) {
+    await api("/api/series", {
+      client_id: me, service_id: f.get("service"),
+      first_start: f.get("preferred"), every_weeks: every,
+    });
+  } else {
+    await api("/api/requests", {
+      client_id: me, service_id: f.get("service"),
+      preferred_start: f.get("preferred"),
+    });
+  }
   refresh();
 };
 $("away-form").onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
-  const cancelling = f.get("action") === "cancel";
-  if (cancelling && !confirm(
-      "Cancel every appointment in that stretch outright?\n\n"
-      + "Nobody is offered another slot. Choose \"rehouse\" instead if they "
-      + "should be found one.")) return;
-  const outcome = await api("/api/provider/away", {
-    start: f.get("start"), end: f.get("end"), action: f.get("action"),
-  });
+  const outcome = await timeOff("/api/provider/away", {
+    start: f.get("start"), end: f.get("end"),
+  }, "action");
   if (outcome && outcome.affected === 0) alert("Nothing was booked in that time.");
   e.target.reset();
   refresh();

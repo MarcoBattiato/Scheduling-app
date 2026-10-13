@@ -1,9 +1,17 @@
 """Placement-side types. See SPEC.md §2 for the wider domain model; this module
 carries only what the batch placement solver (§7) reads and returns.
 
-`TimeRange` is deliberately not `calendar_store.TimeSegment` despite the
-identical shape — see SPEC.md §2. Availability flows *in* as `TimeSegment`;
-request windows and resulting placements are this package's own concern.
+Two value types of identical shape, kept apart because they mark opposite sides
+of a boundary. `TimeSegment` is availability arriving from whatever holds the
+calendar; `TimeRange` is this package's own — request windows, accepted-change
+windows, appointment ranges — none of which a store has any business naming.
+
+Both are declared *here* rather than imported. This package deliberately depends
+on no other package in the system: it takes segments, returns a plan, and cannot
+leak what it never receives. Functions that only read a span accept anything
+carrying `.start`/`.end` (or an `.range` attribute), so a caller may pass a
+store's own segment type straight in without converting — see
+`availability._span`.
 """
 from __future__ import annotations
 
@@ -18,6 +26,19 @@ RequestId = str
 # against this (see fragmentation.py): a leftover gap is only worth keeping if
 # some combination of real services still fits in it.
 DEFAULT_SERVICE_DURATIONS = (60, 90)
+
+
+@dataclass(frozen=True)
+class TimeSegment:
+    """A span of availability crossing into this package from outside.
+
+    Structurally identical to a calendar store's own segment type, and
+    deliberately so: the shape *is* the contract, so a caller can hand one
+    straight over. What matters is the direction of the dependency — the engine
+    states the shape it needs rather than importing someone else's.
+    """
+    start: datetime
+    end: datetime
 
 
 @dataclass(frozen=True)
@@ -61,6 +82,27 @@ class BookingRequest:
     duration_minutes: int
     desired: Sequence[TimeRange]
     preferred_start: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class ClientLimit:
+    """How many sessions one client may have in a day, and in a week.
+
+    A hard constraint on what the solver *adds*: no placement or move may take
+    a client's day (or ISO week) above its limit. A day already over it —
+    because the limit was set after the bookings were made — is left as it is
+    rather than forcing anybody out of it, so the limit can never make the
+    status quo infeasible.
+
+    `fixed` is the start of every session this client already has that the
+    solver cannot move: their bookings not passed as `movable`, and any slot
+    held for them while an offer is out. The solver is never told whose fixed
+    bookings are whose otherwise — they arrive subtracted from free time — so
+    without this it would count only what it is placing.
+    """
+    per_day: Optional[int] = None
+    per_week: Optional[int] = None
+    fixed: Sequence[datetime] = ()
 
 
 @dataclass(frozen=True)

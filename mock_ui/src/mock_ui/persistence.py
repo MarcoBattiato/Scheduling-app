@@ -25,7 +25,9 @@ from calendar_store import (
     TimeSegment,
 )
 
-from .state import Approval, Client, Plan, Request, World
+from .billing import BillingSettings, Charge, Payment
+from .state import (Approval, AssistantSettings, ChatSettings, Client, Message, Notice, Plan,
+                    Request, Series, World)
 
 
 def _dt(value):
@@ -38,7 +40,9 @@ def _back(value):
 
 def save(world: World, path: Path) -> None:
     payload = {
-        "clients": [{"id": c.id, "name": c.name} for c in world.clients.values()],
+        "clients": [{"id": c.id, "name": c.name, "per_day": c.per_day,
+                     "per_week": c.per_week, "billing_mode": c.billing_mode}
+                    for c in world.clients.values()],
         "settings": {
             "alpha": world.alpha,
             "max_displacements": world.max_displacements,
@@ -79,12 +83,23 @@ def save(world: World, path: Path) -> None:
              "duration_minutes": r.duration_minutes, "status": r.status,
              "replaces_appointment_id": r.replaces_appointment_id,
              "origin": r.origin.value, "note": r.note,
-             "preferred_start": _dt(r.preferred_start)}
+             "preferred_start": _dt(r.preferred_start),
+             "series_id": r.series_id,
+             "lapsed_reason": r.lapsed_reason, "seen_by": sorted(r.seen_by),
+             "told_unplaced": r.told_unplaced,
+             "latest": _dt(r.latest)}
             for r in world.requests.values()
+        ],
+        "series": [
+            {"id": x.id, "client_id": x.client_id, "service_id": x.service_id,
+             "first_start": _dt(x.first_start), "every_weeks": x.every_weeks,
+             "until": x.until.isoformat() if x.until else None,
+             "status": x.status, "raised": sorted(d.isoformat() for d in x.raised)}
+            for x in world.series.values()
         ],
         "plans": [
             {"id": p.id, "status": p.status, "reason": p.reason, "detail": p.detail,
-             "params": p.params, "metrics": p.metrics,
+             "params": p.params, "metrics": p.metrics, "queue": list(p.queue),
              "placements": [{**x, "start": _dt(x["start"]), "end": _dt(x["end"])}
                             for x in p.placements],
              "displacements": [
@@ -99,7 +114,8 @@ def save(world: World, path: Path) -> None:
              "request_id": a.request_id, "appointment_id": a.appointment_id,
              "depends_on": list(a.depends_on),
              "was_start": _dt(a.was_start), "was_end": _dt(a.was_end),
-             "now_start": _dt(a.now_start), "now_end": _dt(a.now_end)}
+             "now_start": _dt(a.now_start), "now_end": _dt(a.now_end),
+             "asked_at": _dt(a.asked_at)}
             for a in world.approvals.values()
         ],
         "immovable": sorted(world.immovable),
@@ -109,9 +125,29 @@ def save(world: World, path: Path) -> None:
             "retry_after_minutes": world.policy.retry_after_minutes,
             "horizon_days": world.policy.horizon_days,
             "scope_to_horizon": world.policy.scope_to_horizon,
-            "rehouse_orphans_on_run": world.policy.rehouse_orphans_on_run,
+            "min_notice_hours": world.policy.min_notice_hours,
+            "reschedule_window": world.policy.reschedule_window,
+            "reschedule_window_days": world.policy.reschedule_window_days,
+            "answer_within_hours": world.policy.answer_within_hours,
+            "decline_when_overdue": world.policy.decline_when_overdue,
             "last_run": _dt(world.last_run),
         },
+        "practice_name": world.practice_name,
+        "billing": vars(world.billing),
+        "charges": [{**vars(c), "created": _dt(c.created)} for c in world.charges.values()],
+        "payments": [{**vars(p), "created": _dt(p.created)} for p in world.payments.values()],
+        # A simulated checkout's outcome lives in the processor; without it a
+        # payment in progress across a restart would read as expired.
+        "simulated_outcomes": getattr(world.processor, "outcomes", {}),
+        "feed_tokens": world.feed_tokens,
+        "notices": [{**vars(n), "at": _dt(n.at)} for n in world.notices.values()],
+        "told_closed": sorted(world.told_closed),
+        "audit": world.audit,
+        "messages": [{**vars(m), "at": _dt(m.at), "read_at": _dt(m.read_at)}
+                     for m in world.messages],
+        "chat": vars(world.chat),
+        "assistant": {"enabled": world.assistant.enabled,
+                      "opted_in": sorted(world.assistant.opted_in)},
         "log": world.log,
     }
     path.write_text(json.dumps(payload, indent=2))
@@ -127,7 +163,11 @@ def load(path: Path) -> World:
     world = World()
 
     for entry in payload.get("clients", []):
-        world.clients[entry["id"]] = Client(id=entry["id"], name=entry["name"])
+        world.clients[entry["id"]] = Client(
+            id=entry["id"], name=entry["name"],
+            # Sessions saved before limits existed get the defaults.
+            per_day=entry.get("per_day", 1), per_week=entry.get("per_week"),
+            billing_mode=entry.get("billing_mode"))
 
     settings = payload.get("settings", {})
     world.alpha = settings.get("alpha", world.alpha)
@@ -185,11 +225,27 @@ def load(path: Path) -> World:
             origin=Origin(entry.get("origin", "client")),
             note=entry.get("note", ""),
             preferred_start=_back(entry.get("preferred_start")),
+            series_id=entry.get("series_id"),
+            lapsed_reason=entry.get("lapsed_reason", ""),
+            seen_by=set(entry.get("seen_by", [])),
+            told_unplaced=entry.get("told_unplaced", False),
+            latest=_back(entry.get("latest")),
+        )
+    for entry in payload.get("series", []):
+        world.series[entry["id"]] = Series(
+            id=entry["id"], client_id=entry["client_id"],
+            service_id=entry["service_id"],
+            first_start=_back(entry["first_start"]),
+            every_weeks=entry["every_weeks"],
+            until=date.fromisoformat(entry["until"]) if entry.get("until") else None,
+            status=entry["status"],
+            raised={date.fromisoformat(d) for d in entry.get("raised", [])},
         )
     for entry in payload.get("plans", []):
         world.plans[entry["id"]] = Plan(
             id=entry["id"], status=entry["status"], reason=entry["reason"],
             detail=entry["detail"], params=entry["params"], metrics=entry["metrics"],
+            queue=tuple(tuple(x) for x in entry.get("queue", [])),
             placements=[{**x, "start": _back(x["start"]), "end": _back(x["end"])}
                         for x in entry["placements"]],
             displacements=[
@@ -205,6 +261,7 @@ def load(path: Path) -> World:
             depends_on=tuple(entry["depends_on"]),
             was_start=_back(entry["was_start"]), was_end=_back(entry["was_end"]),
             now_start=_back(entry["now_start"]), now_end=_back(entry["now_end"]),
+            asked_at=_back(entry.get("asked_at")),
         )
     world.immovable = set(payload.get("immovable", []))
 
@@ -218,11 +275,35 @@ def load(path: Path) -> World:
         "horizon_days", world.policy.horizon_days)
     world.policy.scope_to_horizon = scheduler.get(
         "scope_to_horizon", world.policy.scope_to_horizon)
-    world.policy.rehouse_orphans_on_run = scheduler.get(
-        "rehouse_orphans_on_run", world.policy.rehouse_orphans_on_run)
+    for name in ("min_notice_hours", "reschedule_window", "reschedule_window_days",
+                 "answer_within_hours", "decline_when_overdue"):
+        setattr(world.policy, name, scheduler.get(name, getattr(world.policy, name)))
     world.last_run = _back(scheduler.get("last_run"))
 
     world.log = payload.get("log", [])
+    world.practice_name = payload.get("practice_name", world.practice_name)
+    world.billing = BillingSettings(**payload.get("billing", {}))
+    for entry in payload.get("charges", []):
+        world.charges[entry["id"]] = Charge(**{**entry, "created": _back(entry["created"])})
+    for entry in payload.get("payments", []):
+        world.payments[entry["id"]] = Payment(**{**entry, "created": _back(entry["created"])})
+    if hasattr(world.processor, "outcomes"):
+        world.processor.outcomes.update(
+            {k: tuple(v) for k, v in payload.get("simulated_outcomes", {}).items()})
+    # Kept across restarts, or every subscribed calendar would break on each one.
+    world.feed_tokens = dict(payload.get("feed_tokens", {}))
+    world.notices = {
+        n["id"]: Notice(**{**n, "at": datetime.fromisoformat(n["at"])})
+        for n in payload.get("notices", [])
+    }
+    world.told_closed = set(payload.get("told_closed", []))
+    world.audit = list(payload.get("audit", []))
+    world.messages = [Message(**{**m, "at": _back(m["at"]), "read_at": _back(m.get("read_at"))})
+                      for m in payload.get("messages", [])]
+    world.chat = ChatSettings(**payload.get("chat", {}))
+    saved = payload.get("assistant", {})
+    world.assistant = AssistantSettings(enabled=saved.get("enabled", False),
+                                        opted_in=set(saved.get("opted_in", [])))
 
     # Restart id issuing above everything restored, so a reloaded session
     # cannot mint an id that already exists.
@@ -237,6 +318,8 @@ def load(path: Path) -> World:
     # are now restored too, so it must start above them as well.
     world._ids = itertools.count(max(
         [highest] + list(world.requests) + list(world.plans) + list(world.approvals)
+        + list(world.series) + list(world.charges) + list(world.payments)
+        + [m.id for m in world.messages] + list(world.notices)
     ) + 1)
     return world
 

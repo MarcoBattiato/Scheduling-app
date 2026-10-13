@@ -12,12 +12,12 @@ import random
 from datetime import date, datetime, time, timedelta
 
 import pytest
-from calendar_store import TimeSegment
 
 from scheduling_engine import (
     BookingRequest,
     CostConfig,
     TimeRange,
+    TimeSegment,
     solve_placements,
     waste_minutes,
 )

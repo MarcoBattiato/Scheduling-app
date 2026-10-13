@@ -340,12 +340,13 @@ def test_the_calendar_palette_is_defined():
     import re
 
     css = (STATIC / "style.css").read_text()
+    tokens = (STATIC / "tokens.css").read_text()     # the shared palette and scales
     scripts = "".join((STATIC / s).read_text() for s in SCRIPTS)
 
-    used = set(re.findall(r"var\((--[a-z-]+)\)", css))
+    used = set(re.findall(r"var\((--[a-z0-9-]+)\)", css))
     # Several are declared per line, and some are set inline by the scripts.
-    declared = set(re.findall(r"(--[a-z-]+)\s*:", css))
-    declared |= set(re.findall(r"(--[a-z-]+)\s*:", scripts))
+    declared = set(re.findall(r"(--[a-z0-9-]+)\s*:", css + tokens))
+    declared |= set(re.findall(r"(--[a-z0-9-]+)\s*:", scripts))
 
     assert not (used - declared), f"CSS variables used but never defined: {used - declared}"
 
@@ -446,10 +447,14 @@ def test_a_proposal_calendar_is_readable_rather_than_a_thumbnail():
 
     css = (STATIC / "style.css").read_text()
     rows = re.search(r"\.draft-cal \.cal-day[^{]*\{[^}]*var\(--rows\) \* (\d+)px", css)
-    font = re.search(r"\.draft-cal \.cal-block \{[^}]*font-size: (\d+)px", css)
+    font = re.search(r"\.draft-cal \.cal-block \{[^}]*font-size: (?:var\((--[a-z0-9-]+)\)|(\d+)px)", css)
+    assert font, "draft labels have no size of their own"
+    size = font.group(2)
+    if font.group(1):                    # a named size: read what it is set to
+        size = re.search(rf"{font.group(1)}:\s*(\d+)px", css).group(1)
 
     assert rows and int(rows.group(1)) >= 15, "draft rows too short to read"
-    assert font and int(font.group(1)) >= 9, "draft labels too small to read"
+    assert int(size) >= 9, "draft labels too small to read"
 
 
 @node
@@ -771,17 +776,15 @@ def test_a_booking_its_own_client_is_moving_reads_as_provisional():
 
 
 @node
-def test_the_provider_is_offered_both_ways_of_being_away():
-    """Rehousing and cancelling are very different things to do to somebody,
-    so the page must not quietly pick one."""
+def test_time_off_over_bookings_is_a_question_not_a_setting():
+    """The desktop asks, as the phone does: move them all, or keep the time.
+    There is no "flag" or "cancel everyone" to pick in advance any more."""
     page = (STATIC / "index.html").read_text()
     app = (STATIC / "app.js").read_text()
 
-    assert 'value="reschedule"' in page and 'value="cancel"' in page
-    assert "/api/provider/away" in app
-    assert "Nobody is offered another slot" in app, (
-        "cancelling everybody outright has to be confirmed, not merely clicked"
-    )
+    assert 'name="action"' not in page and 'value="cancel"' not in page
+    assert 'timeOff("/api/provider/away"' in app and 'timeOff("/api/availability"' in app
+    assert "don't take the time off" in app
 
 
 @node
@@ -815,7 +818,8 @@ def _world_with_stranded():
         world.set_weekly_availability(
             who, [{"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)])
     world.store.book_appointment("alice", "s60", at(0, 9), at(0, 10))
-    world.provider_away(at(0, 0), at(0, 23))         # flag only
+    # Data from before time off needed a decision: still has to be shown.
+    world._apply_exception(PROVIDER, at(0, 0).date(), time(0, 0), time(23, 0), available=False)
     return world
 
 
@@ -836,7 +840,6 @@ def test_stranded_bookings_are_flagged_and_nothing_is_done_about_them():
     assert "fixStranded('rehouse')" in panel and "fixStranded('cancel')" in panel, (
         "both explicit triggers, since only the provider knows which is right"
     )
-    assert "setRehouseOnRun" in panel, "and the standing alternative"
 
 
 def _scheduleLayers(state, who):

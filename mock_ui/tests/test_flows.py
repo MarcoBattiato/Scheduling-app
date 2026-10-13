@@ -8,7 +8,7 @@ from datetime import date, datetime, time, timedelta
 import pytest
 from calendar_store import AppointmentStatus, Origin
 
-from mock_ui.state import PROVIDER, World
+from mock_ui.state import PROVIDER, TimeOffConflict, World
 
 
 def monday() -> date:
@@ -248,7 +248,7 @@ def test_appointments_carry_enough_to_be_worth_hovering_over(world):
 def test_a_client_summary_counts_what_actually_happened(world):
     place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
-    world.mark_attendance(booked.id, attended=False)
+    world.mark_attendance(booked.id, attended=False, now=booked.range.end)   # once it has happened
     place(world, "alice", 60, 1, 9, 17)
     (second,) = world.store.appointments_for("alice", at(1, 0), at(2, 0))
     world.cancel_appointment(second.id)
@@ -506,34 +506,49 @@ def test_a_client_can_see_whether_their_slot_is_settled(world):
 # -- the provider's own diary -----------------------------------------
 
 
-def test_changing_availability_never_reschedules_anybody(world):
-    """The rule: a mistyped date must not put half the week's clients through
-    a rescheduling nobody asked for. Stranded bookings are flagged and stay
-    exactly where they are until the provider says otherwise."""
+def _strand(world, day):
+    """A booking left in closed time the old way — data from before the rule
+    below, which the rehousing tools still have to cope with."""
+    world._apply_exception(PROVIDER, (monday() + timedelta(days=day)), time(0, 0), time(23, 0),
+                           available=False)
+
+
+def test_time_off_over_bookings_changes_nothing_until_the_provider_chooses(world):
+    """Move them all, or keep the time — never a diary with bookings in time
+    nobody is working, and never a mistyped date rescheduling anybody."""
     place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
 
-    outcome = world.provider_away(at(0, 0), at(0, 23))      # the default
+    with pytest.raises(TimeOffConflict) as conflict:
+        world.provider_away(at(0, 0), at(0, 23))
 
-    assert outcome["flagged"] == [booked.id]
-    assert outcome["rehoused"] == [] and outcome["cancelled"] == 0
+    assert [b["appointment_id"] for b in conflict.value.bookings] == [booked.id]
+    assert world.availability_segments(PROVIDER, at(0, 0).date(), at(1, 0).date()), "time not taken"
     assert not [r for r in world.requests.values() if r.status == "pending"]
-    assert world.store.get_appointment(booked.id).occupies_slot
-    assert [a.id for a in world.orphaned_appointments()] == [booked.id]
+    assert world.orphaned_appointments() == []
 
 
-def test_the_weekly_pattern_strands_bookings_just_as_loudly(world):
-    """Not only the away button. Editing the grid or dragging on the calendar
-    can leave a booking in time the provider no longer has, and did not used
-    to be noticed at all."""
+def test_the_weekly_pattern_asks_just_the_same(world):
+    """Not only the away button: editing the weekly hours too."""
     place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
+    before = world.store.rules_for(PROVIDER)
 
-    world.set_weekly_availability(PROVIDER, [])
+    with pytest.raises(TimeOffConflict):
+        world.set_weekly_availability(PROVIDER, [])
+    assert world.store.rules_for(PROVIDER) == before, "the hours did not change"
 
-    assert booked.id in {a.id for a in world.orphaned_appointments()}
-    flagged = next(a for a in world.snapshot()["appointments"] if a["id"] == booked.id)
-    assert flagged["orphaned"] is True
+    world.set_weekly_availability(PROVIDER, [], then="reschedule")
+    assert [r.replaces_appointment_id for r in world.requests.values()
+            if r.origin is Origin.DISPLACED] == [booked.id]
+
+
+def test_a_single_date_off_asks_just_the_same(world):
+    place(world, "alice", 60, 0, 9, 17)
+
+    with pytest.raises(TimeOffConflict):
+        world.set_exception(PROVIDER, at(0, 0).date(), time(9), time(13), available=False)
+    world.set_exception(PROVIDER, at(0, 0).date(), time(14), time(17), available=False)  # nobody there
 
 
 def test_a_client_narrowing_their_own_hours_strands_nothing(world):
@@ -549,7 +564,7 @@ def test_a_client_narrowing_their_own_hours_strands_nothing(world):
 def test_the_provider_can_then_ask_for_them_to_be_rehoused(world):
     place(world, "alice", 60, 0, 9, 17)
     (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
-    world.provider_away(at(0, 0), at(0, 23))
+    _strand(world, 0)
 
     raised = world.rehouse_orphans()
 
@@ -565,7 +580,8 @@ def test_the_provider_can_then_ask_for_them_to_be_rehoused(world):
 def test_rehousing_can_be_asked_for_one_at_a_time(world):
     for day in (0, 1):
         place(world, "alice", 60, day, 9, 17)
-    world.provider_away(at(0, 0), at(1, 23))
+    _strand(world, 0)
+    _strand(world, 1)
     stranded = sorted(a.id for a in world.orphaned_appointments())
     assert len(stranded) == 2
 
@@ -577,7 +593,7 @@ def test_rehousing_can_be_asked_for_one_at_a_time(world):
 
 def test_asking_twice_does_not_raise_the_same_request_twice(world):
     place(world, "alice", 60, 0, 9, 17)
-    world.provider_away(at(0, 0), at(0, 23))
+    _strand(world, 0)
     world.rehouse_orphans()
 
     assert world.rehouse_orphans() == [], "already being dealt with"
@@ -587,7 +603,7 @@ def test_a_run_says_so_when_bookings_are_stranded_and_leaves_them(world):
     """Quiet is the one thing it must not be — but silence is not the same as
     action, and the default is to report only."""
     place(world, "alice", 60, 0, 9, 17)
-    world.provider_away(at(0, 0), at(0, 23))
+    _strand(world, 0)
     ask(world, "bob", 60, 1, 9, 17)
 
     outcome = world.propose()
@@ -596,17 +612,6 @@ def test_a_run_says_so_when_bookings_are_stranded_and_leaves_them(world):
     assert any("left alone" in w for w in outcome["warnings"])
     assert not [r for r in world.requests.values()
                 if r.origin is Origin.DISPLACED]
-
-
-def test_a_run_can_be_told_to_deal_with_them_and_says_that_it_did(world):
-    place(world, "alice", 60, 0, 9, 17)
-    world.provider_away(at(0, 0), at(0, 23))
-    world.policy.rehouse_orphans_on_run = True
-
-    outcome = world.propose()
-
-    assert any("queued to be rehoused" in w for w in outcome["warnings"])
-    assert [r for r in world.requests.values() if r.origin is Origin.DISPLACED]
 
 
 def test_being_away_can_still_do_it_all_in_one_breath(world):
@@ -652,25 +657,23 @@ def test_a_rehousing_the_clinic_forced_is_never_recorded_as_a_preference(world):
     )
 
 
-def test_being_away_can_cancel_outright_instead(world):
+def test_moving_them_is_the_only_way_through(world):
+    """Cancelling everyone or leaving them flagged are not options any more:
+    the provider moves them, or does not take the time off."""
     place(world, "alice", 60, 0, 9, 17)
-    (booked,) = world.store.appointments_for("alice", at(0, 0), at(1, 0))
 
-    outcome = world.provider_away(at(0, 0), at(0, 23), "cancel")
-
-    assert outcome["cancelled"] == 1 and outcome["rehoused"] == []
-    assert world.store.get_appointment(booked.id).status \
-        is AppointmentStatus.CANCELLED_BY_PROVIDER
-    assert not [r for r in world.requests.values() if r.status == "pending"]
+    for action in ("cancel", "flag"):
+        with pytest.raises(ValueError):
+            world.provider_away(at(0, 0), at(0, 23), action)
 
 
 def test_being_away_over_several_days_takes_all_of_them(world):
     for day in (0, 1, 2):
         place(world, "alice", 60, day, 9, 17)
 
-    outcome = world.provider_away(at(0, 0), at(2, 23), "cancel")
+    outcome = world.provider_away(at(0, 0), at(2, 23), "reschedule")
 
-    assert outcome["cancelled"] == 3
+    assert outcome["affected"] == 3 and len(outcome["rehoused"]) == 3
 
 
 def test_being_away_does_not_ask_twice_about_the_same_booking(world):
@@ -766,3 +769,13 @@ def test_the_queue_can_tell_a_rehousing_from_a_request(world):
 
     assert shown and shown[0]["origin"] == "displaced"
     assert shown[0]["note"] == "the provider is not available then"
+
+
+def test_moving_an_appointment_to_where_it_already_is_is_refused(world):
+    """Accepted, it blocked a corrected request and a run could move the client
+    away although they never asked to leave."""
+    booked = world.store.book_appointment("alice", "s60", at(2, 10), at(2, 11))
+
+    with pytest.raises(ValueError, match="already is"):
+        world.request_reschedule(booked.id, at(2, 10).isoformat(), release_slot=False)
+    assert world.request_reschedule(booked.id, at(3, 10).isoformat(), release_slot=False)

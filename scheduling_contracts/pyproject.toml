@@ -1,0 +1,20 @@
+[project]
+name = "scheduling_contracts"
+version = "0.1.0"
+description = "The command surface, ports, and permission model every other package is written against."
+requires-python = ">=3.9"
+# Intentionally empty, and it must stay that way. This package is the fixed
+# point the others conform to; a dependency here is inherited by all of them.
+# Nothing in it may import calendar_store, scheduling_engine, mock_ui, ortools,
+# a web framework, or a database driver. `tests/test_isolation.py` enforces it.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

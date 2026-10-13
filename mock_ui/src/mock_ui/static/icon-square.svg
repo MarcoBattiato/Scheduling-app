@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed square for home-screen icons: iOS and Android round the
+       corners themselves, and transparent corners turn black on iOS. The
+       symbol sits inside the central 70%, the safe zone for masks. -->
+  <rect width="512" height="512" fill="#1e6b6b"/>
+  <g transform="translate(256 256) scale(0.78) translate(-256 -256)">
+    <rect x="112" y="136" width="288" height="256" rx="32" fill="none" stroke="#fff" stroke-width="28"/>
+    <path d="M112 212h288M192 104v64M320 104v64" stroke="#fff" stroke-width="28" stroke-linecap="round"/>
+    <path d="M176 306c27-30 53-30 80 0s53 30 80 0" fill="none" stroke="#fff" stroke-width="26" stroke-linecap="round"/>
+  </g>
+</svg>

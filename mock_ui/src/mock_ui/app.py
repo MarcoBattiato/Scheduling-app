@@ -6,22 +6,34 @@ Deliberately holds no logic of its own — anything interesting belongs in
 from __future__ import annotations
 
 import hashlib
+import mimetypes
+import asyncio
 import os
-from datetime import date, datetime, time, timedelta
+import weakref
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+import html as html_lib
+
+import anyio.from_thread
+from fastapi import FastAPI, Form, HTTPException, Query, Request as HttpRequest
+from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from calendar_store import Party
+from scheduling_contracts import Principal, Role, Session, Tier
 
-from . import persistence
-from .state import PROVIDER, World
+from . import assistant as assistant_mod, billing, calendar_sync, control, persistence, scenarios
+from .state import TimeOffConflict, World
 
 STATIC = Path(__file__).parent / "static"
+# Not in every platform's table, and a manifest served as octet-stream is
+# ignored, so "Add to Home Screen" would open the desktop page.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 def default_snapshot() -> Path:
     """Beside the package, not beside the shell.
 
@@ -32,6 +44,42 @@ def default_snapshot() -> Path:
 
 
 SNAPSHOT = Path(os.environ.get("MOCK_UI_SNAPSHOT", default_snapshot()))
+
+# One request at a time touches the World. Routes run on a thread pool, so
+# without this a phone's poll could read the plans while another poll's tick
+# was adding one ("dictionary changed size during iteration"), and a burst of
+# polls each saw the run as due and each started one. Held in the event loop
+# (see `autosave`), so waiting requests do not each tie up a worker
+# thread the request holding it needs. One lock per event loop: the test
+# client starts a loop per request.
+_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _world_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if loop not in _locks:
+        _locks[loop] = asyncio.Lock()
+    return _locks[loop]
+
+
+class _ThreadSideLock:
+    """The same lock, taken from a worker thread — for the assistant, which
+    holds it around each touch of the World and not while the model thinks
+    (half a minute, during which every phone would stall on its poll)."""
+
+    def __enter__(self):
+        async def take():
+            await _world_lock().acquire()
+        anyio.from_thread.run(take)
+
+    def __exit__(self, *exc):
+        anyio.from_thread.run_sync(lambda: _world_lock().release())
+
+
+# Waiting on the model can take half a minute; the assistant takes the lock
+# itself around each touch of the World instead.
+_UNLOCKED = {"/api/assistant/send"}
+
 
 app = FastAPI(title="Scheduling mock UI")
 world = persistence.load_or_new(SNAPSHOT)
@@ -49,12 +97,53 @@ class ClientIn(BaseModel):
 class WeeklyIn(BaseModel):
     client_id: str
     ranges: List[dict] = []
+    # For the provider: what happens to bookings the change would leave out
+    # ("reschedule"); none given and some fall out, nothing changes (409).
+    then: Optional[str] = None
 
 
 class RequestIn(BaseModel):
     client_id: str
     service_id: str
     preferred_start: str        # a wish; availability decides what is possible
+
+
+class BillingIn(BaseModel):
+    default_mode: Optional[str] = None
+    late_cancel_window_hours: Optional[int] = None
+    late_cancel_fee: Optional[str] = None
+    no_show_fee: Optional[str] = None
+    gst_registered: Optional[bool] = None
+    gst_number: Optional[str] = None
+    gst_rate_percent: Optional[float] = None
+
+
+class BillingModeIn(BaseModel):
+    mode: Optional[str] = None          # None = the practice default
+
+
+class CheckoutIn(BaseModel):
+    # A path on this app to come back to, e.g. "/phone?as=dan". Only a path:
+    # an absolute address here would let a link send a paying client anywhere.
+    return_to: str = "/phone"
+
+
+class RecordIn(BaseModel):
+    method: str = "cash"
+
+
+class LimitsIn(BaseModel):
+    # None means no limit.
+    per_day: Optional[int] = 1
+    per_week: Optional[int] = None
+
+
+class SeriesIn(BaseModel):
+    client_id: str
+    service_id: str
+    first_start: str            # the first session; the rest follow at the same time
+    every_weeks: int = 1
+    until: Optional[str] = None  # last date a session may fall on
 
 
 class ExceptionIn(BaseModel):
@@ -64,6 +153,7 @@ class ExceptionIn(BaseModel):
     to_time: str
     available: bool = True
     clear: bool = False
+    then: Optional[str] = None
 
 
 class ServiceIn(BaseModel):
@@ -89,10 +179,10 @@ class AwayIn(BaseModel):
     """The provider cannot work a stretch of time."""
     start: str
     end: str
-    # "flag" (the default) marks the time off and leaves the bookings in it
-    # alone for the provider to decide about; "reschedule" and "cancel" make
-    # that decision in the same breath.
-    action: str = "flag"
+    # "reschedule": everyone booked in the time is asked to move (within the
+    # reschedule window). Left out with bookings in the time, nothing changes
+    # and the answer is a 409 listing them — move them, or keep the time.
+    action: Optional[str] = None
 
 
 class OrphansIn(BaseModel):
@@ -151,19 +241,76 @@ class SettingsIn(BaseModel):
     retry_after_minutes: Optional[int] = None
     horizon_days: Optional[int] = None
     scope_to_horizon: Optional[bool] = None
-    rehouse_orphans_on_run: Optional[bool] = None
+    min_notice_hours: Optional[int] = None
+    reschedule_window: Optional[str] = None
+    reschedule_window_days: Optional[int] = None
+    answer_within_hours: Optional[int] = None
+    decline_when_overdue: Optional[bool] = None
+    practice_name: Optional[str] = None
+    chat_enabled: Optional[bool] = None
+    assistant_enabled: Optional[bool] = None
+    chat_reply_expectation: Optional[str] = None
+    chat_emergency_note: Optional[str] = None
 
 
 # -- routes ---------------------------------------------------------
 
 
+# -- the scheduler's clock, and polls that never wait for it -------------
+#
+# Automatic runs happen in the background (`_ticking`), not inside somebody's
+# poll: a solve can take seconds — tens of them on a busy machine — and with
+# the World locked meanwhile, every phone used to stall behind it. While the
+# World is busy, a poll gets the last snapshot made instead (`_last`), at
+# most one run old, which is what a poll every 2.5s is for anyway.
+TICK_SECONDS = 20.0
+_background = {"running": False}
+_last: dict = {}
+
+
+def _scoped(full: dict, person: Optional[str]) -> dict:
+    if person and person != "provider":
+        # A client's screens get their own slice only: hiding the rest on
+        # screen would still hand it to anyone opening developer tools.
+        try:
+            return world.scope_snapshot(full, person)
+        except KeyError:
+            raise HTTPException(404, "no such person") from None
+    return full
+
+
 @app.get("/api/state")
-def get_state():
-    # Every poll is also a chance for the provider's schedule policy to fire.
-    # Cheap, deterministic, and avoids a background thread for something a
-    # person is watching anyway.
+def get_state(as_: Optional[str] = Query(None, alias="as")):
+    if not _background["running"]:
+        world.tick()          # no background clock (the tests): a poll is the clock
+    full = world.snapshot()
+    _last["full"], _last["world"] = full, world
+    return _scoped(full, as_)
+
+
+def _tick() -> None:
+    before = len(world.log)
     world.tick()
-    return world.snapshot()
+    _last["full"], _last["world"] = world.snapshot(), world
+    if len(world.log) != before:      # every change notes itself: something happened
+        _save()
+
+
+@app.on_event("startup")
+async def _start_ticking() -> None:
+    async def loop():
+        _background["running"] = True
+        try:
+            while True:
+                await asyncio.sleep(TICK_SECONDS)
+                async with _world_lock():
+                    try:
+                        await run_in_threadpool(_tick)
+                    except Exception as exc:              # never kill the clock
+                        world._note(f"scheduled check failed: {exc}")
+        finally:
+            _background["running"] = False
+    asyncio.get_running_loop().create_task(loop())
 
 
 @app.post("/api/clients")
@@ -175,9 +322,20 @@ def add_client(payload: ClientIn):
     return {"client": vars(client)}
 
 
+def _time_off_conflict(exc: "TimeOffConflict"):
+    """409 with the bookings, so the screen can ask: move them all, or keep
+    the time."""
+    raise HTTPException(409, {"message": str(exc), "bookings": exc.bookings}) from None
+
+
 @app.post("/api/availability")
 def set_availability(payload: WeeklyIn):
-    world.set_weekly_availability(payload.client_id, payload.ranges)
+    try:
+        world.set_weekly_availability(payload.client_id, payload.ranges, then=payload.then)
+    except TimeOffConflict as exc:
+        _time_off_conflict(exc)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     return {"ok": True}
 
 
@@ -190,10 +348,12 @@ def set_exception(payload: ExceptionIn):
         end = time.fromisoformat(payload.to_time)
         if payload.clear:
             world.clear_exception(payload.client_id, on_date, start, end,
-                                  payload.available)
+                                  payload.available, then=payload.then)
         else:
             world.set_exception(payload.client_id, on_date, start, end,
-                                payload.available)
+                                payload.available, then=payload.then)
+    except TimeOffConflict as exc:
+        _time_off_conflict(exc)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     return {"ok": True}
@@ -207,9 +367,355 @@ def submit_request(payload: RequestIn):
         )
     except KeyError as exc:
         raise HTTPException(400, str(exc.args[0])) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     # Deliberately does NOT run the scheduler. A request arriving is not a
     # reason to re-plan the week — see policy.py.
     return {"request_id": request.id}
+
+
+# -- the gate (control.py) ---------------------------------------------------
+
+_gate = None
+
+
+def gate() -> control.Gate:
+    """The gate over the current world; a reset replaces both."""
+    global _gate
+    if _gate is None or _gate.world is not world:
+        _gate = control.Gate(world)
+    return _gate
+
+
+def session_for(person: str) -> Session:
+    """Who is asking. **A stand-in for signing in**: "as" is a claim, exactly
+    like "view as" on the screens, until there is a login to take it from.
+    Everything downstream already treats the session as the only source of
+    identity, so replacing this one function is what sign-in will be."""
+    if person == "provider":
+        return Session(Principal(Role.PROVIDER))
+    if person in world.clients:
+        return Session(Principal(Role.CLIENT, person))
+    raise HTTPException(404, "no such person")
+
+
+def _gate_error(exc: control.GateError):
+    raise HTTPException(exc.status, str(exc)) from None
+
+
+class CommandIn(BaseModel):
+    args: dict = {}
+
+
+@app.post("/api/commands/{name}")
+def run_command(name: str, payload: CommandIn, as_: str = Query("provider", alias="as")):
+    """Any command, through the gate, as the person themselves. The screens'
+    way onto the gate — the clinician chat is the first feature to use it,
+    so its permissions are the contract's from the start."""
+    session = session_for(as_)
+    try:
+        outcome = gate().execute(session, control.build_command(name, payload.args, session))
+    except control.GateError as exc:
+        _gate_error(exc)
+    return {"status": outcome.status, "result": outcome.result,
+            "token": outcome.token, "summary": outcome.summary}
+
+
+# -- the assistant (assistant.py) -----------------------------------------------
+
+_assistant = None
+
+
+def assistant() -> assistant_mod.Assistant:
+    global _assistant
+    if _assistant is None or _assistant.world is not world:
+        _assistant = assistant_mod.Assistant(world, gate(), lock=_ThreadSideLock())
+    elif _assistant.gate is not gate():
+        _assistant.gate = gate()
+    return _assistant
+
+
+class AssistantIn(BaseModel):
+    conversation_id: Optional[str] = None
+    text: str
+
+
+class OptIn(BaseModel):
+    on: bool
+
+
+@app.get("/api/assistant/status")
+def assistant_status(as_: str = Query("provider", alias="as")):
+    return assistant().status(session_for(as_).principal)
+
+
+@app.post("/api/assistant/opt-in")
+def assistant_opt_in(payload: OptIn, as_: str = Query("provider", alias="as")):
+    """A client's own choice, after reading what is sent where."""
+    principal = session_for(as_).principal
+    if principal.role is not Role.CLIENT:
+        raise HTTPException(400, "only a client opts in; the practice switches it on")
+    (world.assistant.opted_in.add if payload.on else world.assistant.opted_in.discard)(principal.client_id)
+    world._note(f"{principal.client_id} turned the assistant {'on' if payload.on else 'off'}")
+    return {"opted_in": payload.on}
+
+
+@app.post("/api/assistant/send")
+def assistant_send(payload: AssistantIn, as_: str = Query("provider", alias="as")):
+    try:
+        out = assistant().send(session_for(as_).principal, payload.conversation_id, payload.text)
+        # Outside the request lock (the model is slow), so outside the
+        # autosave too: what the tools did — drafts, audit rows — is saved here.
+        with _ThreadSideLock():
+            _save()
+        return out
+    except assistant_mod.Unavailable as exc:
+        raise HTTPException(503, str(exc)) from None
+    except assistant_mod.AssistantError as exc:
+        raise HTTPException(502, str(exc)) from None
+    except control.GateError as exc:
+        _gate_error(exc)
+
+
+@app.post("/api/assistant/{conversation_id}/handoff")
+def assistant_handoff(conversation_id: str, as_: str = Query("provider", alias="as")):
+    try:
+        return assistant().handoff(session_for(as_).principal, conversation_id)
+    except control.GateError as exc:
+        _gate_error(exc)
+
+
+@app.get("/api/drafts")
+def list_drafts(as_: str = Query("provider", alias="as")):
+    """Changes an assistant has prepared for this person to confirm."""
+    session = session_for(as_)
+    return {"drafts": [{"token": d.token, "summary": d.summary,
+                        "created": d.created.isoformat(timespec="seconds")}
+                       for d in gate().pending(session.principal)]}
+
+
+@app.post("/api/drafts/{token}/confirm")
+def confirm_draft(token: str, as_: str = Query("provider", alias="as")):
+    try:
+        outcome = gate().confirm(session_for(as_), token)
+    except control.GateError as exc:
+        _gate_error(exc)
+    return {"status": outcome.status}
+
+
+@app.post("/api/drafts/{token}/discard")
+def discard_draft(token: str, as_: str = Query("provider", alias="as")):
+    try:
+        gate().discard(session_for(as_), token)
+    except control.GateError as exc:
+        _gate_error(exc)
+    return {"ok": True}
+
+
+# -- money --------------------------------------------------------------
+
+
+def _charge_or_404(charge_id: int):
+    if charge_id not in world.charges:
+        raise HTTPException(404, "no such charge")
+    return world.charges[charge_id]
+
+
+@app.post("/api/billing")
+def configure_billing(payload: BillingIn):
+    try:
+        settings = world.configure_billing(**payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return billing.settings_dict(settings)
+
+
+@app.post("/api/clients/{client_id}/billing-mode")
+def set_billing_mode(client_id: str, payload: BillingModeIn):
+    if client_id not in world.clients:
+        raise HTTPException(404, "no such client")
+    try:
+        world.set_billing_mode(client_id, payload.mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/charges/{charge_id}/confirm")
+def confirm_fee(charge_id: int):
+    _charge_or_404(charge_id)
+    try:
+        world.confirm_fee(charge_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/charges/{charge_id}/waive")
+def waive_charge(charge_id: int):
+    _charge_or_404(charge_id)
+    try:
+        world.waive_charge(charge_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
+@app.post("/api/charges/{charge_id}/checkout")
+def start_checkout(charge_id: int, payload: CheckoutIn, request: HttpRequest):
+    _charge_or_404(charge_id)
+    if not payload.return_to.startswith("/") or payload.return_to.startswith("//"):
+        raise HTTPException(400, "return_to must be a path on this app")
+    back = str(request.base_url).rstrip("/") + payload.return_to
+    try:
+        payment = world.start_checkout(charge_id, back)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"payment_id": payment.id, "url": payment.checkout_url}
+
+
+@app.post("/api/payments/{payment_id}/check")
+def check_payment(payment_id: int):
+    if payment_id not in world.payments:
+        raise HTTPException(404, "no such payment")
+    payment = world.check_payment(payment_id)
+    return {"status": payment.status, "method": payment.method,
+            "charge_status": world.charges[payment.charge_id].status}
+
+
+@app.post("/api/charges/{charge_id}/record")
+def record_payment(charge_id: int, payload: RecordIn):
+    _charge_or_404(charge_id)
+    try:
+        world.record_payment(charge_id, payload.method)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
+_SIMULATED_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Pay — simulated</title>
+<style>
+body{{font:16px/1.4 -apple-system,system-ui,sans-serif;margin:0;background:#f6f7f9;color:#16181d}}
+main{{max-width:420px;margin:0 auto;padding:24px 16px}}
+.banner{{background:#fff4d6;color:#7a5200;border-radius:12px;padding:10px 14px;font-size:14px}}
+.card{{background:#fff;border:1px solid #e3e6eb;border-radius:14px;padding:16px;margin:16px 0}}
+.amount{{font-size:34px;font-weight:700;margin:4px 0}}
+label{{display:flex;gap:10px;align-items:center;padding:12px;border:1.5px solid #e3e6eb;border-radius:12px;margin:8px 0}}
+button{{width:100%;min-height:50px;border-radius:12px;border:0;font:inherit;font-weight:600;margin-top:8px}}
+.pay{{background:#2f5bea;color:#fff}} .fail{{background:#fff;border:1px solid #e3e6eb;color:#c0322b}}
+@media (prefers-color-scheme:dark){{body{{background:#14161a;color:#eceef2}}.card,label,.fail{{background:#1d2026;border-color:#2f343c}}}}
+</style></head><body><main>
+<div class="banner">Simulated payment page. No real money moves — this stands in for
+Stripe until a Stripe test key is set up.</div>
+<div class="card"><div>{practice}</div><div class="amount">{amount}</div><div>{description}</div></div>
+{body}
+</main></body></html>"""
+
+
+@app.get("/pay/simulated/{reference}", response_class=HTMLResponse)
+def simulated_checkout(reference: str):
+    payment = world.payment_by_reference(reference)
+    if payment is None or payment.processor != "simulated":
+        raise HTTPException(404, "no such payment")
+    charge = world.charges[payment.charge_id]
+    if payment.status != "pending":
+        body = f'<p>This payment is already {payment.status}.</p><a href="{html_lib.escape(payment.return_url)}">Back</a>'
+    else:
+        options = "".join(
+            f'<label><input type="radio" name="method" value="{key}" {"checked" if key == "paynow" else ""}>'
+            f"{html_lib.escape(label)}</label>"
+            for key, label in billing.PAY_METHODS.items() if key not in billing.RECORDED_METHODS)
+        body = (f'<form method="post">{options}'
+                f'<button class="pay" name="outcome" value="succeeded">Pay</button>'
+                f'<button class="fail" name="outcome" value="failed">Decline the payment</button></form>')
+    return _SIMULATED_PAGE.format(
+        practice=html_lib.escape(world.practice_name),
+        amount=billing.money(charge.amount, world.billing.currency),
+        description=html_lib.escape(charge.description), body=body)
+
+
+@app.post("/pay/simulated/{reference}")
+def simulated_outcome(reference: str, outcome: str = Form(...), method: str = Form("paynow")):
+    payment = world.payment_by_reference(reference)
+    if payment is None or payment.processor != "simulated":
+        raise HTTPException(404, "no such payment")
+    if outcome not in ("succeeded", "failed") or method not in billing.PAY_METHODS:
+        raise HTTPException(400, "unknown outcome or method")
+    if payment.status == "pending":
+        world.processor.complete(reference, outcome, method)
+    # Back to the app, which then *asks* what happened rather than trusting
+    # the redirect — exactly as it will with Stripe.
+    return RedirectResponse(payment.return_url, status_code=303)
+
+
+@app.get("/calendar/{token}.ics")
+def calendar_feed(token: str):
+    """A person's appointments as a subscribable calendar — see
+    calendar_sync.py. The token in the address is the only credential: a
+    calendar app cannot sign in, so an unknown one is simply not found."""
+    person = world.person_for_feed(token)
+    if person is None:
+        raise HTTPException(404, "no such calendar")
+    name = (f"{world.practice_name} — diary" if person == "provider"
+            else f"Appointments — {world.practice_name}")
+    body = calendar_sync.to_ics(calendar_sync.events_for(world, person), name)
+    return Response(body, media_type="text/calendar; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/calendar/{person}")
+def calendar_link(person: str):
+    """The secret part of a person's calendar address, made if need be. A
+    POST so the new secret is saved with the session before anyone uses it."""
+    try:
+        return {"token": world.feed_token(person)}
+    except KeyError:
+        raise HTTPException(404, "no such person") from None
+
+
+@app.post("/api/calendar/{person}/reset")
+def reset_calendar_link(person: str):
+    try:
+        return {"token": world.reset_feed_token(person)}
+    except KeyError:
+        raise HTTPException(404, "no such person") from None
+
+
+@app.post("/api/clients/{client_id}/limits")
+def set_client_limits(client_id: str, payload: LimitsIn):
+    """How often this client may be booked — see World.set_client_limits."""
+    if client_id not in world.clients:
+        raise HTTPException(404, "no such client")
+    try:
+        client = world.set_client_limits(client_id, payload.per_day, payload.per_week)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"per_day": client.per_day, "per_week": client.per_week}
+
+
+@app.post("/api/series")
+def start_series(payload: SeriesIn):
+    """A booking that repeats — see World.start_series. Each session is raised
+    as an ordinary request when it comes into the planning window; like any
+    request, none of them runs the scheduler by arriving."""
+    try:
+        series = world.start_series(payload.client_id, payload.service_id,
+                                    payload.first_start, payload.every_weeks,
+                                    payload.until)
+    except KeyError as exc:
+        raise HTTPException(400, str(exc.args[0])) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    raised = sum(1 for r in world.requests.values() if r.series_id == series.id)
+    return {"series_id": series.id, "raised": raised}
+
+
+@app.post("/api/series/{series_id}/stop")
+def stop_series(series_id: int):
+    if series_id not in world.series:
+        raise HTTPException(404, "no such series")
+    return {"withdrawn": world.stop_series(series_id)}
 
 
 @app.post("/api/services")
@@ -246,6 +752,66 @@ def withdraw_request(request_id: int):
     return {"ok": True}
 
 
+@app.post("/api/requests/{request_id}/seen")
+def skipped_seen(request_id: int, who: str):
+    """The client or the provider has seen that a repeating session is off."""
+    if request_id not in world.requests:
+        raise HTTPException(404, "no such request")
+    try:
+        world.acknowledge_skipped(request_id, who)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
+class DecisionIn(BaseModel):
+    how: str          # cancel | keep | rehouse
+
+
+@app.post("/api/decisions/{appointment_id}")
+def decide(appointment_id: int, payload: DecisionIn):
+    """The provider's answer for a booking in time the clinic is closed."""
+    try:
+        world.decide(appointment_id, payload.how)
+    except KeyError:
+        raise HTTPException(404, "no such appointment") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
+
+
+class OverdueIn(BaseModel):
+    approval_ids: Optional[List[int]] = None     # None: every overdue answer
+
+
+@app.post("/api/approvals/overdue/decline")
+def decline_overdue(payload: OverdueIn = OverdueIn()):
+    """The provider: "stop waiting for them" — take no answer as "not that
+    time" and plan again around it."""
+    out = world.decline_overdue(payload.approval_ids)
+    return {"declined": out["declined"],
+            "plan_id": (out["run"] or {}).get("plan_id")}
+
+
+@app.post("/api/notices/{notice_id}/seen")
+def notice_seen(notice_id: int, as_: str = Query(..., alias="as")):
+    """A client has seen a notice about their own booking."""
+    try:
+        world.acknowledge_notice(notice_id, as_)
+    except KeyError:
+        raise HTTPException(404, "no such notice") from None
+    return {"ok": True}
+
+
+@app.get("/api/people")
+def people():
+    """Who can be chosen in "view as". A stand-in for signing in, and the one
+    place every client's name is still handed out: it goes when sign-in
+    arrives. Nothing else about anybody is here."""
+    return [{"id": "provider", "name": "Provider"}] + [
+        {"id": c.id, "name": c.name} for c in world.clients.values()]
+
+
 @app.post("/api/appointments/{appointment_id}/cancel")
 def cancel_appointment(appointment_id: int, payload: CancelIn = CancelIn()):
     try:
@@ -255,6 +821,8 @@ def cancel_appointment(appointment_id: int, payload: CancelIn = CancelIn()):
         )
     except KeyError:
         raise HTTPException(404, "no such appointment") from None
+    except ValueError as exc:                  # no longer booked: history, not cancellable
+        raise HTTPException(409, str(exc)) from None
     return {"ok": True}
 
 
@@ -294,6 +862,8 @@ def move_appointment(appointment_id: int, payload: MoveIn):
         )
     except KeyError:
         raise HTTPException(404, "no such appointment") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
     return {"ok": True}
 
 
@@ -337,6 +907,8 @@ def provider_away(payload: AwayIn):
             datetime.fromisoformat(payload.end),
             payload.action,
         )
+    except TimeOffConflict as exc:
+        _time_off_conflict(exc)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
 
@@ -421,8 +993,36 @@ def settings(payload: SettingsIn):
         world.policy.horizon_days = max(1, payload.horizon_days)
     if payload.scope_to_horizon is not None:
         world.policy.scope_to_horizon = payload.scope_to_horizon
-    if payload.rehouse_orphans_on_run is not None:
-        world.policy.rehouse_orphans_on_run = payload.rehouse_orphans_on_run
+    if payload.min_notice_hours is not None:
+        world.policy.min_notice_hours = max(0, payload.min_notice_hours)
+    if payload.reschedule_window is not None:
+        if payload.reschedule_window not in world.policy.RESCHEDULE_WINDOWS:
+            raise HTTPException(400, f"reschedule_window must be one of "
+                                     f"{list(world.policy.RESCHEDULE_WINDOWS)}")
+        world.policy.reschedule_window = payload.reschedule_window
+    if payload.reschedule_window_days is not None:
+        world.policy.reschedule_window_days = max(1, min(90, payload.reschedule_window_days))
+    if payload.answer_within_hours is not None:
+        world.policy.answer_within_hours = max(0, min(24 * 14, payload.answer_within_hours))
+    if payload.decline_when_overdue is not None:
+        world.policy.decline_when_overdue = payload.decline_when_overdue
+    if payload.practice_name is not None:
+        name = payload.practice_name.strip()
+        if not name:
+            raise HTTPException(400, "the practice needs a name")
+        world.practice_name = name[:80]
+    if payload.assistant_enabled is not None:
+        world.assistant.enabled = payload.assistant_enabled
+        world._note(f"the practice turned the assistant {'on' if payload.assistant_enabled else 'off'}")
+    if payload.chat_enabled is not None:
+        world.chat.enabled = payload.chat_enabled
+    if payload.chat_reply_expectation is not None:
+        world.chat.reply_expectation = payload.chat_reply_expectation.strip()[:200]
+    if payload.chat_emergency_note is not None:
+        note = payload.chat_emergency_note.strip()
+        if not note:
+            raise HTTPException(400, "clients must always be told where to get urgent help")
+        world.chat.emergency_note = note[:400]
     return {"ok": True}
 
 
@@ -435,68 +1035,54 @@ def snapshot_save():
 
 
 @app.post("/api/reset")
-def reset(seed: bool = True):
-    """Start again — including on disk.
+def reset(scenario: str = "simple"):
+    """Start again on a chosen example calendar — including on disk.
 
     Leaving the saved file behind would mean a reset that undoes itself at the
     next restart, which is the opposite of what the button says.
+
+    `scenario` is a key from `scenarios.SCENARIOS`, or "empty" for nothing at
+    all. Both examples are built so the first run has something to negotiate
+    about; see that module for why that has to be deliberate.
     """
     global world
-    world = World()
-    if seed:
-        seed_world(world)
-    SNAPSHOT.unlink(missing_ok=True)
-    return {"ok": True}
+    fresh = World()
+    if scenario != "empty":
+        try:
+            scenarios.load(fresh, scenario)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None      # the live World untouched
+    world = fresh
+    # Saved, not deleted: a reset to "busy" or "empty" must still be that
+    # after a restart, not the default example.
+    _save()
+    return {"ok": True, "scenario": scenario}
+
+
+@app.get("/api/scenarios")
+def list_scenarios():
+    return {"scenarios": sorted(scenarios.SCENARIOS) + ["empty"]}
 
 
 # -- a world worth opening on the first run --------------------------
 
 
-def seed_world(target: World) -> None:
-    """Enough of a calendar that the first page load shows something.
-
-    Weekdays 09:00-17:00 for the provider, three clients with different
-    availability, and one booking each so history starts accumulating rather
-    than requiring setup before anything can be tried.
-    """
-    target.catalogue.add_service("session-60", "Standard session", 60, 8000)
-    target.catalogue.add_service("session-90", "Extended session", 90, 11000)
-    target.catalogue.add_service("break", "Break", 60, 0, client_bookable=False)
-
-    target.add_client("alice", "Alice")
-    target.add_client("bob", "Bob")
-    target.add_client("carol", "Carol")
-
-    weekdays = [{"weekday": d, "from": "09:00", "to": "17:00"} for d in range(5)]
-    target.set_weekly_availability(PROVIDER, weekdays)
-    target.set_weekly_availability("alice", [
-        {"weekday": d, "from": "09:00", "to": "13:00"} for d in range(5)
-    ])
-    target.set_weekly_availability("bob", [
-        {"weekday": d, "from": "13:00", "to": "17:00"} for d in (0, 2, 4)
-    ])
-    target.set_weekly_availability("carol", [
-        {"weekday": d, "from": "10:00", "to": "16:00"} for d in (1, 3)
-    ])
-
-    monday = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7)
-    for client_id, day_offset, hour in (
-        ("alice", 0, 10), ("bob", 0, 14), ("carol", 1, 11),
-    ):
-        start = datetime.combine(monday + timedelta(days=day_offset), time(hour))
-        target.store.book_appointment(
-            client_id, "session-60", start, start + timedelta(minutes=60)
-        )
-    target._note("seeded a starting calendar")
-
-
 def _asset_version() -> str:
     """A hash of the scripts, so their URLs change whenever they do."""
     digest = hashlib.sha256()
-    for name in sorted(STATIC.glob("*.js")):
+    for name in sorted([*STATIC.glob("*.js"), *STATIC.glob("*.css")]):
         digest.update(name.read_bytes())
-    digest.update((STATIC / "style.css").read_bytes())
     return digest.hexdigest()[:12]
+
+
+def _page(name: str, assets) -> HTMLResponse:
+    # Version the asset URLs too, so even a cache that ignores the header
+    # cannot pair a stale script with a fresh one.
+    html = (STATIC / name).read_text()
+    version = _asset_version()
+    for asset in assets:
+        html = html.replace(f"/static/{asset}", f"/static/{asset}?v={version}")
+    return HTMLResponse(html)
 
 
 @app.middleware("http")
@@ -506,14 +1092,45 @@ async def autosave(request, call_next):
     Losing an afternoon of hand-built history to a restart is a poor way to
     learn that saving was manual.
     """
-    response = await call_next(request)
-    if request.method == "POST" and response.status_code < 400 \
-            and not request.url.path.endswith("/reset"):
+    if request.url.path in _UNLOCKED or not request.url.path.startswith(("/api/", "/calendar/", "/pay/")):
+        return await call_next(request)
+    if request.url.path == "/api/state" and _world_lock().locked() \
+            and _last.get("world") is world:
+        # Busy (a run, most likely): answer from the last snapshot rather
+        # than queueing behind it.
         try:
-            persistence.save(world, SNAPSHOT)
-        except Exception as exc:                     # never break a request over it
-            world._note(f"could not save the session: {exc}")
+            body = _scoped(_last["full"], request.query_params.get("as"))
+        except HTTPException as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        return JSONResponse(jsonable_encoder(body))
+    async with _world_lock():                        # one at a time; see _world_lock
+        response = await call_next(request)
+        if request.method == "POST" and response.status_code < 400 \
+                and request.url.path != "/api/reset" and not _is_read(request.url.path):
+            await run_in_threadpool(_save)           # never a half-changed World
+            # The cached snapshot is now older than this write; a busy poll
+            # must not hand the writer back the state from before it.
+            _last.clear()
     return response
+
+
+def _is_read(path: str) -> bool:
+    """A gate command that only reads (message.list, polled by every phone)
+    changes nothing worth writing the whole session to disk for."""
+    prefix = "/api/commands/"
+    if not path.startswith(prefix):
+        return False
+    try:
+        return control.by_name(path[len(prefix):]).__command_spec__.tier is Tier.READ
+    except (KeyError, LookupError):
+        return False
+
+
+def _save() -> None:
+    try:
+        persistence.save(world, SNAPSHOT)
+    except Exception as exc:                         # never break a request over it
+        world._note(f"could not save the session: {exc}")
 
 
 @app.middleware("http")
@@ -525,23 +1142,27 @@ async def no_stale_assets(request, call_next):
     This is a development tool, so correctness beats a cache hit.
     """
     response = await call_next(request)
-    if request.url.path.startswith("/static") or request.url.path == "/":
+    if request.url.path.startswith("/static") or request.url.path in ("/", "/phone"):
         response.headers["Cache-Control"] = "no-store, must-revalidate"
     return response
 
 
 @app.get("/")
 def index():
-    # Version the script URLs too, so even a cache that ignores the header
-    # cannot pair a stale script with a fresh one.
-    html = (STATIC / "index.html").read_text()
-    version = _asset_version()
-    for asset in ("calendar.js", "app.js", "style.css"):
-        html = html.replace(f"/static/{asset}", f"/static/{asset}?v={version}")
-    return HTMLResponse(html)
+    return _page("index.html", ("calendar.js", "app.js", "tokens.css", "style.css"))
+
+
+@app.get("/phone")
+def phone():
+    """The same world, laid out for a phone: tabs, taps and sheets instead of
+    a week grid driven by hover and drag. Same API, so either page can be
+    open on the same session at once."""
+    return _page("phone.html", ("phone.js", "tokens.css", "phone.css"))
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
-if not world.clients:
-    seed_world(world)
+if not SNAPSHOT.exists():
+    # The very first start: something to look at. A session saved empty on
+    # purpose ("empty" scenario) stays empty.
+    scenarios.load(world, "simple")

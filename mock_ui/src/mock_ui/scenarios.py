@@ -1,0 +1,426 @@
+"""Starting calendars to demonstrate against.
+
+A demo is only as good as the calendar it runs on. The first seed this project
+had gave the provider forty hours a week with three bookings in it, which meant
+the solver never had to move anybody: ten waiting requests produced ten
+bookings and zero displacements. Everything hard about this system — the
+negotiation, the three-way answer, the arrows, the settlement choice — is
+invisible on a calendar with that much slack.
+
+Scarcity is what makes it visible, and the cheap way to scarcity is a **short
+working day** rather than a long list of clients. A provider seeing four hours
+a day is busy at eight clients; one seeing eight hours needs sixteen before
+anything interesting happens, and sixteen names is a demo nobody can follow.
+
+Both scenarios here are built so that the very first run has something to
+negotiate about. `tests/test_scenarios.py` pins that: a seed that quietly stops
+forcing a displacement has stopped being a demo.
+"""
+from __future__ import annotations
+
+from datetime import date, datetime, time, timedelta
+from typing import Iterable, List, Sequence, Tuple
+
+from calendar_store import Origin, Party
+
+from .state import PROVIDER, World
+
+
+def next_monday(today: date | None = None) -> date:
+    """The Monday of the coming week — never today, so a scenario reads the
+    same whichever day it is set up on."""
+    today = today or date.today()
+    return today + timedelta(days=(7 - today.weekday()) % 7 or 7)
+
+
+def _at(monday: date, day: int, hour: int, minute: int = 0) -> datetime:
+    return datetime.combine(monday + timedelta(days=day), time(hour, minute))
+
+
+def _horizon_reaching(monday: date) -> int:
+    """Days of planning window needed to cover the scenario's whole week.
+
+    Without this a scenario behaves differently depending on the day it is
+    loaded: next Monday can be seven days away, so with the default seven-day
+    horizon a demo set up on a Thursday finds half its own week out of scope
+    and quietly does nothing about it. The window is a provider setting, and a
+    scenario about a particular week should have one that reaches it.
+    """
+    return max(7, (monday + timedelta(days=5) - date.today()).days)
+
+
+def _close_the_run_up(world: World, monday: date) -> None:
+    """Mark the days between today and the scenario's week as already done.
+
+    A scenario describes one week, but the planning window starts *today*. Set
+    up on a Monday, the empty days before the scenario's own week are fair game
+    and the solver quietly uses them — so the request that was supposed to
+    force a move gets an easy slot instead and the demo shows nothing. Closing
+    the run-up says what is already true of the calendar being demonstrated:
+    this week is spoken for, the interesting one is next.
+    """
+    day = date.today()
+    while day < monday:
+        world.set_exception(PROVIDER, day, time.min, time.max, available=False)
+        day += timedelta(days=1)
+
+
+def _hours(days: Iterable[int], start: str, end: str) -> List[dict]:
+    return [{"weekday": d, "from": start, "to": end} for d in days]
+
+
+def _book(world: World, monday: date, entries: Sequence[Tuple[str, int, int]],
+          service: str = "session-60") -> List[int]:
+    booked = []
+    for client_id, day, hour in entries:
+        start = _at(monday, day, hour)
+        minutes = world.catalogue.get_service(service).duration_minutes
+        booked.append(world.store.book_appointment(
+            client_id, service, start, start + timedelta(minutes=minutes),
+            preferred_start=start,
+        ).id)
+    return booked
+
+
+# -- the small one ----------------------------------------------------
+
+
+def simple(world: World) -> None:
+    """Four clients, mornings only, and one request that cannot be met without
+    moving somebody.
+
+    Small enough to hold in your head while watching what the solver does. The
+    provider works 09:00–13:00, so four appointments fill a day and the whole
+    week is twenty slots — few enough that a person can see why a move is
+    needed rather than taking the solver's word for it.
+
+    The forcing structure is deliberately the kind that occurs by itself:
+    Carol works, and can only ever manage Tuesday mornings. Both Tuesday
+    morning slots are taken, and by people with the rest of the week open to
+    them. So somebody has to move, and there is an obvious candidate.
+    """
+    world.catalogue.add_service("session-60", "Standard session", 60, 8000)
+    world.catalogue.add_service("session-90", "Extended session", 90, 11000)
+    world.catalogue.add_service("admin", "Notes and admin", 60, 0,
+                                client_bookable=False)
+
+    world.set_weekly_availability(PROVIDER, _hours(range(5), "09:00", "13:00"))
+
+    for client_id, name in (("alice", "Alice"), ("bob", "Bob"),
+                            ("carol", "Carol"), ("dan", "Dan")):
+        world.add_client(client_id, name)
+
+    # Alice and Bob are flexible; Dan has three days; Carol has one morning.
+    world.set_weekly_availability("alice", _hours((0, 2, 4), "09:00", "13:00"))
+    world.set_weekly_availability("bob", _hours((0, 2, 4), "09:00", "13:00"))
+    world.set_weekly_availability("dan", _hours((0, 1, 3), "09:00", "13:00"))
+    world.set_weekly_availability("carol", _hours((1,), "09:00", "11:00"))
+
+    monday = next_monday()
+    world.policy.horizon_days = _horizon_reaching(monday)
+    world.policy.auto_run = False        # the demonstrator decides when it runs
+    _close_the_run_up(world, monday)
+    # Nobody twice on one day: clients may be booked once a day by default,
+    # and an example that starts out breaking that would demonstrate the
+    # opposite of what the app does.
+    _book(world, monday, [
+        ("alice", 0, 9), ("dan", 0, 11),
+        ("dan", 1, 9), ("alice", 1, 10),        # both of Carol's slots, taken
+        ("dan", 3, 10),
+        ("bob", 4, 9), ("alice", 4, 10),
+    ])
+    _book(world, monday, [(PROVIDER, 0, 10)], service="admin")
+    # Wednesday is the day with the choice in it, and it is built to the scale
+    # the cost model actually works at. A ninety-minute session to 10:30 and an
+    # admin hour from 12:00 leave a ninety-minute stretch: any one-hour booking
+    # in it strands half an hour that can never be sold. Bob's alternatives
+    # without that waste are all on other days.
+    #
+    # So the choice is thirty minutes of dead time against a couple of days of
+    # delay — which is where alpha bites, because a default hour of waste is
+    # priced against a whole day of delay (CostConfig scales, 60 vs 1440). A
+    # trade-off built at any smaller scale is decided by the normalisers before
+    # the slider gets a say, and the slider looks broken.
+    _book(world, monday, [("alice", 2, 9)], service="session-90")
+    _book(world, monday, [(PROVIDER, 2, 12)], service="admin")
+
+    # Carol can only be seen Tuesday morning, and both hours are occupied — by
+    # Dan, who is also free Thursday, and Alice, who has the rest of the week.
+    world.submit_request("carol", "session-60", _at(monday, 1, 9).isoformat())
+    # Bob wants half past eleven, which splits Wednesday's remaining stretch
+    # into an hour and a useless half hour. Giving him what he asked for costs
+    # the provider thirty minutes they can never sell; moving him an hour costs
+    # him. Neither is wrong, and the slider is where that gets decided.
+    world.submit_request("bob", "session-60", _at(monday, 2, 11).isoformat())
+
+    world._note("loaded the small example: four clients, mornings only")
+
+
+# -- the plausible one ------------------------------------------------
+
+
+def busy(world: World) -> None:
+    """A practice that looks like one: nine clients, a full-ish book, and a
+    history behind it.
+
+    Everything the small scenario has, plus the things that only show up once
+    a calendar has been lived in — attendance, a no-show, a cancellation, a
+    client the clinic has moved before. Those are what the hover cards and the
+    client summaries are for, and on a blank calendar they all read as zero.
+
+    Still 09:00–13:00 and 14:00–17:00 rather than a full day: seven hours is
+    enough to look like real work, and short enough that nine clients make it
+    genuinely tight.
+    """
+    world.catalogue.add_service("session-60", "Standard session", 60, 8000)
+    world.catalogue.add_service("session-90", "Extended session", 90, 11000)
+    world.catalogue.add_service("intake", "First appointment", 90, 12000)
+    world.catalogue.add_service("break", "Break", 60, 0, client_bookable=False)
+
+    world.set_weekly_availability(PROVIDER, [
+        *_hours(range(5), "09:00", "13:00"),
+        *_hours(range(5), "14:00", "17:00"),
+    ])
+
+    # Constraints of the kind people actually have.
+    people = [
+        ("alice", "Alice", (0, 2, 4), "09:00", "13:00"),    # mornings, flexible
+        ("bob", "Bob", (0, 1, 2, 3, 4), "16:00", "17:00"),  # works; end of day only
+        ("carol", "Carol", (1,), "09:00", "11:00"),         # one morning a week
+        ("dan", "Dan", (1, 3), "09:00", "13:00"),
+        ("erin", "Erin", (0, 1, 2, 3, 4), "09:00", "17:00"),  # retired, wide open
+        ("frank", "Frank", (2, 4), "14:00", "17:00"),
+        ("gina", "Gina", (0, 3), "09:00", "12:00"),         # school hours
+        ("hugo", "Hugo", (1, 3), "15:00", "17:00"),
+        ("iris", "Iris", (3, 4), "09:00", "13:00"),         # Thursdays and Fridays
+    ]
+    for client_id, name, days, start, end in people:
+        world.add_client(client_id, name)
+        world.set_weekly_availability(client_id, _hours(days, start, end))
+
+    monday = next_monday()
+    world.policy.horizon_days = _horizon_reaching(monday)
+    world.policy.auto_run = False        # the demonstrator decides when it runs
+    _close_the_run_up(world, monday)
+
+    # -- what already happened, so the summaries are not all zeroes -----
+    # Two weeks back, not one. Next Monday can be as little as a day away, so
+    # "the week before" can be this week — history dated today or later, lying
+    # in the run-up just closed, and a "completed" session nobody has had yet.
+    # A fortnight back puts the whole history week at least three days behind
+    # whichever day the scenario is set up on.
+    last = monday - timedelta(days=14)
+    attended = _book(world, last, [
+        ("alice", 0, 9), ("erin", 0, 14), ("dan", 1, 10),
+        ("carol", 1, 9), ("frank", 2, 15), ("gina", 3, 10),
+    ])
+    for appointment_id in attended[:-2]:
+        world.mark_attendance(appointment_id, attended=True)           # charged
+    world.mark_attendance(attended[-2], attended=False)                # a no-show
+    # Dropped it with three days' notice — a cancellation, not a late one.
+    dropped = world.store.get_appointment(attended[-1])
+    world.cancel_appointment(attended[-1], by=Party.CLIENT,
+                             now=dropped.range.start - timedelta(days=3))
+
+    # Most of last fortnight is paid; Dan and Carol still owe, and Frank's
+    # no-show fee is waiting for the provider to decide on it.
+    for charge in list(world.charges.values()):
+        if charge.kind == "session" and charge.client_id in ("alice", "erin"):
+            world.record_payment(charge.id, "paynow_direct" if charge.client_id == "alice"
+                                 else "cash")
+
+    # Hugo was moved by the clinic once. Recorded as DISPLACED, so nothing
+    # downstream mistakes a slot he was pushed into for one he likes.
+    moved = world.store.book_appointment(
+        "hugo", "session-60", _at(last, 1, 15), _at(last, 1, 16),
+        preferred_start=_at(last, 3, 16), origin=Origin.DISPLACED,
+    )
+    world.mark_attendance(moved.id, attended=True)
+
+    # -- the week in front of them --------------------------------------
+    _book(world, monday, [
+        ("alice", 0, 9), ("gina", 0, 10), ("erin", 0, 11), ("bob", 0, 16),
+        ("dan", 1, 9), ("erin", 1, 10), ("hugo", 1, 15), ("bob", 1, 16),
+        ("alice", 2, 9), ("erin", 2, 11), ("frank", 2, 15), ("bob", 2, 16),
+        ("gina", 3, 9), ("dan", 3, 11), ("hugo", 3, 16),
+        ("alice", 4, 9), ("iris", 4, 10), ("frank", 4, 14), ("bob", 4, 16),
+    ])
+    _book(world, monday, [("erin", 3, 14)], service="session-90")
+
+    # A day with a hole in it, so the exception rendering has something to draw
+    # and the calendar is not a perfect grid. Over free time on purpose: an
+    # opening state that already shows a stranded-booking warning muddles the
+    # "I am ill on Wednesday" demonstration, which is where that belongs.
+    world.set_exception(PROVIDER, monday + timedelta(days=2),
+                        time(12), time(13), available=False)
+
+    # -- and what is waiting --------------------------------------------
+    # Carol again: one morning a week, and it is taken.
+    world.submit_request("carol", "session-60", _at(monday, 1, 9).isoformat())
+    # Iris would like Friday, already booked that morning; Thursday is her
+    # other day, so there is somewhere to offer.
+    world.submit_request("iris", "session-60", _at(monday, 4, 11).isoformat())
+    # Straightforward, for contrast.
+    world.submit_request("erin", "session-60", _at(monday, 3, 10).isoformat())
+    # A new client, wanting a longer first appointment.
+    world.add_client("jo", "Jo")
+    world.set_weekly_availability("jo", _hours((0, 2), "09:00", "13:00"))
+    world.submit_request("jo", "intake", _at(monday, 2, 9).isoformat())
+
+    world._note("loaded the realistic example: ten clients, a full-ish week")
+
+
+# -- the one to show ---------------------------------------------------
+
+
+def _message(world: World, client_id: str, author: str, text: str,
+             at: datetime, read: bool = True) -> None:
+    """A message written in the past, as a lived-in conversation has."""
+    message = world.send_message(client_id, author, text)
+    message.at = at
+    message.read_at = at + timedelta(hours=2) if read else None
+
+
+def practice(world: World) -> None:
+    """The realistic example dressed as a practice: a fictional psychology
+    practice in Singapore, with full names, the services such a practice
+    offers at plausible prices, three weeks of history, and a few
+    conversations. For showing the app to people who run a practice.
+
+    The scheduling underneath is the realistic example's, client for client,
+    so the first run negotiates in the same way: the client who can only
+    manage Tuesday mornings, the client wanting a Friday that is taken, a
+    straightforward request, and a new client's first appointment.
+    """
+    world.practice_name = "Quiet Harbour Psychology"
+    world.catalogue.add_service("therapy-60", "Individual therapy", 60, 22000)
+    world.catalogue.add_service("therapy-90", "Extended therapy session", 90, 30000)
+    world.catalogue.add_service("intake", "Initial consultation", 90, 28000)
+    world.catalogue.add_service("couples-90", "Couples therapy", 90, 32000)
+    world.catalogue.add_service("notes", "Clinical notes", 60, 0, client_bookable=False)
+
+    world.set_weekly_availability(PROVIDER, [
+        *_hours(range(5), "09:00", "13:00"),
+        *_hours(range(5), "14:00", "17:00"),
+    ])
+
+    people = [
+        ("meiling", "Mei Ling Tan", (0, 2, 4), "09:00", "13:00"),    # works from home
+        ("arjun", "Arjun Menon", (0, 1, 2, 3, 4), "16:00", "17:00"),  # office job; end of day
+        ("aisyah", "Nur Aisyah Rahman", (1,), "09:00", "11:00"),     # nurse on shifts
+        ("daniel", "Daniel Koh", (1, 3), "09:00", "13:00"),
+        ("priya", "Priya Raman", (0, 1, 2, 3, 4), "09:00", "17:00"),  # on study leave
+        ("weijie", "Lim Wei Jie", (2, 4), "14:00", "17:00"),         # university student
+        ("sarah", "Sarah Goh", (0, 3), "09:00", "12:00"),            # school hours
+        ("farid", "Farid Ismail", (1, 3), "15:00", "17:00"),
+        ("hannah", "Hannah Chua", (3, 4), "09:00", "13:00"),
+        ("krishnan", "Ravi & Anita Krishnan", (0,), "14:00", "16:00"),  # couple
+    ]
+    for client_id, name, days, start, end in people:
+        world.add_client(client_id, name)
+        world.set_weekly_availability(client_id, _hours(days, start, end))
+
+    monday = next_monday()
+    world.policy.horizon_days = _horizon_reaching(monday)
+    world.policy.auto_run = False        # the demonstrator decides when it runs
+    _close_the_run_up(world, monday)
+
+    # -- three weeks behind them (at least three days back, as in busy) --
+    regulars = [("meiling", 0, 9), ("priya", 0, 14), ("daniel", 1, 10),
+                ("aisyah", 1, 9), ("sarah", 3, 10), ("hannah", 4, 10),
+                ("arjun", 2, 16)]
+    for weeks_back in (28, 21):
+        for appointment_id in _book(world, monday - timedelta(days=weeks_back),
+                                    regulars, service="therapy-60"):
+            world.mark_attendance(appointment_id, attended=True)
+    couples = _book(world, monday - timedelta(days=21), [("krishnan", 0, 14)],
+                    service="couples-90")
+    world.mark_attendance(couples[0], attended=True)
+    intake = _book(world, monday - timedelta(days=28), [("weijie", 2, 14)],
+                   service="intake")
+    world.mark_attendance(intake[0], attended=True)
+
+    last = monday - timedelta(days=14)
+    attended = _book(world, last, [
+        ("meiling", 0, 9), ("priya", 0, 14), ("daniel", 1, 10),
+        ("aisyah", 1, 9), ("weijie", 2, 15), ("sarah", 3, 10),
+    ], service="therapy-60")
+    for appointment_id in attended[:-2]:
+        world.mark_attendance(appointment_id, attended=True)
+    world.mark_attendance(attended[-2], attended=False)                # a no-show
+    dropped = world.store.get_appointment(attended[-1])
+    world.cancel_appointment(attended[-1], by=Party.CLIENT,
+                             now=dropped.range.start - timedelta(days=3))
+
+    # Most of it is paid. Daniel and Aisyah owe for last fortnight, and Wei
+    # Jie's no-show fee waits for the provider to confirm or waive it.
+    last_unpaid = {"daniel", "aisyah"}
+    for charge in list(world.charges.values()):
+        if charge.kind != "session":
+            continue
+        charge.created = world.store.get_appointment(charge.appointment_id).range.end
+        recent = charge.client_id in last_unpaid and any(
+            charge.appointment_id == a for a in attended)
+        if not recent:
+            payment = world.record_payment(charge.id, "cash" if charge.client_id == "priya"
+                                           else "paynow_direct")
+            # Paid on the day, as people do, rather than all of it today.
+            payment.created = charge.created + timedelta(hours=2)
+
+    moved = world.store.book_appointment(
+        "farid", "therapy-60", _at(last, 1, 15), _at(last, 1, 16),
+        preferred_start=_at(last, 3, 16), origin=Origin.DISPLACED,
+    )
+    world.mark_attendance(moved.id, attended=True)
+
+    # -- the week in front of them --------------------------------------
+    _book(world, monday, [
+        ("meiling", 0, 9), ("sarah", 0, 10), ("priya", 0, 11), ("arjun", 0, 16),
+        ("daniel", 1, 9), ("priya", 1, 10), ("farid", 1, 15), ("arjun", 1, 16),
+        ("meiling", 2, 9), ("priya", 2, 11), ("weijie", 2, 15), ("arjun", 2, 16),
+        ("sarah", 3, 9), ("daniel", 3, 11), ("farid", 3, 16),
+        ("meiling", 4, 9), ("hannah", 4, 10), ("weijie", 4, 14), ("arjun", 4, 16),
+    ], service="therapy-60")
+    _book(world, monday, [("priya", 3, 14)], service="therapy-90")
+    _book(world, monday, [("krishnan", 0, 14)], service="couples-90")
+    world.set_exception(PROVIDER, monday + timedelta(days=2),
+                        time(12), time(13), available=False)
+
+    # -- what is waiting --------------------------------------------------
+    world.submit_request("aisyah", "therapy-60", _at(monday, 1, 9).isoformat())
+    world.submit_request("hannah", "therapy-60", _at(monday, 4, 11).isoformat())
+    world.submit_request("priya", "therapy-60", _at(monday, 3, 10).isoformat())
+    world.add_client("joanne", "Joanne Teo")
+    world.set_weekly_availability("joanne", _hours((0, 2), "09:00", "13:00"))
+    world.submit_request("joanne", "intake", _at(monday, 2, 9).isoformat())
+
+    # -- a few conversations ----------------------------------------------
+    days_ago = lambda n, hour, minute=0: datetime.combine(
+        date.today() - timedelta(days=n), time(hour, minute))
+    _message(world, "aisyah", "client",
+             "Hi, my shifts change next month. Is it still possible to keep "
+             "Tuesday mornings? It's the only time I can come.", days_ago(3, 21, 14))
+    _message(world, "aisyah", "provider",
+             "Hi Aisyah, thanks for letting me know. Please send a request for "
+             "Tuesday in the app and I'll do my best to keep that time for you.",
+             days_ago(2, 9, 5))
+    _message(world, "daniel", "client",
+             "Thank you for last week. The breathing exercise has been helping "
+             "before meetings.", days_ago(5, 18, 40))
+    _message(world, "daniel", "provider",
+             "That's really good to hear, Daniel. Keep practising and we'll "
+             "talk about how it went on Tuesday.", days_ago(4, 10, 20))
+    _message(world, "hannah", "client",
+             "Hello, could I get a receipt for my last two sessions? My "
+             "insurer needs it for the claim.", days_ago(0, 8, 30), read=False)
+
+    world._note("loaded the practice example: Quiet Harbour Psychology")
+
+
+SCENARIOS = {"simple": simple, "busy": busy, "practice": practice}
+
+
+def load(world: World, name: str) -> None:
+    if name not in SCENARIOS:
+        raise ValueError(f"no scenario called {name!r}; try {sorted(SCENARIOS)}")
+    SCENARIOS[name](world)

@@ -216,13 +216,25 @@ about the client.
 
 ## Architecture
 
-Three independent Python packages, each with its own `pyproject.toml`, tests, and
+Four Python packages, each with its own `pyproject.toml`, tests, and
 specification documents.
 
 ```
-calendar_store  ──▶  scheduling_engine  ──▶  mock_ui
-   (state)              (decisions)          (the app)
+                     mock_ui  (the app)
+                    ╱        ╲
+                   ▼          ▼
+      calendar_store          scheduling_engine
+          (state)                 (decisions)
+
+        └─── no dependency between these two ───┘
 ```
+
+Arrows are dependencies. The two lower packages know nothing of each other or of
+`mock_ui`, so either can be rewritten — real persistence for the store, a
+different objective or solver for the engine — without opening the other.
+
+A fourth package, `scheduling_contracts`, declares the interface layer the others
+are being migrated onto. It is deliberately not wired in yet — see below.
 
 ### `calendar_store` — what is true about the calendar
 
@@ -246,7 +258,11 @@ Internals and rationale: [`calendar_store/SPEC.md`](calendar_store/SPEC.md).
 
 ### `scheduling_engine` — what should happen
 
-Pure functions over `TimeSegment`s; no store, no I/O, no database.
+Pure functions over availability segments; no store, no I/O, no database — and
+**no dependency on the other two packages**, so the solver can be tuned or
+replaced without opening either of them. It declares the segment shape it needs
+rather than importing one, and reads spans structurally, so a store's own type
+is passed straight in.
 `availability.free_time` performs the netting step the store declines to do, and
 `solve_placements` is the CP-SAT model described above. `fragmentation.py` derives
 gap waste from the service catalogue, and `visualize.py` renders a calendar and
@@ -254,6 +270,24 @@ what the solver did to it — its gap report is built from the solver's own
 grid-snapped blocks, so the chart can never disagree with the numbers.
 
 Design and open questions: [`scheduling_engine/SPEC.md`](scheduling_engine/SPEC.md).
+
+### `scheduling_contracts` — the interface layer
+
+Declarations only: the 54 typed commands that can be triggered from outside, the
+permission matrix that says who may issue each one, and the ports the domain
+asks of storage, of a solver, and of an audit log. It has **no dependencies at
+all**, which is enforced by a test — it is the fixed point the other packages
+conform to, so anything imported here would be inherited by all of them.
+
+Two properties are machine-checked rather than asserted: the permission table is
+*total* (every role has an explicit entry for every command, so there is no
+fallback for an accidental grant to hide in), and delegation to an AI assistant
+can only ever *narrow* what its human already holds.
+
+**Nothing imports it yet.** It exists so that the store and the solver can be
+conformed to it one at a time; until adapters are written it changes no
+behaviour. See [docs/CONTROL_SURFACE.md](docs/CONTROL_SURFACE.md) for the map and
+[docs/INTERFACE_PLAN.md](docs/INTERFACE_PLAN.md) for the sequence.
 
 ### `mock_ui` — the app, in development
 
@@ -311,6 +345,47 @@ app at `/phone` (see below), with a tab per person if you like: `?as=alice`,
 engine, so an action in one tab shows up in the others within a couple of
 seconds.
 
+**Payments** are simulated unless told otherwise: clients pay on a stand-in
+checkout page served by the app itself, and no money moves. To use Stripe's
+test mode instead, install the extra (`pip install -e "../mock_ui[stripe]"`)
+and start the server with a Stripe **test** secret key in the environment —
+`STRIPE_SECRET_KEY=sk_test_... ./mock_ui/run.sh`. A live key is refused.
+
+**The AI assistant** runs on either of two models, chosen when the server
+starts. It is off until the practice switches it on (More → Assistant), and
+each client opts in.
+
+- **Free, on this computer** (the default when no API key is set): install
+  [Ollama](https://ollama.com), run `ollama serve`, and `ollama pull qwen3:8b`
+  (~5 GB). Nothing typed to the assistant leaves the machine. A smaller model,
+  so it makes more mistakes — every change is still a card to confirm.
+  On an Apple Silicon Mac, use the native app from ollama.com rather than a
+  Homebrew running under Rosetta, which would be an Intel build and far slower.
+- **Claude** (Anthropic): `pip install -e "../mock_ui[assistant]"`, then
+  `ANTHROPIC_API_KEY=sk-ant-... ./mock_ui/run.sh`. Pay-as-you-go; the key comes
+  from the Claude Console (platform.claude.com).
+
+`ASSISTANT_PROVIDER=local|claude` forces one; `ASSISTANT_LOCAL_MODEL` and
+`ASSISTANT_MODEL` pick the model within each.
+
+**On a phone**, use `/phone` instead (`/phone?as=carol`). It is a separate page
+over the same API: a bottom tab bar, and taps, sheets and pickers in place of
+the desktop page's drag and hover. A narrow screen opening `/` is sent there
+automatically (`?desktop=1` opts out). On an iPhone, **Share → Add to Home
+Screen** installs it with its own icon, opening full-screen like an app; the
+page offers the tip itself. Push notifications to it are possible (iOS 16.4+)
+but need HTTPS, so they arrive with hosting. To reach it from a real phone the
+server has to listen beyond this machine:
+
+```bash
+./mock_ui/run.sh --host 0.0.0.0
+```
+
+then open `http://<your computer's LAN address>:8000/phone` on the phone, on the
+same Wi-Fi. There is **no login of any kind**, so anyone on that network can
+open it and act as anyone. Fine for trying it out at home; do not do it on a
+shared network.
+
 ### The solver playground
 
 The engine can be driven directly from a JSON scenario file, with no UI involved:
@@ -357,8 +432,8 @@ cd calendar_store   && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 cd mock_ui          && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 ```
 
-471 tests: 239 for the engine, 64 for the store, 168 for the app. See the note
-on the one known failure below.
+878 tests: 251 for the engine, 64 for the store, 534 for the app, 29 for the
+contracts. See the note on the one known failure below.
 
 ---
 
@@ -420,6 +495,7 @@ not currently flag that it did so.
 ## Repository layout
 
 ```
+scheduling_contracts/ commands, permissions, ports  (no dependencies, not yet wired in)
 calendar_store/      availability + appointments  (INTERFACE.md is the public contract)
 scheduling_engine/   CP-SAT placement solver      (SPEC.md is the design)
   examples/          worked scenario files for the playground

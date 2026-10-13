@@ -1,14 +1,14 @@
 from datetime import date, datetime, time
 
 import pytest
-from calendar_store import TimeSegment
 
 from scheduling_engine import (
     BookingRequest,
     CostConfig,
     MovableAppointment,
-    Track,
     TimeRange,
+    TimeSegment,
+    Track,
     free_time,
     gaps_left,
     render,
