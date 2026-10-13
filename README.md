@@ -148,8 +148,9 @@ is an expected outcome and is reported as such.
 Nothing in that plan reaches the calendar until the people affected agree to it.
 Displacing someone is a *proposal*, and the negotiation around it — the provider
 approving a draft, each affected client answering for their own part, and each
-answer being applied independently — is currently handled by the mock UI rather
-than the engine (see [Current state](#current-state-and-known-limitations)).
+answer being applied independently — is currently handled by the app
+(`mock_ui`) rather than the engine (see
+[Current state](#current-state-and-known-limitations)).
 
 ---
 
@@ -219,7 +220,7 @@ Four Python packages, each with its own `pyproject.toml`, tests, and
 specification documents.
 
 ```
-                     mock_ui  (interface)
+                     mock_ui  (the app)
                     ╱        ╲
                    ▼          ▼
       calendar_store          scheduling_engine
@@ -288,18 +289,23 @@ conformed to it one at a time; until adapters are written it changes no
 behaviour. See [docs/CONTROL_SURFACE.md](docs/CONTROL_SURFACE.md) for the map and
 [docs/INTERFACE_PLAN.md](docs/INTERFACE_PLAN.md) for the sequence.
 
-### `mock_ui` — a way to drive it by hand
+### `mock_ui` — the app, in development
 
-A deliberately throwaway FastAPI server with a no-build-step vanilla-JS front end.
-One process holds one store and one engine; you open a browser tab per person
-(`?as=alice`, `?as=provider`) and tabs poll for shared state. It exists to make the
-system *playable* — to accumulate realistic history with correct provenance, and to
-make the negotiation loop visible.
+The app people use, and the screens in the showcase above: a phone app for
+clients and for the provider, and a desktop page for watching the scheduling
+engine at work. It is a FastAPI server with a vanilla-JS front end and no build
+step. One process holds one store and one engine, and every open page polls it
+for shared state.
 
-It is explicitly **not** a product: no authentication (the role is a URL claim, not
-a credential), no styling worth keeping, no persistence design intended to survive.
+The app is under active development and not yet ready to deploy:
 
-Notes on what is deliberately crude: [`mock_ui/SPEC.md`](mock_ui/SPEC.md).
+- **No sign-in yet.** The person is picked from a "view as" menu (or `?as=` in
+  the address), which is what lets one screen show every side of a demo.
+- **One saved file instead of a database.** The session is a JSON snapshot.
+- **Payments in test mode only,** either simulated or Stripe's test mode.
+- **The name `mock_ui` is historical.** The app began as a throwaway page for
+  trying the engine by hand, and grew from there. Its original design notes are
+  in [`mock_ui/SPEC.md`](mock_ui/SPEC.md).
 
 ---
 
@@ -327,15 +333,16 @@ python3 -m venv .venv
 > requires a setup.py based build."* A stock `python3 -m venv` on an older
 > interpreter can easily ship a pip from before that.
 
-### The browser front end
+### The app
 
 ```bash
 ./mock_ui/run.sh            # --port, --reload
 ```
 
-Then open a tab per person: `http://127.0.0.1:8000/?as=provider`,
-`?as=alice`, `?as=bob`. All tabs share the one server process, hence one store and
-one engine, so an action in one tab shows up in the others within a couple of
+Then open the desktop page at `http://127.0.0.1:8000/?as=provider`, or the phone
+app at `/phone` (see below), with a tab per person if you like: `?as=alice`,
+`?as=bob`. All tabs share the one server process, hence one store and one
+engine, so an action in one tab shows up in the others within a couple of
 seconds.
 
 **Payments** are simulated unless told otherwise: clients pay on a stand-in
@@ -425,14 +432,14 @@ cd calendar_store   && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 cd mock_ui          && ../scheduling_engine/.venv/bin/python -m pytest tests/ -q
 ```
 
-878 tests: 251 for the engine, 64 for the store, 534 for the mock UI, 29 for the
+878 tests: 251 for the engine, 64 for the store, 534 for the app, 29 for the
 contracts. See the note on the one known failure below.
 
 ---
 
 ## Current state and known limitations
 
-This is a working solver with a playable front end, not a deployable product. What
+This is a working solver with an app in development, not yet a deployable product. What
 follows is deliberately explicit, because the specs describe a larger design than
 what is built.
 
@@ -443,7 +450,7 @@ pushes the fixture's request outside the seven-day horizon the test itself sets,
 no plan is produced and the assertion never gets a chance to run. It is a
 date-dependent test, not an engine fault.
 
-**No persistence.** `AvailabilityStore` is in-memory only. The mock UI works around
+**No persistence.** `AvailabilityStore` is in-memory only. The app works around
 this with a JSON session snapshot that deliberately reaches into the store's private
 lists — confined to one file, `persistence.py`, so it is obvious what to delete when
 a real repository layer arrives.
@@ -451,7 +458,7 @@ a real repository layer arrives.
 **The negotiation lifecycle is not in the engine.** `scheduling_engine/SPEC.md`
 §6–§9 specify `AcceptedChange`, cold-asks, and a
 `PROPOSED → CONFIRMED → EXERCISED` state machine. None of that exists yet, so
-`solve_placements` returns a plan nobody has agreed to. The mock UI owns the
+`solve_placements` returns a plan nobody has agreed to. The app owns the
 negotiation loop in the meantime — draft, provider approval, per-client answers
 (accept / decline / refuse), and settlement — and is intended to hand that
 responsibility back rather than keep a second implementation of it. The API surface
@@ -477,7 +484,7 @@ recurring series as a whole are all out of scope in the current design.
 
 **Solve time is dominated by the planning horizon.** Because a request may be placed
 anywhere in its client's availability, widening the horizon multiplies candidate
-slots for every request in the queue. Measured in the mock UI at 25 clients and 20
+slots for every request in the queue. Measured in the app at 25 clients and 20
 requests: roughly 2s at a 7-day horizon against roughly 11s at 21 days. Planning a
 week at a time — which is what a provider wants anyway — keeps it cheap. On timeout
 the solver returns the best solution found rather than a proven optimum, and does
@@ -492,7 +499,7 @@ scheduling_contracts/ commands, permissions, ports  (no dependencies, not yet wi
 calendar_store/      availability + appointments  (INTERFACE.md is the public contract)
 scheduling_engine/   CP-SAT placement solver      (SPEC.md is the design)
   examples/          worked scenario files for the playground
-mock_ui/             FastAPI + vanilla JS front end for driving it by hand
+mock_ui/             the app, in development: FastAPI + vanilla-JS phone and desktop pages
 showcase/            the screens, video, timeline and build log at the top of this file
 tools/showcase/      the scripts that generate them from the running app
 ```
