@@ -1,7 +1,98 @@
 # Scheduling app
 
-**See it running:** the [showcase](showcase/README.md) has screenshots of every
-screen and a one-minute walkthrough video.
+**Appointment scheduling for a one-clinician practice. It plans the whole week
+at once, and never moves anyone without asking them first.**
+
+<p align="center">
+  <img src="showcase/walkthrough/walkthrough_teaser.gif" width="320" alt="A client asks for a time, the provider plans the week, two clients agree, and the diary updates">
+</p>
+
+Clients ask for the time that suits them; it is a wish, not a booking. The
+practice plans everyone's requests together, in one pass. When the week is
+full, the plan may ask a client who is already booked to move, and only books
+the change if they agree. Nothing is cancelled silently, and every client sees
+only their own appointments. Around that: payments, calendar sync, private
+messaging with the practice, and an AI assistant that can only do what the
+person's own screens can.
+
+> Everything below the line is captured from the running app, with a made-up
+> practice, **Quiet Harbour Psychology**, and example data. It is rebuilt from
+> the code by [`tools/showcase`](tools/showcase/README.md) as the app changes.
+
+---
+
+## Latest builds
+
+Rebuilt from the git history; the full record is the
+**[build log](showcase/BUILDLOG.md)**.
+
+<!-- buildlog:latest:start -->
+- 2026-10-13 `build 80` · **Design notes** · **Showcase** — 2 commits
+- 2026-10-10 `build 78` · **App**: design tokens, desktop view, icon, phone screens, server · **Assistant** · **Scheduling engine** · **Calendar store** · **Permissions** · **Example data** · **Testing** · **Design notes** — 10 commits
+- 2026-10-08 `build 68` · **App**: desktop view, phone screens, server · **Testing** · **Design notes** — 1 commit
+- 2026-10-07 `build 67` · **App**: desktop view, icon, phone screens, server · **Assistant** · **Payments** · **Calendar sync** · **Scheduling engine** · **Permissions** · **Example data** · **Testing** · **Design notes** — 17 commits
+- 2026-10-06 `build 50` · **App**: desktop view, icon, phone screens, server · **Example data** · **Testing** · **Design notes** — 3 commits
+<!-- buildlog:latest:end -->
+
+## The walkthrough
+
+<a href="showcase/walkthrough/walkthrough.mp4">
+  <img src="showcase/walkthrough/walkthrough_poster.jpg" width="300" align="right" alt="A frame from the walkthrough: the week's plan, with one client asked to move">
+</a>
+
+**[▶ Watch the walkthrough](showcase/walkthrough/walkthrough.mp4)** (1 min)
+
+Aisyah can only come on Tuesday mornings, and both are taken. She asks anyway.
+The provider plans the week with one tap. To fit her in, the plan asks another
+client to move. Both answer on their own phones, the provider confirms what was
+agreed, and the diary updates.
+
+The video is played by a script, not a person, so every tap is marked.
+
+<br clear="right">
+
+## For clients
+
+![Client screens](showcase/clients_sheet.jpg)
+
+Home, booking, a time offered, being asked to move, and messages. A client
+never sees the practice's free time or anyone else's appointments: they say
+when suits them, and are offered a time to accept.
+
+## For the provider
+
+![Provider screens](showcase/provider_sheet.jpg)
+
+Home, the diary, waiting requests, a plan for the week, and the answers coming
+in. Open time is plain and closed time hatched; a session someone has been
+asked to move stands out.
+
+## More screens
+
+| Bookings | My hours | Clients | Payments | Time off | Messages |
+|:---:|:---:|:---:|:---:|:---:|:---:|
+| <img src="showcase/screens/client-bookings.jpg" width="150"> | <img src="showcase/screens/client-hours.jpg" width="150"> | <img src="showcase/screens/provider-clients.jpg" width="150"> | <img src="showcase/screens/provider-payments.jpg" width="150"> | <img src="showcase/screens/provider-time-off.jpg" width="150"> | <img src="showcase/screens/provider-messages.jpg" width="150"> |
+| Sessions, calendar sync, payments | When they can usually come | Each client's history | Fees to decide, owed, paid | Booked clients are asked to move | Every conversation |
+
+| Dark mode: client | Dark mode: provider |
+|:---:|:---:|
+| <img src="showcase/screens/dark-client-home.jpg" width="200"> | <img src="showcase/screens/dark-provider-diary.jpg" width="200"> |
+
+## From a test page to a phone app
+
+The app at the end of each day it changed, run from that day's code.
+
+<p align="center">
+  <img src="showcase/timeline/timelapse.gif" width="800" alt="The app at the end of each day of work, from a developer's test page to the phone app">
+</p>
+
+| 3 Aug | 7 Aug | 6 Oct | 10 Oct |
+|---|---|---|---|
+| ![](showcase/timeline/2026-08-03.jpg) | ![](showcase/timeline/2026-08-07.jpg) | ![](showcase/timeline/2026-10-06.jpg) | ![](showcase/timeline/2026-10-10.jpg) |
+
+---
+
+## How it works
 
 A constraint-solver scheduling engine for a single-provider appointment calendar.
 It takes a queue of pending booking requests and decides, **jointly**, where all of
@@ -326,6 +417,8 @@ calendar_store/      availability + appointments  (INTERFACE.md is the public co
 scheduling_engine/   CP-SAT placement solver      (SPEC.md is the design)
   examples/          worked scenario files for the playground
 mock_ui/             FastAPI + vanilla JS front end for driving it by hand
+showcase/            the screens, video, timeline and build log at the top of this file
+tools/showcase/      the scripts that generate them from the running app
 ```
 
 ## Licence
