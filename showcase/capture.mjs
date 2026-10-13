@@ -247,80 +247,130 @@ async function caption(text) {
   })()`);
 }
 
-async function scene(as, tab, text, hold = 2600) {
+// The video is built from stills, each with the time it should stay on
+// screen, rather than recorded in real time. A slow or busy machine then
+// changes how long the script takes, never how the video plays: no stutter,
+// no frozen frames while the app or the solver catches up.
+let frames = [];
+let framesDir = "";
+
+async function still(seconds) {
+  const { data } = await cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 88 });
+  const file = join(framesDir, `${String(frames.length).padStart(5, "0")}.jpg`);
+  writeFileSync(file, Buffer.from(data, "base64"));
+  frames.push({ file, seconds });
+}
+
+// A short transition, drawn as evenly spaced steps (24 a second).
+async function motion(seconds, step) {
+  const count = Math.max(2, Math.round(seconds * 24));
+  for (let i = 1; i <= count; i++) {
+    await step(i / count);
+    await still(1 / 24);
+  }
+}
+
+const ease = (t) => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+async function scrollTo(top, seconds = 0.8) {
+  const from = await js(`window.scrollY`);
+  const to = await js(`Math.min(${top}, document.documentElement.scrollHeight - innerHeight)`);
+  await motion(seconds, (t) => js(`window.scrollTo(0, ${from + (to - from) * ease(t)})`));
+}
+
+// A new screen fades in, as it does in the app.
+async function fadeIn() {
+  await js(`document.getElementById("view").classList.remove("entering")`);
+  await motion(0.25, (t) => js(`document.getElementById("view").style.opacity = ${ease(t)}`));
+  await js(`document.getElementById("view").style.opacity = ""`);
+}
+
+async function scene(as, tab, text, hold = 2.6) {
   await open(as, tab);
+  await js(`document.getElementById("view").style.opacity = 0`);
   await caption(text);
-  await sleep(hold);
+  await fadeIn();
+  await still(hold);
+}
+
+async function say(text, hold = 2.6) {
+  await caption(text);
+  await still(hold);
+}
+
+// Show the touch, then do it, then let the result settle before the next still.
+async function press(selector, settle = 900, hold = 0.6) {
+  const found = await js(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return false;
+    el.scrollIntoView({ block: "center" });
+    const r = el.getBoundingClientRect(), dot = document.createElement("div");
+    dot.id = "showcase-tap";
+    dot.style.cssText = "position:fixed;z-index:99;width:44px;height:44px;margin:-22px 0 0 -22px;"
+      + "border-radius:50%;background:rgba(30,107,107,.35);border:2px solid rgba(30,107,107,.8);"
+      + "pointer-events:none;left:" + (r.left + r.width / 2) + "px;top:" + (r.top + r.height / 2) + "px";
+    document.body.appendChild(dot);
+    return true;
+  })()`);
+  if (!found) throw new Error(`nothing to tap: ${selector}`);
+  await motion(0.3, (t) => js(`document.getElementById("showcase-tap").style.transform = "scale(${0.6 + 0.6 * t})"`));
+  await js(`document.getElementById("showcase-tap")?.remove()`);
+  await js(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  await sleep(settle);
+  await still(hold);
 }
 
 async function video() {
   await loadPractice();
   await scheme(false);
-  const frames = join(scratch, "frames");
-  mkdirSync(frames);
-  // Headless Chrome's screencast records at 1x; screenshots honour the
-  // phone's 2x pixels. So the recorder takes screenshots as fast as it can
-  // (about ten a second), each held until the next.
-  const list = [];
-  let recording = true;
-  const recorder = (async () => {
-    while (recording) {
-      const at = Date.now() / 1000;
-      try {
-        const { data } = await cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 85 });
-        const file = join(frames, `${String(list.length).padStart(5, "0")}.jpg`);
-        writeFileSync(file, Buffer.from(data, "base64"));
-        list.push({ file, at });
-      } catch { await sleep(50); }         // mid-navigation: try again
-    }
-  })();
+  framesDir = join(scratch, "frames");
+  mkdirSync(framesDir);
+  frames = [];
 
   await scene("aisyah", "home",
-    "Aisyah can only come on Tuesday mornings, and both are taken. She has asked anyway.", 3800);
-  await scene("aisyah", "book", "Clients say what they need and when suits them best. It's a wish, not a booking.", 3200);
-  await js(`window.scrollTo({ top: 500, behavior: "smooth" })`); await sleep(1800);
+    "Aisyah can only come on Tuesday mornings, and both are taken. She has asked anyway.", 3.8);
+  await scene("aisyah", "book", "Clients say what they need and when suits them best. It's a wish, not a booking.", 2.4);
+  await scrollTo(500);
+  await still(1.6);
 
-  await scene("provider", "home", "The provider sees only what needs them.", 3000);
-  await scene("provider", "queue", "Four requests are waiting for this week.", 2400);
-  await tap('[data-act="pick-all"]', { mark: true, pause: 600 });
+  await scene("provider", "home", "The provider sees only what needs them.", 3.0);
+  await scene("provider", "queue", "Four requests are waiting for this week.", 2.2);
+  await press('[data-act="pick-all"]', 400);
   await caption("One tap plans the whole week.");
-  await tap('[data-act="run"]', { mark: true, pause: 500 });
-  await waitFor(() => js(`!!document.querySelector('[data-act="approve"]')`), "a plan", 60000);
-  await caption("The plan finds times for the requests. To fit Aisyah in, one client is asked to move, only if they agree.");
-  await sleep(4200);
-  await js(`window.scrollTo({ top: 420, behavior: "smooth" })`); await sleep(2200);
-  await caption("Nothing is booked until the clients say yes.");
-  await tap('[data-act="approve"]', { mark: true, pause: 1600 });
+  await press('[data-act="run"]', 300, 0.3);
+  await waitFor(() => js(`!!document.querySelector('[data-act="approve"]')`), "a plan", 120000);
+  await sleep(800);
+  await js(`window.scrollTo(0, 0)`);
+  await say("The plan finds times for the requests. To fit Aisyah in, one client is asked to move, only if they agree.", 4.2);
+  await scrollTo(420, 1.0);
+  await still(1.6);
+  await say("Nothing is booked until the clients say yes.", 1.6);
+  await press('[data-act="approve"]', 1500, 0.8);
 
-  await scene("aisyah", "home", "Aisyah is offered her Tuesday morning…", 2000);
-  await tap('[data-act="respond"][data-answer="accept"]', { mark: true, pause: 1600 });
+  await scene("aisyah", "home", "Aisyah is offered her Tuesday morning…", 2.0);
+  await press('[data-act="respond"][data-answer="accept"]', 1500, 1.4);
   const mover = await whoIsAsked("reschedule");
-  await scene(mover, "home", "…and the client asked to move sees exactly what changes.", 2800);
-  await tap('[data-act="respond"][data-answer="accept"]', { mark: true, pause: 1600 });
+  await scene(mover, "home", "…and the client asked to move sees exactly what changes.", 2.8);
+  await press('[data-act="respond"][data-answer="accept"]', 1500, 1.4);
 
-  await scene("provider", "plans", "Back with the provider: the answers are in.", 2600);
-  await caption("Confirm what was agreed.");
-  await tap('[data-act="settle"][data-how="agreed"]', { mark: true, pause: 1500 });
+  await scene("provider", "plans", "Back with the provider: the answers are in.", 2.4);
+  await say("Confirm what was agreed.", 1.2);
+  await press('[data-act="settle"][data-how="agreed"]', 1500, 0.6);
   await open("provider", "diary");
-  await caption("The diary is up to date, and everyone was told.");
   await js(`(() => { const d = [...document.querySelectorAll(".day")]; const t = d.find((b, i) => i > 0 && /tue/i.test(b.textContent) && d.slice(0, i).some((x, j) => j > 0 && /mon/i.test(x.textContent))); t && t.click(); })()`);
-  await sleep(3400);
+  await sleep(600);
+  await js(`document.getElementById("view").style.opacity = 0`);
+  await caption("The diary is up to date, and everyone was told.");
+  await fadeIn();
+  await still(3.4);
 
-  await scene("hannah", "messages", "Clients can message the practice. Urgent-help numbers are always on screen.", 3400);
-  await scene("daniel", "bookings", "Bookings, calendar sync and payments, in one place.", 3200);
-  await caption("Quiet Harbour Psychology is a made-up practice, shown with example data.");
-  await sleep(2600);
+  await scene("hannah", "messages", "Clients can message the practice. Urgent-help numbers are always on screen.", 3.4);
+  await scene("daniel", "bookings", "Bookings, calendar sync and payments, in one place.", 3.2);
+  await say("Quiet Harbour Psychology is a made-up practice, shown with example data.", 2.6);
 
-  recording = false;
-  await recorder;
-
-  // Frames arrive only when something changes: each one is held until the next.
   const lines = [];
-  list.forEach((frame, i) => {
-    const next = list[i + 1] ? list[i + 1].at : frame.at + 1.5;
-    lines.push(`file '${frame.file}'`, `duration ${Math.max(next - frame.at, 0.01).toFixed(3)}`);
-  });
-  lines.push(`file '${list[list.length - 1].file}'`);
+  for (const f of frames) lines.push(`file '${f.file}'`, `duration ${f.seconds.toFixed(4)}`);
+  lines.push(`file '${frames[frames.length - 1].file}'`);
   const concat = join(scratch, "frames.txt");
   writeFileSync(concat, lines.join("\n"));
 
@@ -328,15 +378,14 @@ async function video() {
     const p = spawn("ffmpeg", ["-y", "-loglevel", "error", ...args], { stdio: "inherit" });
     p.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`)));
   });
-  const even = "scale=trunc(iw/2)*2:trunc(ih/2)*2";
-  await ffmpeg(["-f", "concat", "-safe", "0", "-i", concat, "-vf", `${even},fps=30`,
+  await ffmpeg(["-f", "concat", "-safe", "0", "-i", concat, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30",
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "26", "-movflags", "+faststart",
     join(HERE, "walkthrough.mp4")]);
   // A small animated preview that plays inline on GitHub.
   await ffmpeg(["-f", "concat", "-safe", "0", "-i", concat, "-vf",
-    "fps=8,scale=300:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer",
+    "fps=10,scale=300:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer",
     join(HERE, "walkthrough.gif")]);
-  console.log("  walkthrough.mp4, walkthrough.gif");
+  console.log(`  walkthrough.mp4, walkthrough.gif (${frames.length} stills)`);
 }
 
 // -- run ----------------------------------------------------------------
