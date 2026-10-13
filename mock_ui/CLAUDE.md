@@ -390,9 +390,10 @@ the engine's venv — one interpreter can import all three).
 
 ## The showcase is kept current
 
-`showcase/` in the repo root holds screenshots of every main screen and a
-walkthrough video, all generated from the running app by
-`node showcase/capture.mjs` (`--shots` for screenshots only). After a change
-a user would see, rebuild it and commit the result with the change. If the
-script stops at a step because a screen or button changed, update its screen
-list or walkthrough, and the captions in `showcase/README.md`, to match.
+The top of the main README is the app's showcase, generated from the running
+app into `showcase/` by the scripts in `tools/showcase/` (see its README).
+After a change a user would see, run `node tools/showcase/capture.mjs`, then
+`python3 tools/showcase/buildlog.py`, check the README's captions still match
+the pictures, and commit the result with the change. After a day of visible
+changes, also run `node tools/showcase/timeline.mjs <that day>`. If a script
+stops at a step because a screen or button changed, update it to match.
